@@ -1,0 +1,1729 @@
+#!/usr/bin/env bash
+#
+# yo — spin up / tear down an iTerm2 work session on a fresh git worktree.
+#
+# Configuration:
+#   Every site-specific thing (which repos exist, where their clones live, the
+#   branch prefix, window size) lives in a config file — this script itself is
+#   generic. yo reads, in order:
+#       $YO_CONFIG
+#       ${XDG_CONFIG_HOME:-~/.config}/yo/config.sh
+#   With no config file, yo runs in single-repo mode: the clone you are standing
+#   in is the repo and its default branch is the base branch. `yo help` prints
+#   the repos yo can currently see.
+#
+# Usage:
+#   yo [--repo=R] [--profile=P] [--here|--worktree] [INPUT] [extra]
+#
+#   INPUT is resolved in order:
+#     PR / issue URL     github.com/.../pull/N or /issues/N (see below)
+#     existing branch    exact branch name (local or origin) -> reused as-is;
+#                        also matches <prefix>/<INPUT> (the classic reuse case)
+#     session name       otherwise: new branch <prefix>/<INPUT> off the repo's
+#                        base branch
+#     - or (omitted)     timestamped session (sesh_YYYYmmdd_HHMMSS) with a fun
+#                        window title ("Adventurous Possum"). `-` is the
+#                        explicit spelling so an [extra] can follow:
+#                          yo - 'prod is broken, investigate!'
+#                        Bare `yo` works too: repo = --repo, else inferred
+#                        from the cwd, else the default repo. Help is `yo help`.
+#
+#   --repo=R overrides repo inference — e.g. work in one repo on an issue that
+#   is tracked in another:
+#     yo --repo=backend https://github.com/acme/tracker/issues/123
+#   (For PR URLs the worktree must come from the PR's own repo, so a
+#   conflicting --repo is an error.) The legacy positional form
+#   `yo <repo> <name> [extra]` still works.
+#
+#   URL forms (repo, kind, and number are read from the URL):
+#     .../pull/<n>    -> name review_pr_<n>; worktree checked out at the PR's
+#                        HEAD (the code under review, via refs/pull/<n>/head)
+#                        and set to TRACK it so `git pull` refreshes as the PR
+#                        gets new commits; seeds claude with  /code-review <url>
+#                        (the command is configurable — YO_REVIEW_CMD).
+#     .../issues/<n>  -> name issue_<n> (off the repo's base branch); seeds
+#                        claude with a "help me address this issue: <url>"
+#                        message.
+#
+#   A URL for a repo yo has never heard of works too: the repo is cloned to
+#   <YO_CLONE_ROOT>/<owner>/<repo> (or found there, if it already is) and the
+#   session gets a worktree off it as usual. Such a session is a guest: no
+#   shared memory (Claude keeps its own), and the worktree is NOT pre-trusted —
+#   Claude asks before running anything the repo configures. YO_ADHOC_PROFILE
+#   names a profile to run guests under instead.
+#
+#   Window titles: non-default repos get a "[<repo>] " prefix; PR/issue
+#   sessions show "PR#1234: <title>" / "Issue#1234: <title>" (fetched via gh,
+#   truncated to 50 chars; falls back to the session name if gh fails).
+#
+#   Personas: EVERY session gets a codename ("Adventurous Possum") told to
+#   claude in its first message — it introduces itself with it, and unnamed
+#   sessions use it as the window title.
+#
+#   --new-window (--window) put this session in a NEW iTerm window instead of a
+#   tab in the shared one; --tab forces the opposite. The default is a tab, so
+#   sessions pile up in one window and iTerm2's Session Status tool — which only
+#   lists the sessions of ONE window — becomes a dashboard of all of them.
+#   (Window > Cockpit, ⌥⇧⌘C, shows status across every window regardless.)
+#   YO_WINDOW_MODE=window in the config restores one window per session;
+#   YO_WINDOW_GROUP names the shared window, and may contain {repo} to get one
+#   window per repo.
+#
+#   --here (--in-place) NO worktree, NO branch: the session runs in an existing
+#   directory, on whatever is checked out there. Nothing is fetched or created.
+#   Which directory:
+#     a repo you NAMED (--repo, `yo <repo>`, a PR/issue URL)  -> its clone
+#     otherwise                                               -> the cwd, which
+#                                       needn't be a git clone at all
+#   INPUT is then only the session's title. A PR/issue URL still seeds claude,
+#   but checks nothing out — yo says so, since the tree may be stale.
+#   Made for handing work from one session to the next in the same tree:
+#     yo --here - 'read HANDOFF.md, then ask the previous session what is open'
+#   In place can be the DEFAULT — per repo (yo_repo --mode=here) or everywhere
+#   (YO_MODE=here), or per profile; --worktree then asks for a worktree this
+#   once.
+#
+#   --profile=P (or `yo <profile>`) run the session under a profile: a named
+#   bundle of defaults for one of YOUR projects — mode, memory, branch prefix,
+#   the claude command, a settings layer (permissions, hooks, ...), a home
+#   directory. Repos join a profile with yo_repo --profile=P and then get it
+#   without asking. A profile also stands on its own: with no repo named,
+#     yo --profile=P      goes to the profile's --dir (which needn't be a git
+#                         clone), else to the cwd's repo if it belongs to P,
+#                         else to the first repo registered under P.
+#   Precedence, everywhere: flag > yo_repo option > profile > global setting.
+#
+#   Layout (YO_LAYOUT): `split` puts a shell pane next to claude; `workgroup`
+#   opens claude alone and leaves the shell to the terminal peer ("CLI") of
+#   iTerm2's Claude Code workgroup. The default, `auto`, picks `workgroup` when
+#   that workgroup has a peer session configured, else `split`.
+#
+#   yo down              Tear down the session you're currently in
+#                              (aliases: rm, teardown, -d). In a --here
+#                              session there is no worktree to remove, so it
+#                              only closes the tab.
+#   yo help              Show this help, plus the configured repos and profiles.
+#
+# [extra] — optional final argument: additional instructions appended to the
+# initial message seeded into claude (PR/issue modes), or used AS the initial
+# message for a plain <name> session (which otherwise seeds nothing). Quote it:
+#   yo <repo> my-fix 'focus on the retry path; skip tests for now'
+#
+# What "create" does:
+#   1. fetch the repo's base branch in the primary clone
+#   2. worktree add  <clone>-worktrees/<name>  on branch  <prefix>/<name> —
+#      REUSED if it already exists locally (must not be checked out elsewhere),
+#      created tracking origin/<prefix>/<name> if that exists, else created
+#      fresh from the base branch (or the PR's head commit in PR-review mode)
+#   3. open a tab titled <name> in the shared iTerm2 window (creating that
+#      window if it isn't open yet)
+#   4. split the tab side-by-side; cd both panes to the worktree (layout
+#      `split` — under `workgroup` there is one pane and no split)
+#   5. seed the worktree's trust record in ~/.claude.json so no folder-trust
+#      dialog appears, and copy the base clone's .claude/settings.local.json
+#      (gitignored, holds MCP-server approvals) so the MCP prompt is skipped too
+#   6. launch claude in the LEFT pane (with an initial message pre-filled when
+#      created from a PR/issue URL), stacking yo's settings layer on top of
+#      your own with `claude --settings`: the installed claude-settings.json
+#      plus an autoMemoryDirectory — one memory shared by every session
+#      (~/.claude/memories/yo unless YO_MEMORIES / YO_MEMORY_STORE say
+#      otherwise). ~/.claude/settings.json is never edited.
+#
+# What "down" does (from inside the worktree, usually the right pane):
+#   - warns loudly about uncommitted / unpushed work
+#   - confirms, removes the worktree, KEEPS the branch
+#   - closes the iTerm2 tab (and the window with it, if it was the last tab)
+#
+set -euo pipefail
+
+# Set by _yo_apply_defaults() after the config file has had its say.
+BRANCH_PREFIX=""
+CLAUDE_CMD=""
+WIN_WIDTH=0
+WIN_HEIGHT=0
+YO_REVIEW_CMD_RESOLVED=""
+WORKSESH_PROFILE_NAME=""
+YO_WINDOW_MODE_RESOLVED=""
+YO_WINDOW_GROUP_RESOLVED=""
+YO_LAYOUT_RESOLVED=""
+YO_CONFIG_PATH=""
+YO_MODE_RESOLVED=""
+YO_CLONE_ROOT_RESOLVED=""
+YO_CLONE_PROTOCOL_RESOLVED=""
+YO_ADOPTED_REPO=""   # key of the repo adopt_url_repo registered, if it did
+YO_PROFILE_SELECTED=""   # --profile / `yo <profile>`; beats a repo's own
+
+die() { printf '%s: %s\n' "$(basename "$0")" "$*" >&2; exit 1; }
+
+# Wrap a string in single quotes for safe embedding in a shell command line,
+# using the standard '\'' dance for embedded single quotes. Preferred over
+# printf %q, which backslash-escapes every space and makes the resulting
+# command line unreadable in the pane.
+shell_single_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+# Elasticsearch-node-style persona: "Boring Jason", "Adventurous Possum", ...
+# EVERY session gets one (told to claude up front); it doubles as the window
+# title for unnamed sessions. ~48x48 combos so parallel sessions rarely collide.
+fun_session_title() {
+  local adjectives=(Boring Adventurous Sleepy Dapper Cosmic Sneaky Gentle Rowdy
+    Prudent Spicy Mellow Frantic Stoic Jaunty Grumpy Plucky Serene Wobbly
+    Shrewd Zesty Bashful Intrepid Crispy Solemn Feral Suave Skittish Vigilant
+    Peppy Somber Nimble Brooding Chipper Wily Earnest Snazzy Groggy Dauntless
+    Fussy Breezy Stalwart Quirky Placid Rambunctious Meek Swanky Restless Deft)
+  local nouns=(Jason Possum Wombat Heron Badger Otter Lemur Marmot Falcon
+    Walrus Gecko Bison Ferret Puffin Stoat Ibex Newt Mongoose Tapir Quokka
+    Capybara Osprey Vole Axolotl Gary Marlene Nigel Beatrice Clarence Doreen
+    Pangolin Numbat Kestrel Shrike Muskrat Bandicoot Gibbon Tamarin Loon
+    Kinkajou Hoopoe Dugong Marmoset Petrel Stanley Agnes Wendell Petunia)
+  printf '%s %s' "${adjectives[RANDOM % ${#adjectives[@]}]}" \
+    "${nouns[RANDOM % ${#nouns[@]}]}"
+}
+
+# Truncate to 50 chars with an ellipsis (window titles stay scannable).
+truncate_title() {
+  local s="$1"
+  if [ "${#s}" -le 50 ]; then printf '%s' "$s"; else printf '%s…' "${s:0:49}"; fi
+}
+
+usage() {
+  # Print the contiguous comment header (from line 3, past the shebang) up to
+  # the first non-comment line, stripping the leading "# ". Line-count-agnostic
+  # so edits to the header above don't desync a hard-coded range.
+  awk 'NR>=3 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print; next } else exit }' "$0"
+
+  # Then the live registry, so `yo help` answers "what can I say for --repo?"
+  echo "configured repos:"
+  if [ -n "${YO_CONFIG_PATH:-}" ]; then
+    echo "  (from $YO_CONFIG_PATH)"
+  else
+    echo "  (no config file — single-repo mode, inferred from the current clone)"
+  fi
+  local k path base mark
+  for k in $(_yo_repo_keys); do
+    path=$(_yo_field "$k" 2)
+    base=$(base_ref_for "$k" 2>/dev/null || echo '?')
+    mark=" "
+    [ "$k" = "$(default_repo_key)" ] && mark="*"
+    [ "$(mode_for "$k")" = "here" ] && base="$base, in place"
+    [ -n "$(_yo_field "$k" 11)" ] && base="$base, profile: $(_yo_field "$k" 11)"
+    printf '  %s %-12s %s (base: %s)\n' "$mark" "$k" "$path" "$base"
+  done
+  echo "  (* = default)"
+  if [ -n "$_YO_PROFILES" ]; then
+    echo "profiles:"
+    local n d r
+    for n in $(_yo_profile_names); do
+      d=$(_yo_pfield "$n" 7)
+      r=$(_yo_repos_of_profile "$n" | paste -sd' ' -)
+      printf '    %-12s %s\n' "$n" "${d:+$d  }repos: ${r:-(none)}"
+    done
+  fi
+}
+
+# --- repo registry -----------------------------------------------------------
+# Repos are declared by the config file calling yo_repo (see the example config
+# shipped alongside yo). Records live in one newline-separated string,
+# TAB-separated fields, because macOS ships bash 3.2 — no associative arrays.
+#
+# fields: 1=key 2=path 3=base 4=github 5=mcp 6=mirror 7=title-prefix 8=memory
+#         9=branch-prefix 10=mode 11=profile
+_YO_REPOS=""
+_YO_TAB=$(printf '\t')
+
+yo_repo() {
+  local key="${1:-}"; shift || true
+  local path="" base="" gh="" mcp="" mirror="" prefix="__auto__" memory="" a
+  local branch_prefix="" mode="" profile=""
+  [ -n "$key" ] || die "yo_repo: missing repo key"
+  case "$key" in
+    *[!A-Za-z0-9._-]*) die "yo_repo: key may only contain letters, digits, . _ - (got: '$key')" ;;
+  esac
+  for a in "$@"; do
+    case "$a" in
+      --path=*)         path="${a#--path=}" ;;
+      --base=*)         base="${a#--base=}" ;;
+      --github=*)       gh="${a#--github=}" ;;
+      --mcp=*)          mcp="${a#--mcp=}" ;;
+      --mirror=*)       mirror="${a#--mirror=}" ;;
+      --title-prefix=*) prefix="${a#--title-prefix=}" ;;
+      --memory=*)       memory="${a#--memory=}" ;;
+      --branch-prefix=*) branch_prefix="${a#--branch-prefix=}" ;;
+      --profile=*)      profile="${a#--profile=}" ;;
+      --mode=*)         mode="${a#--mode=}"
+                        case "$mode" in
+                          here|worktree) : ;;
+                          *) die "yo_repo $key: --mode must be 'here' or 'worktree' (got: '$mode')" ;;
+                        esac ;;
+      *) die "yo_repo $key: unknown option '$a'" ;;
+    esac
+  done
+  [ -n "$path" ] || die "yo_repo $key: --path is required"
+  _yo_field "$key" 1 >/dev/null 2>&1 && die "yo_repo: '$key' is already registered"
+  _YO_REPOS="${_YO_REPOS}${key}${_YO_TAB}${path}${_YO_TAB}${base}${_YO_TAB}${gh}${_YO_TAB}${mcp}${_YO_TAB}${mirror}${_YO_TAB}${prefix}${_YO_TAB}${memory}${_YO_TAB}${branch_prefix}${_YO_TAB}${mode}${_YO_TAB}${profile}
+"
+}
+
+# Register every git clone directly under <dir>, keyed by directory name — for
+# an org's worth of repos. Any further arguments are yo_repo options applied to
+# each (--mode=here, --profile=...). Keys that are already registered are left
+# alone, so give the special cases their own yo_repo line FIRST.
+yo_repos_in() {
+  local dir="${1:-}" d key
+  [ -n "$dir" ] || die "yo_repos_in: missing directory"
+  shift
+  case " $* " in *" --path="*) die "yo_repos_in $dir: --path is what it works out itself" ;; esac
+  for d in "$dir"/*/; do
+    d="${d%/}"
+    [ -e "$d/.git" ] || continue
+    key=$(basename "$d")
+    case "$key" in *[!A-Za-z0-9._-]*) continue ;; esac
+    _yo_field "$key" 1 >/dev/null 2>&1 && continue
+    yo_repo "$key" --path="$d" "$@"
+  done
+}
+
+# Field <n> of the record for repo <key>. Non-zero exit if the key is unknown.
+_yo_field() {
+  printf '%s\n' "$_YO_REPOS" \
+    | awk -F'\t' -v k="$1" -v n="$2" '$1==k { print $n; f=1; exit } END { exit f?0:1 }'
+}
+
+_yo_repo_keys() { printf '%s\n' "$_YO_REPOS" | awk -F'\t' 'NF { print $1 }'; }
+
+# Human-readable list for error messages: "backend | frontend | yo"
+_yo_repo_list() { _yo_repo_keys | paste -sd'|' - | sed 's/|/ | /g'; }
+
+# The repo bare `yo` falls back to: YO_DEFAULT_REPO if it names a registered
+# repo, else the first one registered.
+default_repo_key() {
+  if [ -n "${YO_DEFAULT_REPO:-}" ] && _yo_field "$YO_DEFAULT_REPO" 1 >/dev/null 2>&1; then
+    printf '%s' "$YO_DEFAULT_REPO"
+  else
+    _yo_repo_keys | head -1
+  fi
+}
+
+# repo key -> absolute path of the primary clone
+repo_path_for() { _yo_field "$1" 2; }
+
+# owner/repo out of any github remote or web URL (first two path segments).
+# Exact-match material, so `foo/bar` can't be mistaken for `foo/bar-baz`.
+_yo_owner_repo_from_url() {
+  local u="${1%.git}" rest owner repo
+  case "$u" in
+    *github.com:*) rest="${u#*github.com:}" ;;
+    *github.com/*) rest="${u#*github.com/}" ;;
+    *) return 1 ;;
+  esac
+  rest="${rest#/}"
+  case "$rest" in */*) : ;; *) return 1 ;; esac   # need both segments
+  owner="${rest%%/*}"
+  rest="${rest#*/}"
+  repo="${rest%%/*}"
+  repo="${repo%.git}"
+  [ -n "$owner" ] && [ -n "$repo" ] || return 1
+  printf '%s/%s' "$owner" "$repo"
+}
+
+# owner/repo out of a conventional .../github.com/<owner>/<repo> checkout path.
+# Only fires when the path literally contains github.com/, so it can't invent an
+# owner for a clone kept somewhere else.
+_yo_owner_repo_from_path() {
+  local rest owner repo
+  case "$1" in */github.com/*/*) rest="${1#*/github.com/}" ;; *) return 1 ;; esac
+  rest="${rest%/}"
+  owner="${rest%%/*}"
+  rest="${rest#*/}"
+  repo="${rest%%/*}"
+  [ -n "$owner" ] && [ -n "$repo" ] || return 1
+  printf '%s/%s' "$owner" "$repo"
+}
+
+# repo key -> owner/repo, tried three ways: the explicit --github, then the
+# clone's own origin (authoritative), then the checkout path. The last one
+# matters because a repo can be configured before it has been cloned on this
+# machine — without it, a PR URL for an uncloned repo looks unrecognized.
+_yo_github_for() {
+  local key="$1" gh path url
+  gh=$(_yo_field "$key" 4) || return 1
+  [ -n "$gh" ] && { printf '%s' "$gh"; return 0; }
+  path=$(_yo_field "$key" 2) || return 1
+  if url=$(git -C "$path" remote get-url origin 2>/dev/null); then
+    _yo_owner_repo_from_url "$url" && return 0
+  fi
+  _yo_owner_repo_from_path "$path"
+}
+
+# Registered repos whose owner/repo we can't work out at all — the thing that
+# actually explains an "unrecognized repo in URL" for a repo that IS configured.
+_yo_unresolved_repos() {
+  local key out=""
+  for key in $(_yo_repo_keys); do
+    _yo_github_for "$key" >/dev/null 2>&1 || out="$out $key"
+  done
+  printf '%s' "${out# }"
+}
+
+# The clone's default branch, for repos registered without --base.
+_yo_default_branch() {
+  local path="$1" ref
+  if ref=$(git -C "$path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); then
+    printf '%s' "${ref#origin/}"; return 0
+  fi
+  for ref in main master dev; do
+    if git -C "$path" show-ref --verify --quiet "refs/remotes/origin/$ref"; then
+      printf '%s' "$ref"; return 0
+    fi
+  done
+  printf 'main'
+}
+
+# repo key -> primary work branch (what new sessions branch from and what
+# teardown's "unpushed" check compares against)
+base_ref_for() {
+  local base
+  base=$(_yo_field "$1" 3) || return 1
+  if [ -z "$base" ]; then
+    base=$(_yo_default_branch "$(_yo_field "$1" 2)")
+  fi
+  printf '%s' "$base"
+}
+
+# repo key -> MCP servers (from the repo's .mcp.json) pre-approved for every
+# session. Space-separated.
+mcp_servers_for() { _yo_field "$1" 5 2>/dev/null || printf ''; }
+
+# repo key -> gitignored, machine-local files each worktree needs a copy of.
+mirrored_repo_files_for() { _yo_field "$1" 6 2>/dev/null || printf ''; }
+
+# repo key -> iTerm window-title prefix. Default: "[key] " for every repo but
+# the default one, which gets none.
+title_prefix_for() {
+  local p
+  p=$(_yo_field "$1" 7) || return 0
+  if [ "$p" = "__auto__" ]; then
+    [ "$1" = "$(default_repo_key)" ] && return 0
+    printf '[%s] ' "$1"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+# --- profiles -----------------------------------------------------------------
+# A profile is a named bundle of defaults for one of your projects, declared by
+# the config file calling yo_profile. Repos join one with yo_repo --profile, and
+# it can be picked on its own with --profile. Same storage as the repos.
+#
+# fields: 1=name 2=mode 3=memory 4=branch-prefix 5=claude 6=settings 7=dir
+#         8=window-group
+_YO_PROFILES=""
+
+yo_profile() {
+  local name="${1:-}"; shift || true
+  local mode="" memory="" branch_prefix="" claude="" settings="" dir="" group="" a
+  [ -n "$name" ] || die "yo_profile: missing profile name"
+  case "$name" in
+    *[!A-Za-z0-9._-]*) die "yo_profile: name may only contain letters, digits, . _ - (got: '$name')" ;;
+  esac
+  for a in "$@"; do
+    case "$a" in
+      --mode=*)          mode="${a#--mode=}"
+                         case "$mode" in
+                           here|worktree) : ;;
+                           *) die "yo_profile $name: --mode must be 'here' or 'worktree' (got: '$mode')" ;;
+                         esac ;;
+      --memory=*)        memory="${a#--memory=}" ;;
+      --branch-prefix=*) branch_prefix="${a#--branch-prefix=}" ;;
+      --claude=*)        claude="${a#--claude=}" ;;
+      --settings=*)      settings=$(_yo_expand_home "${a#--settings=}") ;;
+      --dir=*)           dir=$(_yo_expand_home "${a#--dir=}"); dir="${dir%/}" ;;
+      --window-group=*)  group="${a#--window-group=}" ;;
+      *) die "yo_profile $name: unknown option '$a'" ;;
+    esac
+  done
+  _yo_pfield "$name" 1 >/dev/null 2>&1 && die "yo_profile: '$name' is already defined"
+  _YO_PROFILES="${_YO_PROFILES}${name}${_YO_TAB}${mode}${_YO_TAB}${memory}${_YO_TAB}${branch_prefix}${_YO_TAB}${claude}${_YO_TAB}${settings}${_YO_TAB}${dir}${_YO_TAB}${group}
+"
+}
+
+# A leading ~/ written inside quotes in the config never met the shell.
+_yo_expand_home() {
+  case "$1" in
+    "~")   printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${1#"~/"}" ;;
+    *)     printf '%s' "$1" ;;
+  esac
+}
+
+# Field <n> of profile <name>. Non-zero exit if there is no such profile.
+_yo_pfield() {
+  printf '%s\n' "$_YO_PROFILES" \
+    | awk -F'\t' -v k="$1" -v n="$2" '$1==k { print $n; f=1; exit } END { exit f?0:1 }'
+}
+
+_yo_profile_names() { printf '%s\n' "$_YO_PROFILES" | awk -F'\t' 'NF { print $1 }'; }
+
+# The repos registered under profile <name>, in registration order.
+_yo_repos_of_profile() {
+  printf '%s\n' "$_YO_REPOS" | awk -F'\t' -v p="$1" 'NF && $11==p { print $1 }'
+}
+
+# The repo whose primary clone IS <dir>, if any.
+_yo_repo_at() {
+  printf '%s\n' "$_YO_REPOS" \
+    | awk -F'\t' -v d="${1%/}" 'NF { p=$2; sub(/\/$/, "", p); if (p==d) { print $1; f=1; exit } } END { exit f?0:1 }'
+}
+
+# The profile a session in repo <key> (may be empty) runs under: the one picked
+# on the command line, else the repo's own. Empty when neither.
+profile_for() {
+  if [ -n "$YO_PROFILE_SELECTED" ]; then
+    printf '%s' "$YO_PROFILE_SELECTED"
+  elif [ -n "$1" ]; then
+    _yo_field "$1" 11 2>/dev/null || true
+  fi
+}
+
+# Field <n> of the profile behind repo <key>; empty when there's no profile.
+_yo_profile_value() {
+  local p
+  p=$(profile_for "$1")
+  [ -n "$p" ] || return 0
+  _yo_pfield "$p" "$2" 2>/dev/null || true
+}
+
+# Every lookup below resolves the same way: the repo's own option, then its
+# profile's, then the global setting.
+
+# repo key -> prefix for the branches yo creates there.
+branch_prefix_for() {
+  local p
+  p=$(_yo_field "$1" 9 2>/dev/null || true)
+  [ -n "$p" ] || p=$(_yo_profile_value "$1" 4)
+  printf '%s' "${p:-$BRANCH_PREFIX}"
+}
+
+# repo key (may be empty) -> here | worktree
+mode_for() {
+  local m=""
+  [ -n "$1" ] && m=$(_yo_field "$1" 10 2>/dev/null || true)
+  [ -n "$m" ] || m=$(_yo_profile_value "$1" 2)
+  printf '%s' "${m:-$YO_MODE_RESOLVED}"
+}
+
+# repo key (may be empty) -> the command launched in the claude pane
+claude_cmd_for() {
+  local c
+  c=$(_yo_profile_value "$1" 5)
+  printf '%s' "${c:-$CLAUDE_CMD}"
+}
+
+# repo key (may be empty) -> the shared window its sessions join
+window_group_for() {
+  local g
+  g=$(_yo_profile_value "$1" 8)
+  printf '%s' "${g:-$YO_WINDOW_GROUP_RESOLVED}"
+}
+
+# The auto-memory directory for a session: ONE store shared by every session,
+# whatever repo or directory it runs in, unless a repo asks for its own.
+# YO_MEMORIES is the root (a memories checkout, once you have one) and the
+# store inside it is the repo's --memory, else its profile's, else
+# YO_MEMORY_STORE, else "yo".
+# Echoes nothing — leaving Claude its own per-project memory — when the store
+# is "none", or when YO_MEMORIES is set EMPTY, which turns all of this off.
+memory_dir_for() {
+  local repo_key="$1" store="" root
+  root="${YO_MEMORIES-$HOME/.claude/memories}"
+  [ -n "$root" ] || return 0
+  [ -n "$repo_key" ] && store=$(_yo_field "$repo_key" 8 2>/dev/null || true)
+  [ -n "$store" ] || store=$(_yo_profile_value "$repo_key" 3)
+  store="${store:-${YO_MEMORY_STORE:-yo}}"
+  [ "$store" = "none" ] && return 0
+  case "$store" in
+    /*) printf '%s' "$store" ;;
+    *)  printf '%s/%s' "${root%/}" "$store" ;;
+  esac
+}
+
+# origin URL (or any github URL) -> repo key
+repo_key_from_url() {
+  local url="$1" want key gh
+  want=$(_yo_owner_repo_from_url "$url") || return 1
+  for key in $(_yo_repo_keys); do
+    gh=$(_yo_github_for "$key") || continue
+    [ "$gh" = "$want" ] && { printf '%s' "$key"; return 0; }
+  done
+  return 1
+}
+
+# The repo the cwd belongs to: by its origin, else — a clone that was never
+# pushed has none — by being (a worktree of) a registered clone.
+detect_repo_key() {
+  local url clone
+  if url=$(git remote get-url origin 2>/dev/null) && repo_key_from_url "$url"; then
+    return 0
+  fi
+  clone=$(_yo_primary_clone) || return 1
+  _yo_repo_at "$clone" || _yo_repo_at "$(cd "$clone" && pwd -P)"
+}
+
+# --- config -------------------------------------------------------------------
+# The primary clone behind $PWD: in a worktree, --git-common-dir points at the
+# main clone's .git; in the clone itself it is just ".git".
+_yo_primary_clone() {
+  local top common
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) dirname "$common" ;;
+    *)  printf '%s' "$top" ;;
+  esac
+}
+
+# No config file: register the clone we're standing in, so yo works unconfigured.
+_yo_autoregister() {
+  local path
+  path=$(_yo_primary_clone) || return 1
+  yo_repo "$(basename "$path")" --path="$path"
+}
+
+_yo_config_path() {
+  printf '%s' "${YO_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/yo/config.sh}"
+}
+
+# soft=1 tolerates having no repos at all (so `yo help` works anywhere).
+_yo_load_config() {
+  local soft="${1:-0}" cfg
+  cfg=$(_yo_config_path)
+  if [ -f "$cfg" ]; then
+    # shellcheck disable=SC1090
+    . "$cfg" || die "failed to load config: $cfg"
+    YO_CONFIG_PATH="$cfg"
+  fi
+  local k p
+  for k in $(_yo_repo_keys); do
+    p=$(_yo_field "$k" 11)
+    [ -z "$p" ] || _yo_pfield "$p" 1 >/dev/null 2>&1 \
+      || die "yo_repo $k: --profile=$p, but no yo_profile '$p' is defined in $cfg"
+  done
+  if [ -z "$_YO_REPOS" ]; then
+    _yo_autoregister || {
+      [ "$soft" = "1" ] && return 0
+      die "no repos configured, and $(pwd) isn't inside a git clone
+        write $cfg (see config/yo.config.example.sh in the yo repo), or cd into a clone"
+    }
+  fi
+}
+
+# Defaults land AFTER the config file, so the config can set any of them.
+_yo_apply_defaults() {
+  BRANCH_PREFIX="${YO_BRANCH_PREFIX:-${USER:-work}}"
+  CLAUDE_CMD="${YO_CLAUDE_CMD:-claude --permission-mode auto}"
+  WIN_WIDTH="${YO_WIN_WIDTH:-1403}"
+  WIN_HEIGHT="${YO_WIN_HEIGHT:-824}"
+  YO_REVIEW_CMD_RESOLVED="${YO_REVIEW_CMD:-/code-review}"
+  WORKSESH_PROFILE_NAME="${YO_ITERM_PROFILE:-worksesh}"
+  YO_WINDOW_MODE_RESOLVED="${YO_WINDOW_MODE:-tab}"
+  YO_WINDOW_GROUP_RESOLVED="${YO_WINDOW_GROUP:-yo}"
+  case "$YO_WINDOW_MODE_RESOLVED" in
+    tab|window) : ;;
+    *) die "YO_WINDOW_MODE must be 'tab' or 'window' (got: '$YO_WINDOW_MODE_RESOLVED')" ;;
+  esac
+  YO_CLONE_ROOT_RESOLVED=$(_yo_expand_home "${YO_CLONE_ROOT:-$HOME/dev/src/github.com}")
+  YO_CLONE_PROTOCOL_RESOLVED="${YO_CLONE_PROTOCOL:-ssh}"
+  case "$YO_CLONE_PROTOCOL_RESOLVED" in
+    ssh|https) : ;;
+    *) die "YO_CLONE_PROTOCOL must be 'ssh' or 'https' (got: '$YO_CLONE_PROTOCOL_RESOLVED')" ;;
+  esac
+  if [ -n "${YO_ADHOC_PROFILE:-}" ]; then
+    _yo_pfield "$YO_ADHOC_PROFILE" 1 >/dev/null 2>&1 \
+      || die "YO_ADHOC_PROFILE: no yo_profile '$YO_ADHOC_PROFILE' is defined"
+  fi
+  YO_MODE_RESOLVED="${YO_MODE:-worktree}"
+  case "$YO_MODE_RESOLVED" in
+    here|worktree) : ;;
+    *) die "YO_MODE must be 'here' or 'worktree' (got: '$YO_MODE_RESOLVED')" ;;
+  esac
+  YO_LAYOUT_RESOLVED="${YO_LAYOUT:-auto}"
+  case "$YO_LAYOUT_RESOLVED" in
+    auto|split|workgroup) : ;;
+    *) die "YO_LAYOUT must be 'auto', 'split' or 'workgroup' (got: '$YO_LAYOUT_RESOLVED')" ;;
+  esac
+}
+
+# --- GitHub PR / issue URL parsing -------------------------------------------
+# Recognize a github.com PR or issue URL and decompose it into the pieces a
+# session needs. On match, sets the globals GH_KIND (pr|issue), GH_NUMBER,
+# GH_REPO_KEY (a registered repo key), and GH_URL (canonical form, with any trailing
+# path/query/anchor like /files or #issuecomment stripped). Returns non-zero if
+# the string isn't a PR/issue URL.
+parse_github_url() {
+  local url="$1"
+  [[ "$url" =~ github\.com/([^/]+)/([^/]+)/(pull|issues)/([0-9]+) ]] || return 1
+  local owner="${BASH_REMATCH[1]}" repo="${BASH_REMATCH[2]}"
+  local seg="${BASH_REMATCH[3]}" num="${BASH_REMATCH[4]}"
+  # An unregistered repo leaves GH_REPO_KEY empty: fine for a session in place
+  # (nothing is checked out), fatal for a worktree — cmd_up decides.
+  GH_REPO_KEY=$(repo_key_from_url "$url") || GH_REPO_KEY=""
+  GH_NUMBER="$num"
+  GH_OWNER_REPO="${owner}/${repo}"
+  GH_URL="https://github.com/${owner}/${repo}/${seg}/${num}"
+  case "$seg" in
+    pull)   GH_KIND="pr" ;;
+    issues) GH_KIND="issue" ;;
+  esac
+}
+
+# A PR/issue URL for a repo that isn't registered: register it for this run,
+# cloning it first if it isn't already at <YO_CLONE_ROOT>/<owner>/<repo>. Sets
+# YO_ADOPTED_REPO to its key. Runs in the caller's shell, not a $(...), because
+# the registration has to outlive it.
+adopt_url_repo() {
+  local owner_repo="$1" owner repo path key url
+  owner="${owner_repo%%/*}"; repo="${owner_repo#*/}"
+  # These become a path and a clone URL, so nothing but what GitHub allows.
+  case "$owner$repo" in
+    *[!A-Za-z0-9._-]*|.*) die "can't adopt '$owner_repo': unexpected characters in the repo name" ;;
+  esac
+  path="$YO_CLONE_ROOT_RESOLVED/$owner/$repo"
+  if [ -e "$path" ]; then
+    [ -e "$path/.git" ] || die "can't adopt $owner_repo: $path exists and isn't a git clone"
+    echo "==> $owner_repo isn't configured; using the clone at $path"
+  else
+    case "$YO_CLONE_PROTOCOL_RESOLVED" in
+      ssh)   url="git@github.com:${owner_repo}.git" ;;
+      https) url="https://github.com/${owner_repo}.git" ;;
+    esac
+    echo "==> $owner_repo isn't configured; cloning it to $path"
+    mkdir -p "$(dirname "$path")"
+    git clone "$url" "$path" || die "couldn't clone $url
+        (YO_CLONE_PROTOCOL picks ssh or https; YO_CLONE_ROOT picks where clones go)"
+  fi
+  key="$repo"
+  _yo_field "$key" 1 >/dev/null 2>&1 && key="$owner-$repo"
+  if [ -n "${YO_ADHOC_PROFILE:-}" ]; then
+    yo_repo "$key" --path="$path" --github="$owner_repo" --mode=worktree \
+      --profile="$YO_ADHOC_PROFILE"
+  else
+    yo_repo "$key" --path="$path" --github="$owner_repo" --mode=worktree --memory=none
+  fi
+  YO_ADOPTED_REPO="$key"
+}
+
+die_unknown_url_repo() {
+  local unresolved hint=""
+  unresolved=$(_yo_unresolved_repos)
+  [ -n "$unresolved" ] && hint="
+        couldn't work out owner/repo for: $unresolved
+        (clone missing? or give it an explicit --github=owner/repo)"
+  die "unrecognized repo in URL: $1
+        known repos: $(_yo_repo_list)${hint}
+        register it with yo_repo in $(_yo_config_path)"
+}
+
+# --- iTerm2 title lock (dynamic profile) --------------------------------------
+# The window/tab title follows the active pane, and claude UNCONDITIONALLY sets
+# the terminal title to "Claude Code (...)" — there's no flag/setting to stop it
+# (feature request declined upstream), so it clobbers any title we set with an
+# OSC escape. iTerm2's window.name and tab.title aren't settable via AppleScript
+# either (-10000 / -10006).
+#
+# The one thing that works: an iTerm2 *dynamic profile* with "Allow Title
+# Setting" = false, which makes iTerm IGNORE any app's attempt to set the title
+# (claude included). With that lock on, `set name of session` via AppleScript
+# sticks and can't be overwritten. We build that profile as a full copy of the
+# user's Default profile (so colors/font match exactly) plus the two overrides,
+# and regenerate it whenever Default changes. Title Components=1 => the title is
+# just the session name, no "(job)" suffix.
+# (the profile name itself is configurable — YO_ITERM_PROFILE.)
+
+# Writes/updates ~/…/DynamicProfiles/<name>.json. Echoes "WROTE" when the file
+# changed (caller then lets iTerm reload it). Exit 2 => couldn't read the
+# Default profile; caller falls back to the plain default profile (no lock).
+ensure_iterm_profile() {
+  python3 - "$WORKSESH_PROFILE_NAME" <<'PY'
+import subprocess, plistlib, os, json, sys
+name = sys.argv[1]
+prefs = os.path.expanduser("~/Library/Preferences/com.googlecode.iterm2.plist")
+dpdir = os.path.expanduser("~/Library/Application Support/iTerm2/DynamicProfiles")
+out = os.path.join(dpdir, name + ".json")
+try:
+    xml = subprocess.run(["plutil", "-convert", "xml1", "-o", "-", prefs],
+                         capture_output=True, check=True).stdout
+    d = plistlib.loads(xml)
+    default = next(b for b in d["New Bookmarks"] if b.get("Name") == "Default")
+except Exception:
+    sys.exit(2)
+def json_safe(v):
+    try:
+        json.dumps(v); return True
+    except (TypeError, ValueError):
+        return False
+prof = {k: v for k, v in default.items() if json_safe(v)}  # drop any binary keys
+prof["Name"] = name
+prof["Guid"] = name + "-dynamic-profile"
+prof["Allow Title Setting"] = False   # iTerm ignores app title escapes (claude)
+prof["Title Components"] = 1           # title = session name only
+# The Claude Code workgroup renames the main session to "Chat" on entry, so
+# with every session in one window the tab bar would read Chat, Chat, Chat.
+# Pin the TAB title to a user variable instead: yo sets user.yoTitle per
+# session and nothing else touches it.
+prof["Use Custom Tab Title"] = True
+prof["Custom Tab Title"] = "\\(currentSession.user.yoTitle)"
+content = json.dumps({"Profiles": [prof]}, sort_keys=True, indent=2)
+os.makedirs(dpdir, exist_ok=True)
+old = open(out).read() if os.path.exists(out) else None
+if old == content:
+    print("UNCHANGED")
+else:
+    tmp = out + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(content)
+    os.replace(tmp, out)
+    print("WROTE")
+PY
+}
+
+# Does iTerm2's Claude Code workgroup have a peer session (a terminal living
+# alongside the chat, e.g. "CLI")? That peer is the shell, so yo needn't split
+# a pane for one. The workgroups are a JSON blob in iTerm's preferences.
+# Exit 0 => yes.
+iterm_workgroup_has_peer() {
+  python3 - <<'PY'
+import subprocess, plistlib, os, json, sys
+prefs = os.path.expanduser("~/Library/Preferences/com.googlecode.iterm2.plist")
+try:
+    xml = subprocess.run(["plutil", "-convert", "xml1", "-o", "-", prefs],
+                         capture_output=True, check=True).stdout
+    groups = json.loads(plistlib.loads(xml)["Workgroups"])
+except Exception:
+    sys.exit(1)
+for g in groups:
+    if g.get("uniqueIdentifier") != "builtin.claudeCode":
+        continue
+    for s in g.get("sessions", []):
+        if (s.get("kind") or {}).get("kind") == "peer":
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# Primary display's pixel size, echoed as "W H". Uses JXA's built-in ObjC bridge
+# (available on every modern macOS — unlike pyobjc, which system python3 lacks) to
+# read NSScreen.screens[0], i.e. the display with the menu bar, whose top-left is
+# global (0,0). Echoes nothing on failure; the caller then falls back to Finder's
+# desktop bounds. NOTE: this is deliberately NOT the Finder desktop bounds, which
+# are the UNION across all displays — centering in that union is what pushed the
+# window off toward a second monitor.
+primary_screen_size() {
+  /usr/bin/osascript -l JavaScript -e 'ObjC.import("AppKit"); var s=$.NSScreen.screens.objectAtIndex(0).frame.size; Math.round(s.width) + " " + Math.round(s.height)' 2>/dev/null || true
+}
+
+# --- iTerm2 automation --------------------------------------------------------
+# Sessions land as TABS in one shared window, so iTerm2's Session Status tool
+# (which only ever lists the sessions of a single window) becomes a dashboard of
+# every session instead of one row per window. Under the `split` layout each
+# tab is split side-by-side: claude on the left, a shell in the worktree on the
+# right. Under `workgroup` the tab is claude alone — the workgroup's terminal
+# peer is the shell.
+#
+# Finding that window again: every session yo creates carries the user variable
+# `user.yoWindow`, set to the window group. To place a new tab we look for any
+# session anywhere carrying our group and use its window. No state file, and it
+# self-heals — close the window and the next `yo` just opens a fresh one. Window
+# ids are not durable across an iTerm restart, which is why we don't store one.
+#
+# Shell commands are pre-quoted and passed to AppleScript as argv so we don't
+# fight AppleScript's string quoting.
+open_iterm_session() {
+  local wt_path="$1" win_title="$2" claude_cmd="$3" profile="$4"
+  local marker="$5" force_new="$6" do_split="$7"
+  local q_path setup_cmd
+  q_path=$(printf '%q' "$wt_path")
+  setup_cmd="cd ${q_path}"
+
+  # Primary-display size for centering a NEW window (falls back to the Finder
+  # union in-script if empty). Split "W H" into two args for AppleScript.
+  local scr scrW=0 scrH=0
+  scr=$(primary_screen_size)
+  if [ -n "$scr" ]; then
+    scrW=${scr% *}; scrH=${scr#* }
+  fi
+
+  /usr/bin/osascript - "$win_title" "$profile" "$setup_cmd" "$claude_cmd" \
+    "$WIN_WIDTH" "$WIN_HEIGHT" "$scrW" "$scrH" "$marker" "$force_new" \
+    "$do_split" <<'APPLESCRIPT'
+on run argv
+  set winTitle to item 1 of argv
+  set profileName to item 2 of argv
+  set setupCmd to item 3 of argv
+  set claudeCmd to item 4 of argv
+  set winW to (item 5 of argv) as integer
+  set winH to (item 6 of argv) as integer
+  set scrW to (item 7 of argv) as integer
+  set scrH to (item 8 of argv) as integer
+  set marker to item 9 of argv
+  set forceNew to (item 10 of argv) as integer
+  set doSplit to (item 11 of argv) as integer
+
+  tell application "iTerm2"
+    activate
+    set targetWin to missing value
+
+    -- Reuse the window already holding this group's sessions, if there is one.
+    if forceNew is 0 then
+      repeat with ww in windows
+        repeat with tt in tabs of ww
+          repeat with ss in sessions of tt
+            set v to ""
+            try
+              tell ss
+                set v to variable named "user.yoWindow"
+              end tell
+            end try
+            if v is marker then set targetWin to ww
+          end repeat
+        end repeat
+      end repeat
+    end if
+
+    if targetWin is missing value then
+      -- New window, centered on the PRIMARY display (its top-left is global
+      -- (0,0), so half the leftover space is the top-left corner). If we
+      -- couldn't read the screen size, fall back to Finder's desktop bounds —
+      -- but that's the UNION across all displays, so on a multi-monitor setup
+      -- the window lands off to the right (the old bug).
+      if profileName is "" then
+        set targetWin to (create window with default profile)
+      else
+        set targetWin to (create window with profile profileName)
+      end if
+      if scrW is 0 or scrH is 0 then
+        tell application "Finder" to set sb to bounds of window of desktop
+        set scrW to item 3 of sb
+        set scrH to item 4 of sb
+      end if
+      set x1 to (scrW - winW) div 2
+      set y1 to (scrH - winH) div 2
+      set bounds of targetWin to {x1, y1, x1 + winW, y1 + winH}
+      set leftSession to (current session of targetWin)
+    else
+      -- Existing window: add a tab and leave the window's size/position alone.
+      try
+        set frontmost of targetWin to true
+      end try
+      tell targetWin
+        if profileName is "" then
+          set newTab to (create tab with default profile)
+        else
+          set newTab to (create tab with profile profileName)
+        end if
+      end tell
+      set leftSession to (current session of newTab)
+    end if
+
+    -- Name the panes; with the profile's title lock this sticks and claude
+    -- (left pane) can't overwrite it. The TAB title follows the active
+    -- session's name, so this is what labels the tab and the Session Status row.
+    --
+    -- Marker: how the next `yo` finds this window. yoTitle drives the tab
+    -- title (see the profile's Custom Tab Title) and survives the workgroup
+    -- renaming the session.
+    tell leftSession
+      write text setupCmd
+      set name to winTitle
+      set variable named "user.yoWindow" to marker
+      set variable named "user.yoTitle" to winTitle
+    end tell
+
+    if doSplit is 1 then
+      tell leftSession
+        if profileName is "" then
+          set rightSession to (split vertically with default profile)
+        else
+          set rightSession to (split vertically with profile profileName)
+        end if
+      end tell
+      tell rightSession
+        write text setupCmd
+        set name to winTitle
+        set variable named "user.yoWindow" to marker
+        set variable named "user.yoTitle" to winTitle
+      end tell
+    end if
+
+    tell leftSession
+      write text claudeCmd
+      select
+    end tell
+  end tell
+end run
+APPLESCRIPT
+}
+
+# The Claude Code workgroup integration renames the main session to the
+# workgroup session's name ("Chat") a moment after claude starts. The tab title
+# is already immune (pinned to user.yoTitle by the profile), but Session Status
+# rows are labelled with the session NAME — so a window full of yo sessions
+# would show a column of identical "Chat" rows. Put the name back once the
+# rename has happened. Detached, so yo doesn't block waiting for it; harmless
+# when the integration isn't installed and no rename ever comes.
+reassert_session_title() {
+  local title="$1"
+  ( /usr/bin/osascript - "$title" <<'APPLESCRIPT'
+on run argv
+  set want to item 1 of argv
+  -- Poll rather than sleep-once: the rename lands whenever claude first prints
+  -- enough for the trigger to fire, and a workgroup can be re-entered later.
+  repeat 12 times
+    delay 2
+    tell application "iTerm2"
+      repeat with ww in windows
+        repeat with tt in tabs of ww
+          repeat with ss in sessions of tt
+            set v to ""
+            try
+              tell ss
+                set v to variable named "user.yoTitle"
+              end tell
+            end try
+            if v is want and (name of ss) is not want then set name of ss to want
+          end repeat
+        end repeat
+      end repeat
+    end tell
+  end repeat
+end run
+APPLESCRIPT
+  ) >/dev/null 2>&1 &
+  disown >/dev/null 2>&1 || true
+}
+
+# --- trust seeding ------------------------------------------------------------
+# Claude Code has no parent-folder trust: trust is a per-exact-path record in
+# ~/.claude.json (projects["<path>"].hasTrustDialogAccepted). Since we just
+# created the worktree, seed that record so the "trust this folder?" dialog
+# never appears, and mirror the base clone's external-include approval.
+# (MCP-server approval is NOT here — it lives in .claude/settings.local.json;
+# see mirror_local_settings below.)
+# Best-effort: on any failure we just let Claude show the dialog as usual.
+# Caveat: this read-modify-writes ~/.claude.json; other running Claude sessions
+# also write it, so there's a small last-writer-wins window (atomic rename keeps
+# the file from ever being partial).
+seed_trust() {
+  local wt_path="$1" base_path="$2"
+  CLAUDE_JSON="$HOME/.claude.json" python3 - "$wt_path" "$base_path" <<'PY'
+import json, os, sys, tempfile
+wt, base = sys.argv[1], sys.argv[2]
+path = os.environ["CLAUDE_JSON"]
+try:
+    with open(path) as f:
+        d = json.load(f)
+except FileNotFoundError:
+    d = {}
+projects = d.setdefault("projects", {})
+base_ent = projects.get(base, {})
+ent = projects.get(wt, {})
+# mirror the base clone's external-include approval so we don't add a new prompt
+for k in ("hasClaudeMdExternalIncludesApproved",
+          "hasClaudeMdExternalIncludesWarningShown"):
+    if k in base_ent and k not in ent:
+        ent[k] = base_ent[k]
+ent["hasTrustDialogAccepted"] = True
+projects[wt] = ent
+d_dir = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(dir=d_dir)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f, indent=2)
+    os.replace(tmp, path)
+except Exception:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
+PY
+}
+
+# --- mirror local Claude settings ---------------------------------------------
+# .claude/settings.local.json (gitignored) is where project MCP-server approvals
+# live (enableAllProjectMcpServers / enabledMcpjsonServers). It's honored even in
+# an untrusted folder, but because it's gitignored it isn't in the fresh
+# worktree checkout — so copy it from the base clone AND union in the per-repo
+# allow-list below, so a stale/absent base file can't reintroduce the prompt.
+
+# (mcp_servers_for lives in the repo registry above, fed by --mcp.)
+
+mirror_local_settings() {
+  local wt_path="$1" base_path="$2" repo_key="$3"
+  local rel=".claude/settings.local.json"
+  mkdir -p "$wt_path/.claude"
+  [ -f "$base_path/$rel" ] && cp "$base_path/$rel" "$wt_path/$rel" 2>/dev/null
+  if MCP_SERVERS="$(mcp_servers_for "$repo_key")" python3 - "$wt_path/$rel" <<'PY_EOF'
+import json, os, sys
+path = sys.argv[1]
+want = os.environ.get("MCP_SERVERS", "").split()
+try:
+    with open(path) as f:
+        d = json.load(f)
+except (FileNotFoundError, ValueError):
+    d = {}
+have = d.get("enabledMcpjsonServers") or []
+merged = have + [w for w in want if w not in have]
+if merged != have:
+    d["enabledMcpjsonServers"] = merged
+    with open(path, "w") as f:
+        json.dump(d, f, indent=2)
+        f.write("\n")
+PY_EOF
+  then
+    echo "==> settings.local.json in place (MCP approvals: base clone + per-repo allow-list)"
+  else
+    echo "yo: couldn't write $rel (Claude may prompt for MCP servers)"
+  fi
+}
+
+# Gitignored, machine-local files a worktree needs a copy of (--mirror). A repo's
+# MCP launchers typically read their token out of `.env` at the REPO ROOT, which
+# in a worktree is the worktree -- so the main clone's .env is invisible there,
+# and a launcher with no fallback exits with "<VAR> is not set", which Claude
+# reports as a connection failure rather than a missing credential.
+# (mirrored_repo_files_for lives in the repo registry above, fed by --mirror.)
+
+mirror_repo_files() {
+  local wt_path="$1" base_path="$2" repo_key="$3" rel
+  for rel in $(mirrored_repo_files_for "$repo_key"); do
+    if [ ! -f "$base_path/$rel" ]; then
+      echo "yo: no $rel in $base_path -- skipped (servers that read it won't start)"
+      continue
+    fi
+    if [ -e "$wt_path/$rel" ]; then
+      echo "==> $rel already in the worktree; left alone"
+      continue
+    fi
+    # These hold credentials, so refuse to place one where a `git add -A` could
+    # stage it. Checked against the WORKTREE's ignore rules, not the clone's.
+    if ! git -C "$wt_path" check-ignore -q "$rel"; then
+      echo "yo: $rel is NOT gitignored in $repo_key -- not copying (it could be committed)"
+      continue
+    fi
+    # -p keeps the source's mode: widening or narrowing a secrets file's
+    # permissions behind your back would diverge from the main checkout.
+    if cp -p "$base_path/$rel" "$wt_path/$rel" 2>/dev/null; then
+      echo "==> $rel copied from the main clone (gitignored; goes away with the worktree)"
+    else
+      echo "yo: couldn't copy $rel into the worktree"
+    fi
+  done
+}
+
+close_iterm_current_tab() {
+  # Closes the tab this script is running in (kills both panes). When it's the
+  # window's last tab iTerm closes the window too, so this covers both the
+  # shared-window and one-window-per-session layouts. Errors are ignored
+  # because closing the tab also terminates osascript itself.
+  /usr/bin/osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
+tell application "iTerm2"
+  tell current window
+    close current tab
+  end tell
+end tell
+APPLESCRIPT
+}
+
+# --- claude settings layer ----------------------------------------------------
+# yo never edits ~/.claude/settings.json — Claude Code and iTerm2's integration
+# both write that file. It stacks its settings on top instead: `claude
+# --settings <file>` loads a layer that outranks every settings file on disk
+# (user, project, local), with arrays such as hooks and permissions merged
+# rather than replaced. The layer is the installed claude-settings.json plus
+# the profile's own settings file plus this session's autoMemoryDirectory —
+# which has to arrive this way (or from
+# user settings), since Claude ignores that key in project settings.
+#
+# Echoes the path of the composed file; nothing when there is nothing to add.
+compose_session_settings() {
+  local memory_dir="$1" label="$2" extra="$3" layer out
+  layer="${YO_CLAUDE_SETTINGS:-$(dirname "$(_yo_config_path)")/claude-settings.json}"
+  [ -f "$layer" ] || layer=""
+  [ -n "$layer" ] || [ -n "$extra" ] || [ -n "$memory_dir" ] || return 0
+  out="${XDG_STATE_HOME:-$HOME/.local/state}/yo/settings/${label}.json"
+  mkdir -p "$(dirname "$out")"
+  python3 - "$out" "$layer" "$extra" "$memory_dir" <<'PY_EOF' || return 1
+import json, os, sys
+out, layer, extra, memory_dir = sys.argv[1:5]
+# The profile's settings go over the base layer: objects merge key by key,
+# lists (permissions.allow, a hook event's entries) are appended to, anything
+# else is replaced.
+def merge(a, b):
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(a.get(k), dict):
+            merge(a[k], v)
+        elif isinstance(v, list) and isinstance(a.get(k), list):
+            a[k] = a[k] + [x for x in v if x not in a[k]]
+        else:
+            a[k] = v
+d = {}
+for path in (layer, extra):
+    if path:
+        with open(path) as f:
+            merge(d, json.load(f))
+if memory_dir:
+    d["autoMemoryDirectory"] = memory_dir
+tmp = out + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+os.replace(tmp, out)
+PY_EOF
+  printf '%s' "$out"
+}
+
+# --- create -------------------------------------------------------------------
+# Where a session goes when a profile was picked and no repo was named. Works
+# on cmd_up's locals, like create_session_worktree below: sets repo_key and
+# repo_named, or profile_dir when the profile's home isn't a registered clone
+# (there is nothing to take a worktree from, so the caller runs it in place).
+resolve_profile_target() {
+  local dir
+  dir=$(_yo_pfield "$YO_PROFILE_SELECTED" 7)
+  if [ -n "$dir" ]; then
+    if repo_key=$(_yo_repo_at "$dir"); then
+      repo_named=1
+    else
+      repo_key=""
+      profile_dir="$dir"
+    fi
+    return 0
+  fi
+  # No home directory: the cwd's repo if it is one of the profile's, else the
+  # first repo registered under the profile.
+  repo_key=$(detect_repo_key || true)
+  if [ -z "$repo_key" ] \
+      || [ "$(_yo_field "$repo_key" 11)" != "$YO_PROFILE_SELECTED" ]; then
+    repo_key=$(_yo_repos_of_profile "$YO_PROFILE_SELECTED" | head -1)
+    [ -n "$repo_key" ] && repo_named=1
+  fi
+  [ -n "$repo_key" ] || die "profile '$YO_PROFILE_SELECTED' has no --dir and no repos
+        give it one in $(_yo_config_path), or name a repo: yo --profile=$YO_PROFILE_SELECTED --repo=<repo>"
+}
+
+# The worktree half of cmd_up: resolve the branch, fetch, add the worktree, and
+# get Claude's per-folder state in place. Skipped entirely under --here.
+# Works on cmd_up's own locals (bash scoping is dynamic): reads repo_key, input,
+# gh_kind and pr_review; may rewrite name; sets wt_path.
+create_session_worktree() {
+  local repo_path
+  repo_path=$(repo_path_for "$repo_key") \
+    || die "unknown repo '$repo_key' (known: $(_yo_repo_list))"
+  [ -d "$repo_path/.git" ] || die "no clone at: $repo_path
+        clone '$repo_key' there, or fix its --path in $(_yo_config_path)"
+  base_ref=$(base_ref_for "$repo_key")
+
+  # Branch-vs-name resolution for a plain INPUT: if it names an existing branch
+  # verbatim (local or on origin — e.g. `yo sagark/rollbacks`), use THAT
+  # branch; otherwise it's a session name and the branch is <prefix>/<name> (whose
+  # own exists-locally/exists-on-origin reuse is handled below).
+  local branch prefix
+  prefix=$(branch_prefix_for "$repo_key")
+  if [ -n "$input" ] && [ -z "$gh_kind" ]; then
+    if git -C "$repo_path" show-ref --verify --quiet "refs/heads/$input" \
+        || git -C "$repo_path" ls-remote --exit-code --heads origin "$input" >/dev/null 2>&1; then
+      explicit_branch="$input"
+    fi
+  fi
+  if [ -n "$explicit_branch" ]; then
+    branch="$explicit_branch"
+    # Worktree dir + title come from the branch, minus the <prefix>/ part, with
+    # any remaining slashes flattened so the dir isn't nested.
+    name="${explicit_branch#"$prefix"/}"
+    name="${name//\//-}"
+  else
+    # A slash in a non-branch INPUT is usually a deleted/typo'd branch name —
+    # flatten it so the session name/dir/branch don't nest, and say so.
+    if [ "${name#*/}" != "$name" ]; then
+      echo "==> note: '$name' doesn't match any existing branch; treating it as a session name (flattened: ${name//\//-})"
+      name="${name//\//-}"
+    fi
+    branch="$prefix/$name"
+  fi
+  local wt_root="${repo_path}-worktrees"
+  wt_path="$wt_root/$name"
+
+  [ -e "$wt_path" ] && die "worktree path already exists: $wt_path"
+
+  # Branch resolution, three ways:
+  #   reuse=1        <prefix>/<name> exists locally -> check IT out in the new
+  #                  worktree (restarting a session on the same branch). git
+  #                  refuses if it's checked out in another worktree/clone —
+  #                  that error is clearer than anything we'd synthesize.
+  #   remote_reuse=1 only origin/<prefix>/<name> exists -> create a local tracking
+  #                  branch from it.
+  #   neither        fresh branch from the repo's base branch (or PR head).
+  local reuse=0 remote_reuse=0
+  if git -C "$repo_path" show-ref --verify --quiet "refs/heads/$branch"; then
+    reuse=1
+  elif [ "$pr_review" -eq 0 ] \
+      && git -C "$repo_path" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+    remote_reuse=1
+  fi
+
+  # Decide what to fetch and where the worktree starts. Default: the repo's
+  # base branch (base_ref_for).
+  # PR review: GitHub publishes every PR's head at refs/pull/<n>/head on origin
+  # (true even for fork PRs), so we fetch that, start the worktree at that exact
+  # commit, and (below the worktree add) wire the branch to track that ref so
+  # `git pull` refreshes it — no gh, no fork-remote juggling.
+  local fetch_ref fetch_desc start_point
+  if [ "$reuse" -eq 1 ]; then
+    fetch_ref=""  # nothing to fetch: the branch is the start point, as-is.
+    fetch_desc="existing local branch"
+  elif [ "$pr_review" -eq 1 ]; then
+    fetch_ref="pull/${GH_NUMBER}/head"
+    fetch_desc="PR #${GH_NUMBER} head"
+  elif [ "$remote_reuse" -eq 1 ]; then
+    fetch_ref="$branch"
+    fetch_desc="origin/$branch (existing remote branch)"
+  else
+    fetch_ref="$base_ref"
+    fetch_desc="origin/$base_ref"
+  fi
+
+  if [ -n "$fetch_ref" ]; then
+    echo "==> [$repo_key] fetching $fetch_desc"
+    git -C "$repo_path" fetch origin "$fetch_ref"
+  fi
+  if [ "$pr_review" -eq 1 ]; then
+    # FETCH_HEAD now points at the just-fetched PR head; pin its SHA as the
+    # worktree start point.
+    start_point=$(git -C "$repo_path" rev-parse FETCH_HEAD) \
+      || die "couldn't resolve PR #${GH_NUMBER} head after fetch"
+  elif [ "$remote_reuse" -eq 1 ]; then
+    start_point="origin/$branch"
+  else
+    start_point="origin/$base_ref"
+  fi
+
+  mkdir -p "$wt_root"
+  echo "==> creating worktree: $wt_path"
+  if [ "$reuse" -eq 1 ]; then
+    echo "        branch: $branch (REUSING existing local branch, as-is)"
+    git -C "$repo_path" worktree add "$wt_path" "$branch"
+    if git -C "$repo_path" config "branch.${branch}.merge" >/dev/null 2>&1; then
+      echo "        note: branch tracks $(git -C "$repo_path" config "branch.${branch}.merge") — 'git pull' in the worktree to refresh"
+    fi
+  elif [ "$remote_reuse" -eq 1 ]; then
+    echo "        branch: $branch (new local branch tracking origin/$branch)"
+    git -C "$repo_path" worktree add --track -b "$branch" "$wt_path" "$start_point"
+  else
+    echo "        branch: $branch (from $fetch_desc)"
+    git -C "$repo_path" worktree add -b "$branch" "$wt_path" "$start_point"
+  fi
+
+  if [ "$pr_review" -eq 1 ] && [ "$reuse" -eq 0 ]; then
+    # Track the PR head so `git pull` inside the worktree pulls new PR commits
+    # (reviews iterate — the author pushes fixups). We track refs/pull/<n>/head:
+    # `git pull` fetches that exact ref and merges it (config is repo-wide, so
+    # set it via the main clone; it applies to the branch in the worktree).
+    # New commits fast-forward; a force-push/rebase turns pull into a merge, so
+    # `git reset --hard FETCH_HEAD` (or recreate the session) to resync then.
+    git -C "$repo_path" config "branch.${branch}.remote" origin
+    git -C "$repo_path" config "branch.${branch}.merge" "refs/pull/${GH_NUMBER}/head"
+    echo "        tracking refs/pull/${GH_NUMBER}/head — git pull refreshes the PR"
+  fi
+
+  # An adopted repo is somebody else's code that nobody here has vetted, and it
+  # can configure hooks and MCP servers — so its trust dialog is left to appear.
+  if [ "$repo_key" = "$YO_ADOPTED_REPO" ]; then
+    echo "==> not pre-trusting the worktree ($repo_key isn't a configured repo) — Claude will ask"
+    return 0
+  fi
+
+  echo "==> pre-trusting worktree in ~/.claude.json"
+  seed_trust "$wt_path" "$repo_path" \
+    || echo "yo: trust-seed skipped (couldn't update ~/.claude.json; Claude will prompt)"
+  mirror_local_settings "$wt_path" "$repo_path" "$repo_key"
+  mirror_repo_files "$wt_path" "$repo_path" "$repo_key"
+}
+
+cmd_up() {
+  # Most sessions branch a fresh <prefix>/<name> off the repo's base branch. A PR-review session
+  # instead points the worktree at the PR's own head commit (pr_review=1) so the
+  # local tree IS the code under review — see the fetch/create step below.
+  local repo_key="" name initial_msg="" extra_msg="" base_ref pr_review=0
+  local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
+  local explicit_branch="" unnamed=0 persona="" force_new_window=-1
+  local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir=""
+
+  # --repo=R may appear anywhere; strip it out of the positional args.
+  local args=() a
+  for a in "$@"; do
+    case "$a" in
+      --repo=*) repo_override="${a#--repo=}"
+                repo_path_for "$repo_override" >/dev/null 2>&1 \
+                  || die "--repo must be one of: $(_yo_repo_list) (got: '$repo_override')" ;;
+      --new-window|--window) force_new_window=1 ;;
+      --tab)                 force_new_window=0 ;;
+      --profile=*) YO_PROFILE_SELECTED="${a#--profile=}"
+                _yo_pfield "$YO_PROFILE_SELECTED" 1 >/dev/null 2>&1 \
+                  || die "--profile must be one of: $(_yo_profile_names | paste -sd'|' - | sed 's/|/ | /g') (got: '$YO_PROFILE_SELECTED')" ;;
+      --here|--in-place)     mode="here" ;;
+      --worktree)            mode="worktree" ;;
+      --*)      die "unknown flag: $a" ;;
+      *)        args+=("$a") ;;
+    esac
+  done
+  set -- ${args[@]+"${args[@]}"}
+
+  # Legacy positional repo: `yo <repo> [<name> [extra]]`. A lone repo arg
+  # (`yo <repo>`) means an unnamed session in that repo.
+  # `yo <profile> ...` works the same way; a repo of that name wins.
+  if [ "$#" -ge 1 ] && repo_path_for "$1" >/dev/null 2>&1; then
+    repo_override="$1"; shift
+  elif [ "$#" -ge 1 ] && [ -z "$YO_PROFILE_SELECTED" ] && [ -z "$repo_override" ] \
+      && _yo_pfield "$1" 1 >/dev/null 2>&1; then
+    YO_PROFILE_SELECTED="$1"; shift
+  fi
+  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [INPUT] [extra]"
+  input="${1:-}"; extra_msg="${2:-}"
+
+  # Which repo. One that was NAMED (--repo, the positional form, a URL, or the
+  # default repo standing in for a cwd yo doesn't know) is also where an
+  # in-place session runs. One merely inferred from the cwd is not: there, in
+  # place means the cwd itself (a worktree, a subdirectory, ...).
+  if [ -n "$input" ] && parse_github_url "$input"; then
+    # PR/issue URL mode: kind, number, and (default) repo derive from the URL.
+    gh_kind="$GH_KIND"; gh_number="$GH_NUMBER"; gh_owner_repo="$GH_OWNER_REPO"
+    url_repo="$GH_REPO_KEY"
+    # A repo nobody registered: adopt it, unless the session was pointed
+    # somewhere itself (--repo, --here).
+    if [ -z "$url_repo" ] && [ -z "$repo_override" ] && [ "$mode" != "here" ]; then
+      adopt_url_repo "$gh_owner_repo"
+      url_repo="$YO_ADOPTED_REPO"
+    fi
+    # Issues are just context — the WORK may live in the other repo
+    # (e.g. --repo=<other> for an issue tracked in a different repo).
+    repo_key="${repo_override:-$url_repo}"
+    [ -n "$repo_key" ] && repo_named=1
+    if [ "$GH_KIND" = "pr" ]; then
+      name="review_pr_${GH_NUMBER}"
+      initial_msg="${YO_REVIEW_CMD_RESOLVED} ${GH_URL}"
+      pr_review=1
+    else
+      name="issue_${GH_NUMBER}"
+      initial_msg="take a look at the following issue, and work with me to address it: ${GH_URL} review the issue, its comments, any parent issue context you may need. then give me your take on it before doing any work. Issues may need to be broken down first, or we may only focus on a part of it."
+    fi
+  else
+    if [ -z "$input" ] || [ "$input" = "-" ]; then
+      # Unnamed session: timestamped branch/dir, fun window title. Bare `yo`
+      # lands here; `-` is the explicit spelling so an [extra] can follow:
+      #   yo - 'prod is broken, investigate!'
+      name="sesh_$(date +%Y%m%d_%H%M%S)"
+      unnamed=1
+    else
+      name="$input"   # provisional; branch-vs-name resolution happens below
+    fi
+    # Repo: --repo wins, then cwd inference. An unnamed session then falls
+    # back to the default repo — bare `yo` from anywhere should just work —
+    # unless --here asked for this very directory.
+    if [ -n "$repo_override" ]; then
+      repo_key="$repo_override"; repo_named=1
+    elif [ -n "$YO_PROFILE_SELECTED" ] && [ "$mode" != "here" ]; then
+      resolve_profile_target
+    else
+      repo_key=$(detect_repo_key || true)
+      if [ -z "$repo_key" ] && [ "$unnamed" -eq 1 ] && [ "$mode" != "here" ]; then
+        repo_key=$(default_repo_key)
+        [ -n "$repo_key" ] && repo_named=1
+      fi
+    fi
+  fi
+
+  # Worktree or in place: the flag, else the repo's --mode, else its
+  # profile's, else YO_MODE. A profile home that is no registered clone has
+  # nothing to take a worktree from.
+  if [ -n "$profile_dir" ]; then
+    [ "$mode" = "worktree" ] \
+      && die "--worktree: $profile_dir isn't a registered clone, so there is nothing to take a worktree from"
+    mode="here"
+  fi
+  [ -n "$mode" ] || mode=$(mode_for "$repo_key")
+  [ "$mode" = "here" ] && here=1
+
+  if [ "$here" -eq 0 ]; then
+    if [ "$pr_review" -eq 1 ]; then
+      # The worktree is checked out from refs/pull/<n>/head on the PR's own
+      # repo — a different --repo can't hold that ref, so it's an error.
+      [ -n "$url_repo" ] || die_unknown_url_repo "$gh_owner_repo"
+      if [ "$repo_key" != "$url_repo" ]; then
+        die "--repo=$repo_key conflicts with PR URL repo ($url_repo): the worktree must come from the PR's repo"
+      fi
+    elif [ -n "$gh_kind" ]; then
+      [ -n "$repo_key" ] || die_unknown_url_repo "$gh_owner_repo"
+    fi
+    [ -n "$repo_key" ] || die "no repo given and couldn't infer one from $(pwd)
+        run inside a known clone, or: yo --repo=<repo> <INPUT>
+        (or --here, to work in this directory as it is)
+        known repos: $(_yo_repo_list)"
+  fi
+  if [ "$gh_kind" = "issue" ] && [ -n "$repo_key" ] && [ "$repo_key" != "$url_repo" ]; then
+    initial_msg="${initial_msg} NOTE: the issue lives in ${gh_owner_repo}, but this session works in the ${repo_key} repo — that's where the work is expected to land."
+  fi
+  if [ "$here" -eq 1 ] && [ "$pr_review" -eq 1 ]; then
+    initial_msg="${initial_msg} NOTE: this session runs in place — the PR's head was NOT checked out, so the local tree may not be the code under review."
+  fi
+
+  # Fold the extra instructions into the initial message (single line — the
+  # command is written into the pane as one shell line, so no embedded newlines).
+  if [ -n "$extra_msg" ]; then
+    if [ -n "$initial_msg" ]; then
+      initial_msg="${initial_msg} ${extra_msg}"
+    else
+      initial_msg="$extra_msg"
+    fi
+  fi
+
+  # Every session gets a persona, and claude is told up front — partly for fun,
+  # partly groundwork for sessions identifying themselves over Slack/MCP later.
+  persona=$(fun_session_title)
+  if [ -n "$initial_msg" ]; then
+    initial_msg="${initial_msg} (FYI, your codename for this session is \"${persona}\" — introduce yourself with it and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.)"
+  else
+    initial_msg="Your codename for this session is \"${persona}\". Briefly introduce yourself by codename, then wait for instructions."
+  fi
+
+  case "$name" in
+    *[!A-Za-z0-9._/-]*) die "name may only contain letters, digits, . _ / - (got: '$name')" ;;
+  esac
+
+  if [ "$here" -eq 1 ]; then
+    if [ -n "$profile_dir" ]; then
+      wt_path="$profile_dir"
+      [ -d "$wt_path" ] || die "profile '$YO_PROFILE_SELECTED': no directory at $wt_path
+        fix its --dir in $(_yo_config_path)"
+    elif [ "$repo_named" -eq 1 ]; then
+      wt_path=$(repo_path_for "$repo_key")
+      [ -d "$wt_path" ] || die "no clone at: $wt_path
+        clone '$repo_key' there, or fix its --path in $(_yo_config_path)"
+    else
+      wt_path="."
+    fi
+    # Physical path: it's what Claude keys its per-folder records on.
+    wt_path=$(cd "$wt_path" && pwd -P)
+    local here_branch
+    here_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || true)
+    echo "==> session in place: $wt_path"
+    [ -n "$here_branch" ] && echo "        branch: $here_branch"
+    echo "        as checked out — nothing fetched, pulled or created"
+    # Loud where it bites: these two normally start from fresh code.
+    if [ "$pr_review" -eq 1 ]; then
+      echo "yo: WARNING: PR #${gh_number} is NOT checked out — the review runs against the tree above"
+    elif [ -n "$gh_kind" ]; then
+      echo "yo: WARNING: not starting from the latest base branch — pull first if that matters"
+    fi
+    # No trust seeding here: yo didn't create this directory, so whether to
+    # trust it stays Claude's question to ask.
+  else
+    create_session_worktree
+  fi
+
+  # What the session is filed under: its repo, else the profile that was
+  # picked, else (a --here session somewhere yo doesn't know) the directory.
+  local pname label
+  pname=$(profile_for "$repo_key")
+  label="${repo_key:-${pname:-$(basename "$wt_path")}}"
+  [ -n "$pname" ] && echo "==> profile: $pname"
+
+  local memory_dir settings_file=""
+  memory_dir=$(memory_dir_for "$repo_key")
+  if [ -n "$memory_dir" ]; then
+    if mkdir -p "$memory_dir" 2>/dev/null; then
+      echo "==> memory: $memory_dir"
+    else
+      echo "yo: couldn't create $memory_dir — using Claude's default memory"
+      memory_dir=""
+    fi
+  fi
+  local profile_settings settings_name="$label"
+  profile_settings=$(_yo_profile_value "$repo_key" 6)
+  if [ -n "$profile_settings" ] && [ ! -f "$profile_settings" ]; then
+    die "profile '$pname': no settings file at $profile_settings"
+  fi
+  [ -n "$pname" ] && [ "$pname" != "$label" ] && settings_name="$pname.$label"
+  settings_file=$(compose_session_settings "$memory_dir" "$settings_name" "$profile_settings") \
+    || echo "yo: couldn't compose the settings layer; launching claude without it"
+
+  # ensure the title-locked iTerm profile exists (falls back to default profile)
+  local profile="$WORKSESH_PROFILE_NAME" wrote
+  if wrote=$(ensure_iterm_profile); then
+    [ "$wrote" = "WROTE" ] && sleep 1.5   # let iTerm load the (re)written profile
+  else
+    profile=""
+    echo "yo: couldn't build the '$WORKSESH_PROFILE_NAME' profile; using default (title may be overwritten by claude)"
+  fi
+
+  # Seed the left-pane claude with an initial message when we have one (PR/issue
+  # URL mode, and/or the [extra] arg). Single-quote wrapping, NOT printf %q:
+  # %q backslash-escapes every space, which made the pane's command line an
+  # unreadable '\ ' blizzard. Wrapping in single quotes (with the standard
+  # '\'' dance for any embedded single quote) is equally shell-safe and reads
+  # like what it is.
+  local claude_cmd
+  claude_cmd=$(claude_cmd_for "$repo_key")
+  [ -n "$settings_file" ] \
+    && claude_cmd="$claude_cmd --settings $(shell_single_quote "$settings_file")"
+  if [ -n "$initial_msg" ]; then
+    claude_cmd="$claude_cmd $(shell_single_quote "$initial_msg")"
+  fi
+
+  # Window title rules (issue/PR numbers are impossible to keep in your head):
+  #   non-default repos:    "[<repo>] ..." prefix (see title_prefix_for)
+  #   PR review sessions:   "PR#1234: <PR title>"      (via gh, 50-char cap)
+  #   issue sessions:       "Issue#1234: <issue title>" (via gh, 50-char cap)
+  #   unnamed sessions:     the fun title ("Adventurous Possum")
+  #   everything else:      the session name
+  local win_title="$name"
+  if [ -n "$gh_kind" ]; then
+    local gh_title=""
+    if command -v gh >/dev/null 2>&1; then
+      case "$gh_kind" in
+        pr)    gh_title=$(gh pr view "$gh_number" --repo "$gh_owner_repo" --json title --jq .title 2>/dev/null || true) ;;
+        issue) gh_title=$(gh issue view "$gh_number" --repo "$gh_owner_repo" --json title --jq .title 2>/dev/null || true) ;;
+      esac
+    fi
+    if [ -n "$gh_title" ]; then
+      case "$gh_kind" in
+        pr)    win_title=$(truncate_title "PR#${gh_number}: ${gh_title}") ;;
+        issue) win_title=$(truncate_title "Issue#${gh_number}: ${gh_title}") ;;
+      esac
+    fi
+  elif [ "$unnamed" -eq 1 ]; then
+    win_title="$persona"
+  fi
+  if [ -n "$repo_key" ]; then
+    win_title="$(title_prefix_for "$repo_key")$win_title"
+  else
+    win_title="[$label] $win_title"
+  fi
+  # Which window this session joins. The group is a plain label, so setting
+  # YO_WINDOW_GROUP to something containing {repo} gives one window per repo.
+  local win_group force_new
+  win_group=$(window_group_for "$repo_key")
+  win_group="${win_group//\{repo\}/$label}"
+  if [ "$force_new_window" -ge 0 ]; then
+    force_new="$force_new_window"
+  elif [ "$YO_WINDOW_MODE_RESOLVED" = "window" ]; then
+    force_new=1
+  else
+    force_new=0
+  fi
+
+  local layout="$YO_LAYOUT_RESOLVED" do_split=1 panes
+  if [ "$layout" = "auto" ]; then
+    if iterm_workgroup_has_peer; then layout="workgroup"; else layout="split"; fi
+  fi
+  if [ "$layout" = "workgroup" ]; then
+    do_split=0
+    panes="claude alone; the shell is the workgroup's terminal peer"
+  else
+    panes="claude in left pane, shell in right"
+  fi
+
+  if [ "$force_new" -eq 1 ]; then
+    echo "==> opening iTerm2 window '$win_title' ($panes)"
+  else
+    echo "==> opening iTerm2 tab '$win_title' in the '$win_group' window ($panes)"
+  fi
+  echo "        persona: $persona"
+  [ -n "$initial_msg" ] && echo "        seeding claude with: $initial_msg"
+  open_iterm_session "$wt_path" "$win_title" "$claude_cmd" "$profile" \
+    "yo:$win_group" "$force_new" "$do_split"
+  reassert_session_title "$win_title"
+  echo "==> ready."
+}
+
+# --- teardown -----------------------------------------------------------------
+cmd_down() {
+  local toplevel
+  toplevel=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+  # Not a yo worktree (a --here session, or not a git checkout at all): there
+  # is nothing on disk that is ours to remove, so teardown is just the tab.
+  case "$(dirname "${toplevel:-/}")" in
+    *-worktrees) : ;;
+    *) echo "No yo worktree here — $(pwd) will be left exactly as it is."
+       printf 'Close this tab? [y/N] '
+       read -r ans
+       case "${ans:-}" in
+         y|Y|yes|YES) close_iterm_current_tab ;;
+         *) echo "aborted." ;;
+       esac
+       return 0 ;;
+  esac
+
+  local repo_key repo_path branch dirty unpushed ans
+  repo_key=$(detect_repo_key) || die "couldn't identify the repo from origin"
+  repo_path=$(repo_path_for "$repo_key")
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
+  dirty=$(git status --porcelain)
+  local base_ref
+  base_ref=$(base_ref_for "$repo_key")
+  unpushed=$(git log --oneline "origin/${base_ref}..HEAD" 2>/dev/null || true)
+
+  echo "About to tear down this work session:"
+  echo "  repo:     $repo_key"
+  echo "  worktree: $toplevel"
+  echo "  branch:   $branch   (KEPT — not deleted)"
+  if [ -n "$dirty" ]; then
+    echo
+    echo "  !!  UNCOMMITTED / untracked changes — these will be LOST:"
+    printf '%s\n' "$dirty" | sed 's/^/        /'
+  fi
+  if [ -n "$unpushed" ]; then
+    echo
+    echo "  *   commits not on origin/${base_ref} (preserved on branch '$branch'):"
+    printf '%s\n' "$unpushed" | sed 's/^/        /'
+  fi
+  echo
+  printf 'Remove the worktree and close this window? [y/N] '
+  read -r ans
+  case "${ans:-}" in
+    y|Y|yes|YES) : ;;
+    *) echo "aborted."; exit 0 ;;
+  esac
+
+  local force=()
+  [ -n "$dirty" ] && force=(--force)
+
+  # ${force[@]+...} guards against macOS bash 3.2, where expanding an empty
+  # array under `set -u` errors with "unbound variable".
+  git -C "$repo_path" worktree remove ${force[@]+"${force[@]}"} "$toplevel"
+  git -C "$repo_path" worktree prune
+  echo "worktree removed; branch '$branch' kept."
+
+  close_iterm_current_tab
+}
+
+# --- dispatch -----------------------------------------------------------------
+main() {
+  local sub="${1:-}"
+  # Help must work even outside a clone with no config, so it loads softly.
+  case "$sub" in
+    help|-h|--help) _yo_load_config 1; _yo_apply_defaults; usage; exit 0 ;;
+  esac
+  # Softly here too: a session in place needs no repo at all, and neither does
+  # closing a tab. cmd_up complains itself when a worktree has no repo to come
+  # from.
+  _yo_load_config 1
+  _yo_apply_defaults
+  case "$sub" in
+    down|rm|teardown|-d) shift; cmd_down "$@" ;;
+    *)                   cmd_up "$@" ;;
+  esac
+}
+
+main "$@"

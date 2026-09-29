@@ -1,0 +1,7 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.config/yo/statusline.sh",
+    "padding": 2
+  }
+}
