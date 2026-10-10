@@ -116,7 +116,19 @@
 #                        start: its directory is read from the transcript.
 #   yo resume-all [--dry-run] [--new-window|--tab]
 #                        After a restart or crash: reopen every session that
-#                        was live, one tab each.
+#                        was live, one tab each. Sessions quit with /exit are
+#                        left out (yo resume <name> still reopens one).
+#   yo sweep [--apply] [--repo=R]... [--include-stale] [--include-suspended]
+#            [--delete-branches]
+#                        Find worktrees whose work has landed and (with --apply)
+#                        remove them; dry run by default. DEAD = merged PR (a
+#                        squash merge leaves the PR as the only witness), no
+#                        commits beyond base, or a clean PR-review checkout.
+#                        STALE = unmerged work, kept. SUSP = a session the
+#                        ledger would resume, kept. KEEP = dirty, open PR, the
+#                        current directory, or a live claude session. Branches
+#                        are kept unless --delete-branches; removal never uses
+#                        --force.
 #   yo help              Show this help, plus the configured repos and profiles.
 #
 # Session ledger: yo records each session's id under
@@ -1171,7 +1183,9 @@ mirror_repo_files() {
 # Ids enter the ledger three ways:
 #   - yo mints the id up front (`claude --session-id`) when it creates a session;
 #   - a SessionStart hook, carried in the session's settings layer, records the
-#     new id when one changes it (/clear). yo launches claude with
+#     new id when one changes it (/clear). Its SessionEnd twin marks a
+#     deliberate quit, so resume-all doesn't bring back sessions you meant to
+#     end. yo launches claude with
 #     YO_SESSION_KEY set, so the hook knows which record is its own; without it
 #     (a session yo didn't launch) the hook goes by the worktree it runs in;
 #   - `sync` adopts whatever is running right now in a yo worktree, which covers
@@ -1180,15 +1194,19 @@ mirror_repo_files() {
 # Every op is best-effort JSON wrangling, so it all lives in one python3 helper.
 #   put DIR SID TITLE REPO NAME PROFILE MODE GUEST
 #                                create/replace a record; prints its key
-#   hook                         SessionStart payload in $YO_HOOK_INPUT; never fails
+#   hook                         SessionStart/SessionEnd payload in
+#                                $YO_HOOK_INPUT; never fails
 #   drop KEY                     forget one record
 #   drop-dir WT                  forget a worktree's record
 #   sync                         adopt live sessions in yo worktrees (YO_CLONES)
 #   list                         TSV, one row per record (see row())
+#   sweep [flags]                classify and (with --apply) remove landed
+#                                worktrees; repos in YO_SWEEP_REPOS (cmd_sweep)
 #   get QUERY                    the same TSV row for one session, matched by
 #                                id (or 8+ char prefix), directory, or name;
 #                                an id the ledger lacks is found by transcript
-# status: running (pid set) | ready | gone (directory removed) | no-id
+# status: running (pid set) | ready | ended (quit with /exit; resumable by
+#         name, skipped by resume-all) | gone (directory removed) | no-id
 _yo_state() {
   YO_STATE_DIR="$YO_STATE_DIR" python3 - "$@" <<'PY'
 import glob, json, os, subprocess, sys, time
@@ -1262,6 +1280,8 @@ def status_of(rec, live):
         return "gone", ""
     if not rec.get("sessionId"):
         return "no-id", ""
+    if rec.get("endedAt"):
+        return "ended", ""
     return "ready", ""
 
 def row(rec, live):
@@ -1295,6 +1315,7 @@ elif op == "hook":
         d = json.loads(os.environ.get("YO_HOOK_INPUT") or "{}")
         cwd, sid = d.get("cwd", ""), d.get("session_id", "")
         key = os.environ.get("YO_SESSION_KEY", "")
+        event = d.get("hook_event_name", "SessionStart")
         for rec in load_all() if sid else []:
             if key:
                 if rec["_key"] != key:
@@ -1302,11 +1323,22 @@ elif op == "hook":
             elif not owns(rec["worktree"], cwd) \
                     or (rec.get("byId") and rec.get("sessionId") != sid):
                 continue
-            if rec.get("sessionId") != sid:
+            if event == "SessionEnd":
+                # Only a deliberate quit (/exit, ctrl-d) ends a session for
+                # good. A closed tab or terminal reports "other", and a crash
+                # reports nothing: both stay resumable, which is the point.
+                if d.get("reason") == "prompt_input_exit" and rec.get("sessionId") == sid:
+                    rec["endedAt"] = int(time.time())
+                    write(rec)
+            else:
+                changed = rec.get("sessionId") != sid
                 rec["sessionId"] = sid
-                write(rec)
+                if rec.pop("endedAt", None) is not None:
+                    changed = True   # resumed after a deliberate exit
+                if changed:
+                    write(rec)
     except Exception:
-        pass   # a ledger hiccup must never get in the way of starting claude
+        pass   # a ledger hiccup must never get in the way of claude
 
 elif op in ("drop", "drop-dir"):
     key = args[0] if op == "drop" else wt_key(args[0])
@@ -1341,8 +1373,9 @@ elif op == "sync":
                        "createdAt": int(time.time()), "_key": wt_key(wt)}
                 if profile:
                     rec["profile"] = profile
-            if rec.get("sessionId") != d["sessionId"]:
+            if rec.get("sessionId") != d["sessionId"] or rec.get("endedAt"):
                 rec["sessionId"] = d["sessionId"]
+                rec.pop("endedAt", None)
                 write(rec)
                 recs[rec["_key"]] = rec
                 print("adopted %s (%s) from a live session" % (name, d["sessionId"]),
@@ -1388,6 +1421,190 @@ elif op == "get":
     row(hits[0], live)
     if hits[0].get("transcriptOnly"):
         print("transcript-only", file=sys.stderr)
+
+elif op == "sweep":
+    # Worktrees whose work has landed, minus any a session still needs.
+    # YO_SWEEP_REPOS: one "key<TAB>clone<TAB>base<TAB>owner/repo<TAB>remote"
+    # line per repo; <remote> is where the base branch lives.
+    import argparse
+    ap = argparse.ArgumentParser(prog="yo sweep")
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--delete-branches", action="store_true")
+    ap.add_argument("--include-stale", action="store_true")
+    ap.add_argument("--include-suspended", action="store_true")
+    ap.add_argument("--repo", action="append")
+    opts = ap.parse_args(args)
+
+    DEAD, STALE, SUSPENDED, KEEP = "DEAD", "STALE", "SUSP", "KEEP"
+    repos = []
+    for line in os.environ.get("YO_SWEEP_REPOS", "").splitlines():
+        parts = line.split("\t")
+        if len(parts) == 5 and (not opts.repo or parts[0] in opts.repo):
+            repos.append(parts)
+    if opts.repo:
+        unknown = set(opts.repo) - {r[0] for r in repos}
+        if unknown:
+            print("yo sweep: unknown repo(s): " + ", ".join(sorted(unknown)), file=sys.stderr)
+            sys.exit(1)
+
+    def git(repo, *a, cwd=None):
+        r = subprocess.run(["git", "-C", cwd or repo, *a], capture_output=True, text=True)
+        return r.stdout.strip(), r.returncode
+
+    def worktrees(repo):
+        # Every worktree but the primary clone, which is never swept.
+        out, _ = git(repo, "worktree", "list", "--porcelain")
+        entries, cur = [], {}
+        for line in out.splitlines():
+            if line.startswith("worktree "):
+                if cur:
+                    entries.append(cur)
+                cur = {"path": line[9:], "branch": None, "detached": False}
+            elif line.startswith("branch "):
+                cur["branch"] = line[7:].replace("refs/heads/", "")
+            elif line == "detached":
+                cur["detached"] = True
+        if cur:
+            entries.append(cur)
+        return [e for e in entries if os.path.realpath(e["path"]) != os.path.realpath(repo)]
+
+    def pr_index(gh_repo):
+        # headRefName -> the most decisive PR on it. One listing per repo, not a
+        # query per branch. Squash-merge means a merged branch isn't an
+        # ancestor of base, so the merged PR is the only witness the work
+        # landed. OPEN outranks anything earlier on a reused branch: it's in
+        # use again.
+        if not gh_repo:
+            return None
+        rank = {"MERGED": 3, "CLOSED": 2, "OPEN": 1}
+        try:
+            out = subprocess.run(
+                ["gh", "pr", "list", "--repo", gh_repo, "--state", "all",
+                 "--limit", "800", "--json", "number,headRefName,state"],
+                capture_output=True, text=True, check=True).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            print("  ! could not list PRs for %s: %s" % (gh_repo, exc), file=sys.stderr)
+            return None
+        idx = {}
+        for pr in json.loads(out):
+            head, prev = pr["headRefName"], idx.get(pr["headRefName"])
+            if prev is None or rank[pr["state"]] > rank[prev["state"]]:
+                if not (prev and prev["state"] == "OPEN"):
+                    idx[head] = pr
+        return idx
+
+    here = os.path.realpath(os.getcwd())
+    live = live_sessions()
+    ledger = load_all()
+
+    def session_hold(path):
+        # A session that still needs this worktree: one running in it now, or
+        # one the ledger would bring back on resume-all (crashed, or its tab
+        # was closed). A session ended with /exit holds nothing.
+        rp = os.path.realpath(path)
+        for d in live:
+            if owns(rp, os.path.realpath(d.get("cwd", ""))):
+                return KEEP, "live session, pid %s" % d["pid"]
+        for rec in ledger:
+            if os.path.realpath(rec["worktree"]) == rp and rec.get("sessionId") \
+                    and not rec.get("endedAt"):
+                return SUSPENDED, "suspended session (yo resume %s)" % rec.get("name")
+        return None
+
+    def classify(repo, base, wt, prs):
+        path, branch = wt["path"], wt["branch"]
+        if os.path.realpath(path) == here or here.startswith(os.path.realpath(path) + "/"):
+            return KEEP, "current directory"
+        if not os.path.isdir(path):
+            return DEAD, "directory is gone (prunable)"
+        held = session_hold(path)
+        if held:
+            return held
+
+        dirty, _ = git(repo, "status", "--porcelain", cwd=path)
+        n_dirty = len(dirty.splitlines()) if dirty else 0
+        if wt["detached"]:
+            # A PR-review checkout sits at the PR's head commit with no branch,
+            # so nothing is lost by removing it.
+            if n_dirty:
+                return KEEP, "detached, %d uncommitted" % n_dirty
+            return DEAD, "detached PR-review checkout"
+
+        ahead, rc = git(repo, "rev-list", "--count", "%s..%s" % (base, branch))
+        if rc != 0:
+            return KEEP, "branch unreadable"
+        ahead = int(ahead or 0)
+        pr = (prs or {}).get(branch)
+        prtxt = ("PR #%s %s" % (pr["number"], pr["state"].lower())) if pr else "no PR"
+        if n_dirty:
+            return KEEP, "%d uncommitted (%s)" % (n_dirty, prtxt)
+        if pr and pr["state"] == "OPEN":
+            return KEEP, "%s, %d commit(s)" % (prtxt, ahead)
+        if pr and pr["state"] == "MERGED":
+            return DEAD, "%s (squash-merged)" % prtxt
+        if ahead == 0:
+            return DEAD, "no commits beyond %s (%s)" % (base, prtxt)
+        if pr and pr["state"] == "CLOSED":
+            return STALE, "%s unmerged, %d commit(s) would be orphaned" % (prtxt, ahead)
+        return STALE, "%d commit(s), no PR — unreviewed work" % ahead
+
+    removable, total = [], 0
+    for key, repo, base, gh, remote in repos:
+        if not os.path.isdir(repo):
+            print("\n%s: no clone at %s — skipped" % (key, repo))
+            continue
+        wts = worktrees(repo)
+        if not wts:
+            continue
+        subprocess.run(["git", "-C", repo, "fetch", "--quiet", remote])
+        base = remote + "/" + base
+        prs = pr_index(gh)
+        total += len(wts)
+        print("\n%s  (%d worktrees, base %s)" % (key, len(wts), base))
+        print("-" * 96)
+        rows = []
+        for wt in wts:
+            verdict, why = classify(repo, base, wt, prs)
+            rows.append((verdict, wt, why))
+            if verdict == DEAD \
+                    or (verdict == STALE and opts.include_stale) \
+                    or (verdict == SUSPENDED and opts.include_suspended):
+                removable.append((repo, wt))
+        for verdict in (DEAD, STALE, SUSPENDED, KEEP):
+            for v, wt, why in rows:
+                if v == verdict:
+                    print("  %-5s %-32s %-40s %s" % (v, os.path.basename(wt["path"]),
+                                                     wt["branch"] or "(detached)", why))
+
+    print("\n%d of %d worktrees removable." % (len(removable), total))
+    if not removable:
+        sys.exit(0)
+    if not opts.apply:
+        print("Dry run. Re-run with --apply to remove"
+              + (", --delete-branches to drop their branches too." if not opts.delete_branches else "."))
+        sys.exit(0)
+
+    for repo, wt in removable:
+        # No --force: a worktree that turned dirty since it was classified
+        # refuses to be removed rather than losing the change.
+        out, rc = git(repo, "worktree", "remove", wt["path"])
+        if rc != 0 and os.path.isdir(wt["path"]):
+            print("  ! kept %s: %s" % (os.path.basename(wt["path"]), out))
+            continue
+        try:
+            os.unlink(os.path.join(state, wt_key(wt["path"]) + ".json"))
+        except FileNotFoundError:
+            pass
+        print("  removed %s" % os.path.basename(wt["path"]))
+        if opts.delete_branches and wt["branch"]:
+            # -D, not -d: a squash-merged branch isn't an ancestor of base, so
+            # -d refuses it. The reflog still holds the tip.
+            _, brc = git(repo, "branch", "-D", wt["branch"])
+            if brc == 0:
+                print("    deleted branch %s" % wt["branch"])
+    for key, repo, base, gh, remote in repos:
+        if os.path.isdir(repo):
+            git(repo, "worktree", "prune")
 PY
 }
 
@@ -1395,8 +1612,9 @@ PY
 # layer. The path is single-quoted inside the hook command so a checkout under
 # a path with spaces still runs.
 _yo_hook_settings() {
-  printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s _session-hook"}]}]}}' \
-    "'$YO_SELF'"
+  local h
+  h=$(printf '[{"hooks":[{"type":"command","command":"%s _session-hook"}]}]' "'$YO_SELF'")
+  printf '{"hooks":{"SessionStart":%s,"SessionEnd":%s}}' "$h" "$h"
 }
 
 # "clone<TAB>key<TAB>title-prefix<TAB>profile" per registered repo, for
@@ -2106,7 +2324,8 @@ cmd_sessions() {
 $rows
 EOF
   echo
-  echo "ready = resumable (yo resume <name|id>, or yo resume-all); gone = directory removed"
+  echo "ready = resumable (yo resume <name|id>, or yo resume-all); ended = quit with /exit"
+  echo "(yo resume <name> still reopens it; resume-all skips it); gone = directory removed"
 }
 
 cmd_resume() {
@@ -2359,11 +2578,29 @@ cmd_down() {
   close_iterm_own_tab
 }
 
+# --- sweep --------------------------------------------------------------------
+# `yo down` is the only thing that removes a worktree, so sessions that end any
+# other way leave theirs behind. Sweep removes the ones whose work has landed —
+# and never one a session still needs. The rules live in `_yo_state sweep`.
+cmd_sweep() {
+  local spec="" k gh
+  for k in $(_yo_repo_keys); do
+    gh=$(_yo_github_for "$k" 2>/dev/null || true)
+    [ -n "$gh" ] || echo "yo: no owner/repo for '$k' — its PRs can't be checked, so merged branches read as unmerged" >&2
+    spec="${spec}${k}${_YO_TAB}$(repo_path_for "$k")${_YO_TAB}$(base_ref_for "$k")${_YO_TAB}${gh}${_YO_TAB}origin
+"
+  done
+  # Adopt live sessions first, so a session yo didn't start still holds its
+  # worktree through the ledger, not only through its running process.
+  _yo_sync_ledger
+  YO_SWEEP_REPOS="$spec" _yo_state sweep "$@"
+}
+
 # --- dispatch -----------------------------------------------------------------
 main() {
   local sub="${1:-}"
-  # The ledger hook runs at every claude start, so it skips config loading
-  # entirely: fast, and it can't fail on a config problem.
+  # The ledger hooks run at every claude start and exit, so they skip config
+  # loading entirely: fast, and they can't fail on a config problem.
   if [ "$sub" = "_session-hook" ]; then
     # The payload arrives on stdin, but python3 reads its program from stdin
     # (the heredoc), so it's handed over through the environment instead.
@@ -2384,6 +2621,7 @@ main() {
     resume|--resume)     shift; cmd_resume "$@" ;;
     resume-all)          shift; cmd_resume_all "$@" ;;
     sessions|ls)         shift; cmd_sessions "$@" ;;
+    sweep)               shift; cmd_sweep "$@" ;;
     *)                   cmd_up "$@" ;;
   esac
 }

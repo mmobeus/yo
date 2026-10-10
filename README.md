@@ -47,6 +47,7 @@ yo --here - 'read HANDOFF.md'     # no worktree: this directory, as checked out
 yo down                           # tear the session down
 yo sessions                       # what yo knows about, and what's running
 yo resume-all                     # after a restart: bring them all back
+yo sweep                          # which worktrees' work has landed (--apply removes them)
 ```
 
 `yo help` has the full story, and lists the repos it can see.
@@ -65,11 +66,33 @@ yo resume my-fix         # one session, by name, session id or directory
 yo resume-all --dry-run  # every session that was live
 ```
 
+A session you quit with `/exit` is marked ended: `resume-all` leaves it out,
+though `yo resume <name>` still reopens it. One whose tab was closed, or that
+crashed, stays ready to resume.
+
 A resumed session comes back under the same repo, profile, memory and settings
 layer it started with. `yo resume <session-id>` works for any session, even one
 yo didn't start: its directory is read from the transcript, and it joins the
 ledger from then on. `yo sessions` also picks up claude sessions running in a
 yo worktree that were started by hand, so run it before a planned restart.
+
+### Sweeping up worktrees
+
+Only `yo down` removes a worktree, so sessions that end any other way leave
+theirs behind. `yo sweep` lists every worktree of every registered repo and
+sorts them out:
+
+| verdict | meaning | removed by `--apply` |
+| --- | --- | --- |
+| `DEAD` | PR merged, no commits beyond base, or a clean PR-review checkout | yes |
+| `STALE` | unmerged commits | only with `--include-stale` |
+| `SUSP` | a session `resume-all` would bring back | only with `--include-suspended` |
+| `KEEP` | uncommitted changes, an open PR, a live session, or the current directory | never |
+
+It is a dry run without `--apply`. Branches are kept unless
+`--delete-branches`, and a worktree is never removed with `--force`. PR states
+come from `gh`, since a squash merge leaves the merged PR as the only sign the
+work landed; `--repo=R` narrows it to some repos.
 
 ### Tearing down from inside the session
 
