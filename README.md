@@ -107,6 +107,14 @@ the `/yo-down` skill uses, so a session can be wound up from inside claude,
 including a remote-controlled one with no terminal to type into. `yo down`
 closes its own iTerm2 tab, not whichever one has focus.
 
+### Clones of a fork
+
+If a clone's `origin` is your fork, keep the real repo as another remote
+(conventionally `upstream`). yo fetches PR heads and the base branch from
+whichever remote points at the repo's owner/repo, and still looks for your
+own branches on `origin`. Without `--github`, the owner/repo comes from
+`upstream` before `origin`.
+
 ### Repos yo doesn't know
 
 A PR or issue URL needs no configuration. If its repo isn't registered, yo

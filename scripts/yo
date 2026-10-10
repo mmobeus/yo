@@ -45,6 +45,11 @@
 #                        claude with a "help me address this issue: <url>"
 #                        message.
 #
+#   A clone whose origin is your fork works as well: the real repo is whichever
+#   remote points at the repo's owner/repo (conventionally `upstream`), and PR
+#   heads and the base branch are fetched from there; your own branches still
+#   come from origin.
+#
 #   A URL for a repo yo has never heard of works too: the repo is cloned to
 #   <YO_CLONE_ROOT>/<owner>/<repo> (or found there, if it already is) and the
 #   session gets a worktree off it as usual. Such a session is a guest: no
@@ -397,18 +402,38 @@ _yo_owner_repo_from_path() {
 }
 
 # repo key -> owner/repo, tried three ways: the explicit --github, then the
-# clone's own origin (authoritative), then the checkout path. The last one
-# matters because a repo can be configured before it has been cloned on this
-# machine — without it, a PR URL for an uncloned repo looks unrecognized.
+# clone's own remotes (authoritative) — `upstream` before `origin`, since a
+# clone of your fork conventionally keeps the real repo as `upstream` — then
+# the checkout path. The last one matters because a repo can be configured
+# before it has been cloned on this machine — without it, a PR URL for an
+# uncloned repo looks unrecognized.
 _yo_github_for() {
-  local key="$1" gh path url
+  local key="$1" gh path url r
   gh=$(_yo_field "$key" 4) || return 1
   [ -n "$gh" ] && { printf '%s' "$gh"; return 0; }
   path=$(_yo_field "$key" 2) || return 1
-  if url=$(git -C "$path" remote get-url origin 2>/dev/null); then
-    _yo_owner_repo_from_url "$url" && return 0
-  fi
+  for r in upstream origin; do
+    if url=$(git -C "$path" remote get-url "$r" 2>/dev/null); then
+      _yo_owner_repo_from_url "$url" && return 0
+    fi
+  done
   _yo_owner_repo_from_path "$path"
+}
+
+# repo key -> the remote that IS the repo on GitHub: the one whose URL matches
+# the repo's owner/repo. A clone whose origin is a personal fork keeps the real
+# repo as another remote (conventionally `upstream`), and that is where a PR's
+# refs/pull/<n>/head and the base branch live; your own branches still live on
+# origin. Falls back to origin, so a clone of the repo itself is unchanged.
+_yo_upstream_remote() {
+  local key="$1" path want r url
+  path=$(_yo_field "$key" 2) || { printf 'origin'; return 0; }
+  want=$(_yo_github_for "$key" 2>/dev/null) || { printf 'origin'; return 0; }
+  for r in $(git -C "$path" remote 2>/dev/null); do
+    url=$(git -C "$path" remote get-url "$r" 2>/dev/null) || continue
+    [ "$(_yo_owner_repo_from_url "$url" 2>/dev/null)" = "$want" ] && { printf '%s' "$r"; return 0; }
+  done
+  printf 'origin'
 }
 
 # Registered repos whose owner/repo we can't work out at all — the thing that
@@ -614,13 +639,15 @@ repo_key_from_url() {
   return 1
 }
 
-# The repo the cwd belongs to: by its origin, else — a clone that was never
-# pushed has none — by being (a worktree of) a registered clone.
+# The repo the cwd belongs to: by its remotes (any of them — a fork clone has
+# the registered repo as `upstream`), else — a clone that was never pushed has
+# none — by being (a worktree of) a registered clone.
 detect_repo_key() {
-  local url clone
-  if url=$(git remote get-url origin 2>/dev/null) && repo_key_from_url "$url"; then
-    return 0
-  fi
+  local r url clone
+  for r in $(git remote 2>/dev/null); do
+    url=$(git remote get-url "$r" 2>/dev/null) || continue
+    repo_key_from_url "$url" && return 0
+  done
   clone=$(_yo_primary_clone) || return 1
   _yo_repo_at "$clone" || _yo_repo_at "$(cd "$clone" && pwd -P)"
 }
@@ -1558,7 +1585,10 @@ elif op == "sweep":
                     idx[head] = pr
         return idx
 
-    here = os.path.realpath(os.getcwd())
+    try:
+        here = os.path.realpath(os.getcwd())
+    except FileNotFoundError:
+        here = ""   # run from a directory that's since been removed
     live = live_sessions()
     ledger = load_all()
 
@@ -1860,6 +1890,10 @@ create_session_worktree() {
   fi
   local wt_root="${repo_path}-worktrees"
   wt_path="$wt_root/$name"
+  # The remote the repo's PR heads and base branch come from (see
+  # _yo_upstream_remote); your own branches are looked up on origin.
+  local upstream_remote
+  upstream_remote=$(_yo_upstream_remote "$repo_key")
 
   [ -e "$wt_path" ] && die "worktree path already exists: $wt_path"
 
@@ -1881,28 +1915,33 @@ create_session_worktree() {
 
   # Decide what to fetch and where the worktree starts. Default: the repo's
   # base branch (base_ref_for).
-  # PR review: GitHub publishes every PR's head at refs/pull/<n>/head on origin
-  # (true even for fork PRs), so we fetch that, start the worktree at that exact
-  # commit, and (below the worktree add) wire the branch to track that ref so
-  # `git pull` refreshes it — no gh, no fork-remote juggling.
-  local fetch_ref fetch_desc start_point
+  # PR review: GitHub publishes every PR's head at refs/pull/<n>/head on the
+  # repo the PR is against (true even for a PR from someone else's fork), so we
+  # fetch that from the repo's remote, start the worktree at that exact commit,
+  # and (below the worktree add) wire the branch to track that ref so `git pull`
+  # refreshes it — no gh, no fork-remote juggling.
+  local fetch_ref fetch_remote fetch_desc start_point
   if [ "$reuse" -eq 1 ]; then
     fetch_ref=""  # nothing to fetch: the branch is the start point, as-is.
+    fetch_remote=""
     fetch_desc="existing local branch"
   elif [ "$pr_review" -eq 1 ]; then
     fetch_ref="pull/${GH_NUMBER}/head"
-    fetch_desc="PR #${GH_NUMBER} head"
+    fetch_remote="$upstream_remote"
+    fetch_desc="PR #${GH_NUMBER} head (from $upstream_remote)"
   elif [ "$remote_reuse" -eq 1 ]; then
     fetch_ref="$branch"
+    fetch_remote="origin"
     fetch_desc="origin/$branch (existing remote branch)"
   else
     fetch_ref="$base_ref"
-    fetch_desc="origin/$base_ref"
+    fetch_remote="$upstream_remote"
+    fetch_desc="${upstream_remote}/$base_ref"
   fi
 
   if [ -n "$fetch_ref" ]; then
     echo "==> [$repo_key] fetching $fetch_desc"
-    git -C "$repo_path" fetch origin "$fetch_ref"
+    git -C "$repo_path" fetch "$fetch_remote" "$fetch_ref"
   fi
   if [ "$pr_review" -eq 1 ]; then
     # FETCH_HEAD now points at the just-fetched PR head; pin its SHA as the
@@ -1912,7 +1951,7 @@ create_session_worktree() {
   elif [ "$remote_reuse" -eq 1 ]; then
     start_point="origin/$branch"
   else
-    start_point="origin/$base_ref"
+    start_point="${upstream_remote}/$base_ref"
   fi
 
   mkdir -p "$wt_root"
@@ -1938,9 +1977,9 @@ create_session_worktree() {
     # set it via the main clone; it applies to the branch in the worktree).
     # New commits fast-forward; a force-push/rebase turns pull into a merge, so
     # `git reset --hard FETCH_HEAD` (or recreate the session) to resync then.
-    git -C "$repo_path" config "branch.${branch}.remote" origin
+    git -C "$repo_path" config "branch.${branch}.remote" "$upstream_remote"
     git -C "$repo_path" config "branch.${branch}.merge" "refs/pull/${GH_NUMBER}/head"
-    echo "        tracking refs/pull/${GH_NUMBER}/head — git pull refreshes the PR"
+    echo "        tracking ${upstream_remote} refs/pull/${GH_NUMBER}/head — git pull refreshes the PR"
   fi
 
   # A guest repo is somebody else's code that nobody here has vetted, and it
@@ -2576,13 +2615,14 @@ cmd_down() {
   esac
 
   local repo_key repo_path branch dirty unpushed
-  repo_key=$(detect_repo_key) || die "couldn't identify the repo from origin"
+  repo_key=$(detect_repo_key) || die "couldn't identify the repo from its remotes"
   repo_path=$(repo_path_for "$repo_key")
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
   dirty=$(git status --porcelain)
-  local base_ref
+  local base_ref up
+  up=$(_yo_upstream_remote "$repo_key")
   base_ref=$(base_ref_for "$repo_key")
-  unpushed=$(git log --oneline "origin/${base_ref}..HEAD" 2>/dev/null || true)
+  unpushed=$(git log --oneline "${up}/${base_ref}..HEAD" 2>/dev/null || true)
 
   if [ "$dry" -eq 1 ]; then
     echo "Tearing down this work session would:"
@@ -2599,7 +2639,7 @@ cmd_down() {
   fi
   if [ -n "$unpushed" ]; then
     echo
-    echo "  *   commits not on origin/${base_ref} (preserved on branch '$branch'):"
+    echo "  *   commits not on ${up}/${base_ref} (preserved on branch '$branch'):"
     printf '%s\n' "$unpushed" | sed 's/^/        /'
   fi
   echo
@@ -2725,7 +2765,7 @@ cmd_sweep() {
   for k in $(_yo_repo_keys); do
     gh=$(_yo_github_for "$k" 2>/dev/null || true)
     [ -n "$gh" ] || echo "yo: no owner/repo for '$k' — its PRs can't be checked, so merged branches read as unmerged" >&2
-    spec="${spec}${k}${_YO_TAB}$(repo_path_for "$k")${_YO_TAB}$(base_ref_for "$k")${_YO_TAB}${gh}${_YO_TAB}origin
+    spec="${spec}${k}${_YO_TAB}$(repo_path_for "$k")${_YO_TAB}$(base_ref_for "$k")${_YO_TAB}${gh}${_YO_TAB}$(_yo_upstream_remote "$k")
 "
   done
   # Adopt live sessions first, so a session yo didn't start still holds its
