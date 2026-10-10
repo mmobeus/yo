@@ -8,7 +8,7 @@ scripts/yo              iTerm2 work-session launcher (git worktrees, or in place
 config/yo.config.example.sh   starting point for your own config
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
-claude/skills/          skills that drive yo from inside a session (yo-down)
+claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt)
 install.sh              wires it all up
 ```
 
@@ -75,6 +75,11 @@ layer it started with. `yo resume <session-id>` works for any session, even one
 yo didn't start: its directory is read from the transcript, and it joins the
 ledger from then on. `yo sessions` also picks up claude sessions running in a
 yo worktree that were started by hand, so run it before a planned restart.
+
+A session yo didn't start, anywhere (a primary clone, a scratch directory),
+can record itself: `yo adopt` from inside it, or the `/yo-adopt` skill. `yo
+forget <name|id>` drops a session from the ledger; its transcript and
+directory are left alone.
 
 ### Sweeping up worktrees
 

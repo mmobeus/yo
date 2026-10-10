@@ -114,6 +114,12 @@
 #                        profile and settings layer it started with (alias:
 #                        --resume). Any session id works, even one yo didn't
 #                        start: its directory is read from the transcript.
+#   yo adopt [--title=T] Run from inside a claude session yo didn't start (the
+#                        /yo-adopt skill): record it so resume-all brings it
+#                        back. Works anywhere, not just in a yo worktree.
+#   yo forget <name|session-id|dir>
+#                        Drop a session from the ledger (resume-all skips it);
+#                        its transcript and directory are left alone.
 #   yo resume-all [--dry-run] [--new-window|--tab]
 #                        After a restart or crash: reopen every session that
 #                        was live, one tab each. Sessions quit with /exit are
@@ -187,7 +193,7 @@ YO_CONFIG_PATH=""
 YO_MODE_RESOLVED=""
 YO_CLONE_ROOT_RESOLVED=""
 YO_CLONE_PROTOCOL_RESOLVED=""
-YO_ADOPTED_REPO=""   # key of the repo adopt_url_repo registered, if it did
+YO_GUEST_REPO=""     # key of the repo register_url_repo registered, if it did
 YO_PROFILE_SELECTED=""   # --profile / `yo <profile>`; beats a repo's own
 YO_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/yo/sessions"
 YO_CLAUDE_LINE=""        # set by prepare_claude_cmd
@@ -728,18 +734,18 @@ parse_github_url() {
 
 # A PR/issue URL for a repo that isn't registered: register it for this run,
 # cloning it first if it isn't already at <YO_CLONE_ROOT>/<owner>/<repo>. Sets
-# YO_ADOPTED_REPO to its key. Runs in the caller's shell, not a $(...), because
+# YO_GUEST_REPO to its key. Runs in the caller's shell, not a $(...), because
 # the registration has to outlive it.
-adopt_url_repo() {
+register_url_repo() {
   local owner_repo="$1" owner repo path key url
   owner="${owner_repo%%/*}"; repo="${owner_repo#*/}"
   # These become a path and a clone URL, so nothing but what GitHub allows.
   case "$owner$repo" in
-    *[!A-Za-z0-9._-]*|.*) die "can't adopt '$owner_repo': unexpected characters in the repo name" ;;
+    *[!A-Za-z0-9._-]*|.*) die "can't use '$owner_repo': unexpected characters in the repo name" ;;
   esac
   path="$YO_CLONE_ROOT_RESOLVED/$owner/$repo"
   if [ -e "$path" ]; then
-    [ -e "$path/.git" ] || die "can't adopt $owner_repo: $path exists and isn't a git clone"
+    [ -e "$path/.git" ] || die "can't use $owner_repo: $path exists and isn't a git clone"
     echo "==> $owner_repo isn't configured; using the clone at $path"
   else
     case "$YO_CLONE_PROTOCOL_RESOLVED" in
@@ -759,7 +765,7 @@ adopt_url_repo() {
   else
     yo_repo "$key" --path="$path" --github="$owner_repo" --mode=worktree --memory=none
   fi
-  YO_ADOPTED_REPO="$key"
+  YO_GUEST_REPO="$key"
 }
 
 die_unknown_url_repo() {
@@ -1197,6 +1203,9 @@ mirror_repo_files() {
 #   hook                         SessionStart/SessionEnd payload in
 #                                $YO_HOOK_INPUT; never fails
 #   drop KEY                     forget one record
+#   adopt DIR SID TITLE TITLE_GIVEN REPO NAME PROFILE MODE
+#                                record a session from inside it (yo adopt)
+#   launch-cwd SID               the directory that session was launched in
 #   drop-dir WT                  forget a worktree's record
 #   sync                         adopt live sessions in yo worktrees (YO_CLONES)
 #   list                         TSV, one row per record (see row())
@@ -1339,6 +1348,62 @@ elif op == "hook":
                     write(rec)
     except Exception:
         pass   # a ledger hiccup must never get in the way of claude
+
+elif op == "adopt":
+    # adopt DIR SID TITLE TITLE_GIVEN REPO NAME PROFILE MODE: record a session
+    # from inside it. One the ledger already holds (even under an older id's
+    # key, after a /clear) keeps its record; a worktree's record keeps what yo
+    # wrote at create time.
+    d, sid, title, title_given, repo, name, profile, mode = args
+    recs = load_all()
+    held = [r for r in recs if r.get("sessionId") == sid]
+    if held:
+        rec = held[0]
+        if title_given == "1":
+            rec["title"] = title
+    else:
+        key = "id-" + sid if mode == "here" else wt_key(d)
+        rec = {"worktree": d, "sessionId": sid, "title": title, "repo": repo,
+               "name": name, "profile": profile, "mode": mode,
+               "createdAt": int(time.time()), "_key": key}
+        if mode == "here":
+            rec["byId"] = True
+        for old in recs:
+            if old["_key"] == key:
+                for k in ("createdAt", "profile", "guest") + \
+                        (("title",) if title_given != "1" else ()):
+                    if old.get(k):
+                        rec[k] = old[k]
+        rec = {k: v for k, v in rec.items() if v != ""}
+    rec.pop("endedAt", None)
+    write(rec)
+    print(rec["_key"])
+
+elif op == "launch-cwd":
+    # The directory a session was launched in: what `claude --resume` needs to
+    # be run from. The live registry knows it; the transcript's first entry is
+    # the fallback.
+    sid = args[0]
+    for f in glob.glob(os.path.join(home, ".claude", "sessions", "*.json")):
+        try:
+            with open(f) as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if d.get("sessionId") == sid and d.get("cwd"):
+            print(d["cwd"])
+            sys.exit(0)
+    for t in glob.glob(os.path.join(home, ".claude", "projects", "*", sid + ".jsonl")):
+        with open(t) as fh:
+            for line in fh:
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except ValueError:
+                    continue
+                if cwd:
+                    print(cwd)
+                    sys.exit(0)
+    sys.exit(1)
 
 elif op in ("drop", "drop-dir"):
     key = args[0] if op == "drop" else wt_key(args[0])
@@ -1878,9 +1943,9 @@ create_session_worktree() {
     echo "        tracking refs/pull/${GH_NUMBER}/head — git pull refreshes the PR"
   fi
 
-  # An adopted repo is somebody else's code that nobody here has vetted, and it
+  # A guest repo is somebody else's code that nobody here has vetted, and it
   # can configure hooks and MCP servers — so its trust dialog is left to appear.
-  if [ "$repo_key" = "$YO_ADOPTED_REPO" ]; then
+  if [ "$repo_key" = "$YO_GUEST_REPO" ]; then
     echo "==> not pre-trusting the worktree ($repo_key isn't a configured repo) — Claude will ask"
     return 0
   fi
@@ -1941,11 +2006,11 @@ cmd_up() {
     # PR/issue URL mode: kind, number, and (default) repo derive from the URL.
     gh_kind="$GH_KIND"; gh_number="$GH_NUMBER"; gh_owner_repo="$GH_OWNER_REPO"
     url_repo="$GH_REPO_KEY"
-    # A repo nobody registered: adopt it, unless the session was pointed
-    # somewhere itself (--repo, --here).
+    # A repo nobody registered: bring it in as a guest, unless the session
+    # was pointed somewhere itself (--repo, --here).
     if [ -z "$url_repo" ] && [ -z "$repo_override" ] && [ "$mode" != "here" ]; then
-      adopt_url_repo "$gh_owner_repo"
-      url_repo="$YO_ADOPTED_REPO"
+      register_url_repo "$gh_owner_repo"
+      url_repo="$YO_GUEST_REPO"
     fi
     # Issues are just context — the WORK may live in the other repo
     # (e.g. --repo=<other> for an issue tracked in a different repo).
@@ -2105,7 +2170,7 @@ cmd_up() {
   # bring this session back after a crash.
   local session_id session_key guest=""
   session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
-  [ -n "$repo_key" ] && [ "$repo_key" = "$YO_ADOPTED_REPO" ] \
+  [ -n "$repo_key" ] && [ "$repo_key" = "$YO_GUEST_REPO" ] \
     && guest=$(_yo_github_for "$repo_key")
   session_key=$(_yo_state put "$wt_path" "$session_id" "$win_title" "$repo_key" \
     "$name" "$(profile_for "$repo_key")" "$(mode_word "$here")" "$guest") \
@@ -2254,8 +2319,8 @@ _yo_resume_row() {
     if ! repo_key=$(_yo_ensure_repo "$R_REPO" "$R_GUEST"); then
       if [ -n "$R_GUEST" ]; then
         # Registers it again, from the clone that's already there.
-        adopt_url_repo "$R_GUEST"
-        repo_key="$YO_ADOPTED_REPO"
+        register_url_repo "$R_GUEST"
+        repo_key="$YO_GUEST_REPO"
       else
         echo "yo: repo '$R_REPO' is no longer configured; resuming $R_NAME without its settings"
         repo_key=""
@@ -2578,6 +2643,79 @@ cmd_down() {
   close_iterm_own_tab
 }
 
+# --- adopt / forget -----------------------------------------------------------
+# For sessions yo didn't start, run from INSIDE them (the /yo-adopt skill): the
+# session knows its own id (CLAUDE_CODE_SESSION_ID, exported to every tool
+# call), so nothing has to be guessed from the process table. `yo sessions`
+# adopts live sessions in yo worktrees in bulk; this also covers the ones in a
+# primary clone or anywhere else.
+cmd_adopt() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" title="" title_given=0 a
+  for a in "$@"; do
+    case "$a" in
+      --session-id=*) sid="${a#--session-id=}" ;;
+      --title=*)      title="${a#--title=}"; title_given=1 ;;
+      *) die "usage: yo adopt [--session-id=ID] [--title=T]" ;;
+    esac
+  done
+  [ -n "$sid" ] || die "no session id: run this from inside a claude session, or pass --session-id=ID"
+
+  local dir
+  dir=$(_yo_state launch-cwd "$sid") || dir=$(pwd -P)
+  _yo_classify_dir "$dir"
+
+  # Title: what the iTerm tab already says, when yo titled it; else derived.
+  if [ -z "$title" ] && [ -n "${ITERM_SESSION_ID:-}" ]; then
+    title=$(/usr/bin/osascript - "${ITERM_SESSION_ID#*:}" 2>/dev/null <<'APPLESCRIPT' || true
+on run argv
+  set want to item 1 of argv
+  tell application "iTerm2"
+    repeat with ww in windows
+      repeat with tt in tabs of ww
+        repeat with ss in sessions of tt
+          if (unique id of ss) is want then
+            try
+              tell ss to set v to variable named "user.yoTitle"
+              if v is not missing value then return v
+            end try
+            return ""
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return ""
+end run
+APPLESCRIPT
+)
+  fi
+  [ -n "$title" ] || title="$D_TITLE"
+
+  local key
+  key=$(_yo_state adopt "$D_DIR" "$sid" "$title" "$title_given" "$D_REPO" "$D_NAME" \
+    "$(profile_for "$D_REPO")" "$D_MODE") \
+    || die "couldn't write the ledger in $YO_STATE_DIR"
+  local row
+  row=$(_yo_state get "$sid") && _yo_read_row "$row"
+  echo "==> recorded: ${R_TITLE:-$title}"
+  echo "        session: $sid"
+  echo "        dir:     ${R_WT:-$D_DIR}"
+  echo "    yo resume-all will bring it back after a restart."
+}
+
+cmd_forget() {
+  local query="${1:-}" row
+  [ -n "$query" ] || die "usage: yo forget <name|session-id|dir>"
+  [ -d "$query" ] && query=$(cd "$query" && pwd -P)
+  row=$(_yo_state get "$query" 2>/dev/null) \
+    || die "no single session matches '$query' (yo sessions lists them)"
+  _yo_read_row "$row"
+  [ "$R_KEY" != "-" ] || die "'$query' isn't in the ledger; nothing to forget"
+  [ "$R_STATUS" != "running" ] || echo "yo: note: $R_NAME is still running; forgetting it only stops resume-all bringing it back"
+  _yo_state drop "$R_KEY" || die "couldn't find a record for $R_SID"
+  echo "forgot $R_NAME ($R_SID); its transcript and directory are untouched"
+}
+
 # --- sweep --------------------------------------------------------------------
 # `yo down` is the only thing that removes a worktree, so sessions that end any
 # other way leave theirs behind. Sweep removes the ones whose work has landed —
@@ -2622,6 +2760,8 @@ main() {
     resume-all)          shift; cmd_resume_all "$@" ;;
     sessions|ls)         shift; cmd_sessions "$@" ;;
     sweep)               shift; cmd_sweep "$@" ;;
+    adopt)               shift; cmd_adopt "$@" ;;
+    forget)              shift; cmd_forget "$@" ;;
     *)                   cmd_up "$@" ;;
   esac
 }

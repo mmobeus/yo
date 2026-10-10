@@ -92,6 +92,7 @@ add link  "$REPO/claude/settings.json"  "$CONFIG_DIR/yo/claude-settings.json"
 # that is where Claude Code finds personal skills; each is its own directory,
 # so nothing already there is touched.
 add link  "$REPO/claude/skills/yo-down" "$CLAUDE_DIR/skills/yo-down"
+add link  "$REPO/claude/skills/yo-adopt" "$CLAUDE_DIR/skills/yo-adopt"
 if [ "$MERGE_SETTINGS" -eq 1 ]; then
   add merge "$REPO/claude/settings.json" "$CLAUDE_DIR/settings.json"
 fi
