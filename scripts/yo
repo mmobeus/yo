@@ -98,11 +98,33 @@
 #   iTerm2's Claude Code workgroup. The default, `auto`, picks `workgroup` when
 #   that workgroup has a peer session configured, else `split`.
 #
-#   yo down              Tear down the session you're currently in
-#                              (aliases: rm, teardown, -d). In a --here
-#                              session there is no worktree to remove, so it
-#                              only closes the tab.
+#   yo down [--dry-run] [--yes [--discard]]
+#                        Tear down the session you're currently in
+#                        (aliases: rm, teardown, -d). In a --here session there
+#                        is no worktree to remove, so it only forgets the
+#                        session and closes the tab. --yes skips the prompt so
+#                        it can run from inside claude (the /yo-down skill); it
+#                        refuses to lose uncommitted work unless --discard.
+#                        --dry-run reports what would happen and stops.
+#   yo sessions          List the sessions yo knows about and whether each is
+#                        running, ready to resume, or gone (alias: ls).
+#   yo resume <name|session-id|dir> [--new-window|--tab]
+#                        Reopen one session in a tab of its shared window and
+#                        `claude --resume` it there, under the same repo,
+#                        profile and settings layer it started with (alias:
+#                        --resume). Any session id works, even one yo didn't
+#                        start: its directory is read from the transcript.
+#   yo resume-all [--dry-run] [--new-window|--tab]
+#                        After a restart or crash: reopen every session that
+#                        was live, one tab each.
 #   yo help              Show this help, plus the configured repos and profiles.
+#
+# Session ledger: yo records each session's id under
+# ${XDG_STATE_HOME:-~/.local/state}/yo/sessions/, because Claude Code's own
+# list of running sessions doesn't survive a restart (the first claude started
+# afterwards prunes the rest). `yo sessions` also adopts sessions that are
+# running in a yo worktree but were started some other way — run it before a
+# planned restart to make sure resume-all will know about them.
 #
 # [extra] — optional final argument: additional instructions appended to the
 # initial message seeded into claude (PR/issue modes), or used AS the initial
@@ -123,16 +145,19 @@
 #      dialog appears, and copy the base clone's .claude/settings.local.json
 #      (gitignored, holds MCP-server approvals) so the MCP prompt is skipped too
 #   6. launch claude in the LEFT pane (with an initial message pre-filled when
-#      created from a PR/issue URL), stacking yo's settings layer on top of
-#      your own with `claude --settings`: the installed claude-settings.json
-#      plus an autoMemoryDirectory — one memory shared by every session
+#      created from a PR/issue URL), under a session id yo picks and records
+#      in the session ledger, stacking yo's settings layer on top of your own
+#      with `claude --settings`: the installed claude-settings.json plus an
+#      autoMemoryDirectory — one memory shared by every session
 #      (~/.claude/memories/yo unless YO_MEMORIES / YO_MEMORY_STORE say
-#      otherwise). ~/.claude/settings.json is never edited.
+#      otherwise) — plus the hooks that keep the ledger current.
+#      ~/.claude/settings.json is never edited.
 #
-# What "down" does (from inside the worktree, usually the right pane):
+# What "down" does (from inside the worktree: the right pane, or claude itself):
 #   - warns loudly about uncommitted / unpushed work
-#   - confirms, removes the worktree, KEEPS the branch
-#   - closes the iTerm2 tab (and the window with it, if it was the last tab)
+#   - confirms, removes the worktree, KEEPS the branch, forgets the session
+#   - closes ITS OWN iTerm2 tab (and the window with it, if it was the last
+#     tab) — found by session id, so it's safe when another tab has focus
 #
 set -euo pipefail
 
@@ -152,6 +177,16 @@ YO_CLONE_ROOT_RESOLVED=""
 YO_CLONE_PROTOCOL_RESOLVED=""
 YO_ADOPTED_REPO=""   # key of the repo adopt_url_repo registered, if it did
 YO_PROFILE_SELECTED=""   # --profile / `yo <profile>`; beats a repo's own
+YO_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/yo/sessions"
+YO_CLAUDE_LINE=""        # set by prepare_claude_cmd
+
+# This script's own path, for the hooks it injects into claude. Deliberately
+# NOT symlink-resolved: an installed ~/.local/bin/yo stays the hook target, so
+# updating the checkout updates the hook too.
+case "$0" in
+  /*) YO_SELF="$0" ;;
+  *)  YO_SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;;
+esac
 
 die() { printf '%s: %s\n' "$(basename "$0")" "$*" >&2; exit 1; }
 
@@ -1121,17 +1156,304 @@ mirror_repo_files() {
   done
 }
 
-close_iterm_current_tab() {
-  # Closes the tab this script is running in (kills both panes). When it's the
-  # window's last tab iTerm closes the window too, so this covers both the
-  # shared-window and one-window-per-session layouts. Errors are ignored
-  # because closing the tab also terminates osascript itself.
-  /usr/bin/osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
-tell application "iTerm2"
-  tell current window
-    close current tab
+# --- session ledger -----------------------------------------------------------
+# Claude Code's own registry of running sessions (~/.claude/sessions/<pid>.json)
+# can't survive a crash or restart: the first claude started afterwards prunes
+# every entry whose pid is dead. Transcripts (~/.claude/projects/) DO survive, so
+# all `claude --resume` needs is the session id and the directory — which is
+# what this ledger keeps, one JSON file per session, along with what it takes to
+# launch the session the same way again (repo, profile, mode, title).
+#
+# A worktree holds one session, so its record is keyed by the worktree. An
+# in-place session's directory may hold several at once, so its record is keyed
+# by the id it started with ("id-<sid>"); the key never changes after that.
+#
+# Ids enter the ledger three ways:
+#   - yo mints the id up front (`claude --session-id`) when it creates a session;
+#   - a SessionStart hook, carried in the session's settings layer, records the
+#     new id when one changes it (/clear). yo launches claude with
+#     YO_SESSION_KEY set, so the hook knows which record is its own; without it
+#     (a session yo didn't launch) the hook goes by the worktree it runs in;
+#   - `sync` adopts whatever is running right now in a yo worktree, which covers
+#     sessions started some other way (by hand, or before yo kept a ledger).
+
+# Every op is best-effort JSON wrangling, so it all lives in one python3 helper.
+#   put DIR SID TITLE REPO NAME PROFILE MODE GUEST
+#                                create/replace a record; prints its key
+#   hook                         SessionStart payload in $YO_HOOK_INPUT; never fails
+#   drop KEY                     forget one record
+#   drop-dir WT                  forget a worktree's record
+#   sync                         adopt live sessions in yo worktrees (YO_CLONES)
+#   list                         TSV, one row per record (see row())
+#   get QUERY                    the same TSV row for one session, matched by
+#                                id (or 8+ char prefix), directory, or name;
+#                                an id the ledger lacks is found by transcript
+# status: running (pid set) | ready | gone (directory removed) | no-id
+_yo_state() {
+  YO_STATE_DIR="$YO_STATE_DIR" python3 - "$@" <<'PY'
+import glob, json, os, subprocess, sys, time
+
+home = os.path.expanduser("~")
+state = os.environ["YO_STATE_DIR"]
+op, args = sys.argv[1], sys.argv[2:]
+
+def wt_key(wt):
+    rel = os.path.relpath(wt, home) if wt.startswith(home + "/") else wt.lstrip("/")
+    return rel.replace("/", "__")
+
+def load_all():
+    out = []
+    for f in sorted(glob.glob(os.path.join(state, "*.json"))):
+        try:
+            with open(f) as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        rec["_key"] = os.path.basename(f)[:-len(".json")]
+        out.append(rec)
+    return out
+
+def write(rec):
+    # The file a record was loaded from is where it goes back to, even when
+    # its sessionId has changed since.
+    key = rec.pop("_key")
+    rec["updatedAt"] = int(time.time())
+    os.makedirs(state, exist_ok=True)
+    p = os.path.join(state, key + ".json")
+    tmp = p + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(rec, fh, indent=2, sort_keys=True)
+    os.replace(tmp, p)
+    rec["_key"] = key
+
+def live_sessions():
+    # Interactive claude processes that are actually alive. A pid can be reused
+    # after a reboot, so the process must also still be claude.
+    out = []
+    for f in glob.glob(os.path.join(home, ".claude", "sessions", "*.json")):
+        try:
+            with open(f) as fh:
+                d = json.load(fh)
+            pid = int(d["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if d.get("kind", "interactive") != "interactive" or not d.get("sessionId"):
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass
+        comm = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)],
+                              capture_output=True, text=True).stdout
+        if "claude" in comm:
+            out.append(d)
+    return out
+
+def owns(wt, cwd):
+    return cwd == wt or cwd.startswith(wt.rstrip("/") + "/")
+
+def status_of(rec, live):
+    for d in live:
+        if d.get("sessionId") == rec.get("sessionId"):
+            return "running", str(d["pid"])
+    if not os.path.isdir(rec["worktree"]):
+        return "gone", ""
+    if not rec.get("sessionId"):
+        return "no-id", ""
+    return "ready", ""
+
+def row(rec, live):
+    st, pid = status_of(rec, live)
+    mode = rec.get("mode") or ("here" if rec.get("byId") else "worktree")
+    # "-" for empty: bash's `read` collapses runs of tabs, which would shift
+    # every field after an empty one.
+    fields = [st, pid, rec.get("name"), rec.get("repo"), rec.get("sessionId"),
+              rec["worktree"], rec.get("title") or rec.get("name"),
+              rec.get("_key"), rec.get("profile"), mode, rec.get("guest")]
+    print("\t".join(f or "-" for f in fields))
+
+if op == "put":
+    d, sid, title, repo, name, profile, mode, guest = args
+    rec = {"worktree": d, "sessionId": sid, "title": title, "repo": repo,
+           "name": name, "profile": profile, "mode": mode,
+           "createdAt": int(time.time())}
+    if guest:
+        rec["guest"] = guest
+    if mode == "here":
+        rec["byId"] = True
+        rec["_key"] = "id-" + sid
+    else:
+        rec["_key"] = wt_key(d)
+    rec = {k: v for k, v in rec.items() if v != ""}
+    write(rec)
+    print(rec["_key"])
+
+elif op == "hook":
+    try:
+        d = json.loads(os.environ.get("YO_HOOK_INPUT") or "{}")
+        cwd, sid = d.get("cwd", ""), d.get("session_id", "")
+        key = os.environ.get("YO_SESSION_KEY", "")
+        for rec in load_all() if sid else []:
+            if key:
+                if rec["_key"] != key:
+                    continue
+            elif not owns(rec["worktree"], cwd) \
+                    or (rec.get("byId") and rec.get("sessionId") != sid):
+                continue
+            if rec.get("sessionId") != sid:
+                rec["sessionId"] = sid
+                write(rec)
+    except Exception:
+        pass   # a ledger hiccup must never get in the way of starting claude
+
+elif op in ("drop", "drop-dir"):
+    key = args[0] if op == "drop" else wt_key(args[0])
+    try:
+        os.unlink(os.path.join(state, key + ".json"))
+    except FileNotFoundError:
+        sys.exit(1)
+
+elif op == "sync":
+    # YO_CLONES: one "clone-path<TAB>repo-key<TAB>title-prefix<TAB>profile"
+    # line per repo.
+    clones = {}
+    for line in os.environ.get("YO_CLONES", "").splitlines():
+        parts = line.split("\t")
+        if len(parts) == 4:
+            clones[parts[0].rstrip("/")] = (parts[1], parts[2], parts[3])
+    recs = {r["_key"]: r for r in load_all()}
+    for d in sorted(live_sessions(), key=lambda d: d.get("updatedAt", 0)):
+        cwd = d.get("cwd", "")
+        for clone, (key, prefix, profile) in clones.items():
+            root = clone + "-worktrees/"
+            if not cwd.startswith(root):
+                continue
+            name = cwd[len(root):].split("/", 1)[0]
+            wt = root + name
+            if not os.path.exists(os.path.join(wt, ".git")):
+                continue
+            rec = recs.get(wt_key(wt))
+            if rec is None:
+                rec = {"worktree": wt, "repo": key, "name": name,
+                       "title": prefix + name, "mode": "worktree",
+                       "createdAt": int(time.time()), "_key": wt_key(wt)}
+                if profile:
+                    rec["profile"] = profile
+            if rec.get("sessionId") != d["sessionId"]:
+                rec["sessionId"] = d["sessionId"]
+                write(rec)
+                recs[rec["_key"]] = rec
+                print("adopted %s (%s) from a live session" % (name, d["sessionId"]),
+                      file=sys.stderr)
+
+elif op == "list":
+    live = live_sessions()
+    for rec in load_all():
+        row(rec, live)
+
+elif op == "get":
+    q = args[0].rstrip("/") or "/"
+    live = live_sessions()
+    recs = load_all()
+    hits = [r for r in recs if r.get("sessionId") == q or r["worktree"] == q]
+    if not hits and len(q) >= 8:
+        hits = [r for r in recs if (r.get("sessionId") or "").startswith(q)]
+    if not hits:
+        hits = [r for r in recs if r.get("name") == q]
+    if not hits:
+        # Not in the ledger: an id from anywhere (`claude --resume`'s picker, an
+        # old window) is still resumable if its transcript records a cwd.
+        for t in glob.glob(os.path.join(home, ".claude", "projects", "*", q + ".jsonl")):
+            with open(t) as fh:
+                for line in fh:
+                    try:
+                        cwd = json.loads(line).get("cwd")
+                    except ValueError:
+                        continue
+                    if cwd:
+                        hits = [{"worktree": cwd, "name": os.path.basename(cwd),
+                                 "sessionId": q, "transcriptOnly": True}]
+                        break
+            if hits:
+                break
+    if len(hits) > 1:
+        print("ambiguous: %d sessions match '%s'" % (len(hits), q), file=sys.stderr)
+        for r in hits:
+            row(r, live)
+        sys.exit(2)
+    if not hits:
+        sys.exit(1)
+    row(hits[0], live)
+    if hits[0].get("transcriptOnly"):
+        print("transcript-only", file=sys.stderr)
+PY
+}
+
+# The hooks that keep the ledger current, as settings JSON for the session's
+# layer. The path is single-quoted inside the hook command so a checkout under
+# a path with spaces still runs.
+_yo_hook_settings() {
+  printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s _session-hook"}]}]}}' \
+    "'$YO_SELF'"
+}
+
+# "clone<TAB>key<TAB>title-prefix<TAB>profile" per registered repo, for
+# `_yo_state sync`.
+_yo_clones_spec() {
+  local k
+  for k in $(_yo_repo_keys); do
+    printf '%s\t%s\t%s\t%s\n' "$(repo_path_for "$k")" "$k" "$(title_prefix_for "$k")" \
+      "$(_yo_field "$k" 11)"
+  done
+}
+
+_yo_sync_ledger() {
+  YO_CLONES="$(_yo_clones_spec)" _yo_state sync || true
+}
+
+# Splits one `_yo_state` TSV row into the R_* globals.
+_yo_read_row() {
+  IFS="$_YO_TAB" read -r R_STATUS R_PID R_NAME R_REPO R_SID R_WT R_TITLE R_KEY \
+    R_PROFILE R_MODE R_GUEST <<EOF
+$1
+EOF
+  [ "$R_PID" = "-" ] && R_PID=""
+  [ "$R_REPO" = "-" ] && R_REPO=""
+  [ "$R_SID" = "-" ] && R_SID=""
+  [ "$R_PROFILE" = "-" ] && R_PROFILE=""
+  [ "$R_GUEST" = "-" ] && R_GUEST=""
+  return 0
+}
+
+# Closes the iTerm tab holding THIS process's session, found by the session id
+# iTerm exports to every shell it starts (ITERM_SESSION_ID=w0t1p0:<uuid>). Not
+# "the current tab": when yo runs from a remote-controlled or background
+# session, focus is somewhere else entirely and the current tab is somebody
+# else's. Closing the tab ends both panes, and the window with it if it was the
+# last tab. Errors are ignored because the close also kills osascript itself.
+close_iterm_own_tab() {
+  if [ -z "${ITERM_SESSION_ID:-}" ]; then
+    echo "yo: not running inside an iTerm2 session; leaving windows alone (exit claude yourself)"
+    return 0
+  fi
+  /usr/bin/osascript - "${ITERM_SESSION_ID#*:}" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run argv
+  set want to item 1 of argv
+  tell application "iTerm2"
+    repeat with ww in windows
+      repeat with tt in tabs of ww
+        repeat with ss in sessions of tt
+          if (unique id of ss) is want then
+            close tt
+            return
+          end if
+        end repeat
+      end repeat
+    end repeat
   end tell
-end tell
+end run
 APPLESCRIPT
 }
 
@@ -1143,19 +1465,20 @@ APPLESCRIPT
 # rather than replaced. The layer is the installed claude-settings.json plus
 # the profile's own settings file plus this session's autoMemoryDirectory —
 # which has to arrive this way (or from
-# user settings), since Claude ignores that key in project settings.
+# user settings), since Claude ignores that key in project settings — plus the
+# session ledger's hooks. `--settings` takes one value, so everything yo adds
+# has to be in this one file.
 #
-# Echoes the path of the composed file; nothing when there is nothing to add.
+# Echoes the path of the composed file.
 compose_session_settings() {
   local memory_dir="$1" label="$2" extra="$3" layer out
   layer="${YO_CLAUDE_SETTINGS:-$(dirname "$(_yo_config_path)")/claude-settings.json}"
   [ -f "$layer" ] || layer=""
-  [ -n "$layer" ] || [ -n "$extra" ] || [ -n "$memory_dir" ] || return 0
   out="${XDG_STATE_HOME:-$HOME/.local/state}/yo/settings/${label}.json"
   mkdir -p "$(dirname "$out")"
-  python3 - "$out" "$layer" "$extra" "$memory_dir" <<'PY_EOF' || return 1
+  python3 - "$out" "$layer" "$extra" "$memory_dir" "$(_yo_hook_settings)" <<'PY_EOF' || return 1
 import json, os, sys
-out, layer, extra, memory_dir = sys.argv[1:5]
+out, layer, extra, memory_dir, hooks = sys.argv[1:6]
 # The profile's settings go over the base layer: objects merge key by key,
 # lists (permissions.allow, a hook event's entries) are appended to, anything
 # else is replaced.
@@ -1172,6 +1495,7 @@ for path in (layer, extra):
     if path:
         with open(path) as f:
             merge(d, json.load(f))
+merge(d, json.loads(hooks))
 if memory_dir:
     d["autoMemoryDirectory"] = memory_dir
 tmp = out + ".tmp"
@@ -1531,62 +1855,14 @@ cmd_up() {
     create_session_worktree
   fi
 
-  # What the session is filed under: its repo, else the profile that was
-  # picked, else (a --here session somewhere yo doesn't know) the directory.
-  local pname label
-  pname=$(profile_for "$repo_key")
-  label="${repo_key:-${pname:-$(basename "$wt_path")}}"
-  [ -n "$pname" ] && echo "==> profile: $pname"
-
-  local memory_dir settings_file=""
-  memory_dir=$(memory_dir_for "$repo_key")
-  if [ -n "$memory_dir" ]; then
-    if mkdir -p "$memory_dir" 2>/dev/null; then
-      echo "==> memory: $memory_dir"
-    else
-      echo "yo: couldn't create $memory_dir — using Claude's default memory"
-      memory_dir=""
-    fi
-  fi
-  local profile_settings settings_name="$label"
-  profile_settings=$(_yo_profile_value "$repo_key" 6)
-  if [ -n "$profile_settings" ] && [ ! -f "$profile_settings" ]; then
-    die "profile '$pname': no settings file at $profile_settings"
-  fi
-  [ -n "$pname" ] && [ "$pname" != "$label" ] && settings_name="$pname.$label"
-  settings_file=$(compose_session_settings "$memory_dir" "$settings_name" "$profile_settings") \
-    || echo "yo: couldn't compose the settings layer; launching claude without it"
-
-  # ensure the title-locked iTerm profile exists (falls back to default profile)
-  local profile="$WORKSESH_PROFILE_NAME" wrote
-  if wrote=$(ensure_iterm_profile); then
-    [ "$wrote" = "WROTE" ] && sleep 1.5   # let iTerm load the (re)written profile
-  else
-    profile=""
-    echo "yo: couldn't build the '$WORKSESH_PROFILE_NAME' profile; using default (title may be overwritten by claude)"
-  fi
-
-  # Seed the left-pane claude with an initial message when we have one (PR/issue
-  # URL mode, and/or the [extra] arg). Single-quote wrapping, NOT printf %q:
-  # %q backslash-escapes every space, which made the pane's command line an
-  # unreadable '\ ' blizzard. Wrapping in single quotes (with the standard
-  # '\'' dance for any embedded single quote) is equally shell-safe and reads
-  # like what it is.
-  local claude_cmd
-  claude_cmd=$(claude_cmd_for "$repo_key")
-  [ -n "$settings_file" ] \
-    && claude_cmd="$claude_cmd --settings $(shell_single_quote "$settings_file")"
-  if [ -n "$initial_msg" ]; then
-    claude_cmd="$claude_cmd $(shell_single_quote "$initial_msg")"
-  fi
-
   # Window title rules (issue/PR numbers are impossible to keep in your head):
   #   non-default repos:    "[<repo>] ..." prefix (see title_prefix_for)
   #   PR review sessions:   "PR#1234: <PR title>"      (via gh, 50-char cap)
   #   issue sessions:       "Issue#1234: <issue title>" (via gh, 50-char cap)
   #   unnamed sessions:     the fun title ("Adventurous Possum")
   #   everything else:      the session name
-  local win_title="$name"
+  local label win_title="$name"
+  label=$(session_label "$repo_key" "$wt_path")
   if [ -n "$gh_kind" ]; then
     local gh_title=""
     if command -v gh >/dev/null 2>&1; then
@@ -1604,11 +1880,107 @@ cmd_up() {
   elif [ "$unnamed" -eq 1 ]; then
     win_title="$persona"
   fi
-  if [ -n "$repo_key" ]; then
-    win_title="$(title_prefix_for "$repo_key")$win_title"
-  else
-    win_title="[$label] $win_title"
+  win_title="$(session_title_prefix "$repo_key" "$label")$win_title"
+
+  # The session id is chosen here rather than by claude, so the ledger knows
+  # it before claude has even started — which is what lets `yo resume-all`
+  # bring this session back after a crash.
+  local session_id session_key guest=""
+  session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  [ -n "$repo_key" ] && [ "$repo_key" = "$YO_ADOPTED_REPO" ] \
+    && guest=$(_yo_github_for "$repo_key")
+  session_key=$(_yo_state put "$wt_path" "$session_id" "$win_title" "$repo_key" \
+    "$name" "$(profile_for "$repo_key")" "$(mode_word "$here")" "$guest") \
+    || { session_key=""; echo "yo: couldn't record the session in $YO_STATE_DIR (resume-all won't know about it)"; }
+
+  # Seed the left-pane claude with an initial message when we have one (PR/issue
+  # URL mode, and/or the [extra] arg). Single-quote wrapping, NOT printf %q:
+  # %q backslash-escapes every space, which made the pane's command line an
+  # unreadable '\ ' blizzard. Wrapping in single quotes (with the standard
+  # '\'' dance for any embedded single quote) is equally shell-safe and reads
+  # like what it is.
+  prepare_claude_cmd "$repo_key" "$label" "$session_key"
+  local claude_cmd="$YO_CLAUDE_LINE --session-id $session_id"
+  if [ -n "$initial_msg" ]; then
+    claude_cmd="$claude_cmd $(shell_single_quote "$initial_msg")"
   fi
+
+  echo "        persona: $persona"
+  echo "        session: $session_id"
+  [ -n "$initial_msg" ] && echo "        seeding claude with: $initial_msg"
+  launch_session "$wt_path" "$win_title" "$claude_cmd" "$repo_key" "$label" \
+    "$force_new_window"
+  echo "==> ready."
+}
+
+# here=1|0 -> the mode word the ledger records.
+mode_word() { if [ "$1" -eq 1 ]; then printf 'here'; else printf 'worktree'; fi; }
+
+# What a session is filed under: its repo, else the profile that was picked,
+# else (a --here session somewhere yo doesn't know) the directory.
+session_label() {
+  local pname
+  pname=$(profile_for "$1")
+  printf '%s' "${1:-${pname:-$(basename "$2")}}"
+}
+
+# The window-title prefix: the repo's (see title_prefix_for), else "[<label>] ".
+session_title_prefix() {
+  if [ -n "$1" ]; then title_prefix_for "$1"; else printf '[%s] ' "$2"; fi
+}
+
+# The claude command line for a session in repo <key> (may be empty), filed
+# under <label>: the repo's or profile's claude command, run with
+# YO_SESSION_KEY=<session_key> so the ledger hooks know their record, plus the
+# composed settings layer. Sets YO_CLAUDE_LINE; the caller adds --session-id
+# or --resume and any initial message. Used both to create a session and to
+# resume one, so a resumed session gets the same layer it started with.
+prepare_claude_cmd() {
+  local repo_key="$1" label="$2" session_key="$3"
+  local pname memory_dir settings_file="" profile_settings settings_name="$label"
+  pname=$(profile_for "$repo_key")
+  [ -n "$pname" ] && echo "==> profile: $pname"
+
+  memory_dir=$(memory_dir_for "$repo_key")
+  if [ -n "$memory_dir" ]; then
+    if mkdir -p "$memory_dir" 2>/dev/null; then
+      echo "==> memory: $memory_dir"
+    else
+      echo "yo: couldn't create $memory_dir — using Claude's default memory"
+      memory_dir=""
+    fi
+  fi
+  profile_settings=$(_yo_profile_value "$repo_key" 6)
+  if [ -n "$profile_settings" ] && [ ! -f "$profile_settings" ]; then
+    die "profile '$pname': no settings file at $profile_settings"
+  fi
+  [ -n "$pname" ] && [ "$pname" != "$label" ] && settings_name="$pname.$label"
+  settings_file=$(compose_session_settings "$memory_dir" "$settings_name" "$profile_settings") \
+    || { settings_file=""; echo "yo: couldn't compose the settings layer; launching claude without it (the ledger won't follow /clear)"; }
+
+  YO_CLAUDE_LINE=$(claude_cmd_for "$repo_key")
+  [ -n "$session_key" ] \
+    && YO_CLAUDE_LINE="YO_SESSION_KEY=$(shell_single_quote "$session_key") $YO_CLAUDE_LINE"
+  [ -n "$settings_file" ] \
+    && YO_CLAUDE_LINE="$YO_CLAUDE_LINE --settings $(shell_single_quote "$settings_file")"
+  return 0
+}
+
+# Opens the iTerm tab (or window) for a session and starts claude in it.
+# force_new_window: 1 = new window, 0 = tab in the shared window, -1 = config.
+launch_session() {
+  local wt_path="$1" win_title="$2" claude_cmd="$3" repo_key="$4" label="$5"
+  local force_new_window="$6"
+
+  # ensure the title-locked iTerm profile exists (falls back to default profile)
+  local profile="$WORKSESH_PROFILE_NAME" wrote
+  if wrote=$(ensure_iterm_profile); then
+    [ "$wrote" = "WROTE" ] && sleep 1.5   # let iTerm load the (re)written profile
+  else
+    profile=""
+    echo "yo: couldn't build the '$WORKSESH_PROFILE_NAME' profile; using default (title may be overwritten by claude)"
+  fi
+
   # Which window this session joins. The group is a plain label, so setting
   # YO_WINDOW_GROUP to something containing {repo} gives one window per repo.
   local win_group force_new
@@ -1638,34 +2010,288 @@ cmd_up() {
   else
     echo "==> opening iTerm2 tab '$win_title' in the '$win_group' window ($panes)"
   fi
-  echo "        persona: $persona"
-  [ -n "$initial_msg" ] && echo "        seeding claude with: $initial_msg"
   open_iterm_session "$wt_path" "$win_title" "$claude_cmd" "$profile" \
     "yo:$win_group" "$force_new" "$do_split"
   reassert_session_title "$win_title"
+}
+
+# --- resume -------------------------------------------------------------------
+# A guest repo (one a PR/issue URL brought in) is registered only for the run
+# that brought it in. Echoes the key a recorded repo goes by now; non-zero when
+# it isn't registered (any more).
+_yo_ensure_repo() {
+  local key="$1" guest="$2" k
+  _yo_field "$key" 1 >/dev/null 2>&1 && { printf '%s' "$key"; return 0; }
+  if [ -n "$guest" ]; then
+    k=$(repo_key_from_url "https://github.com/$guest") && { printf '%s' "$k"; return 0; }
+  fi
+  return 1
+}
+
+# Relaunches the session in the R_* globals, under the repo and profile it was
+# created with, so it gets the same settings layer, memory and window.
+_yo_resume_row() {
+  local force_new_window="$1" repo_key="" saved_profile="$YO_PROFILE_SELECTED"
+  if [ -n "$R_REPO" ]; then
+    if ! repo_key=$(_yo_ensure_repo "$R_REPO" "$R_GUEST"); then
+      if [ -n "$R_GUEST" ]; then
+        # Registers it again, from the clone that's already there.
+        adopt_url_repo "$R_GUEST"
+        repo_key="$YO_ADOPTED_REPO"
+      else
+        echo "yo: repo '$R_REPO' is no longer configured; resuming $R_NAME without its settings"
+        repo_key=""
+      fi
+    fi
+  fi
+  YO_PROFILE_SELECTED=""
+  if [ -n "$R_PROFILE" ]; then
+    if _yo_pfield "$R_PROFILE" 1 >/dev/null 2>&1; then
+      YO_PROFILE_SELECTED="$R_PROFILE"
+    else
+      echo "yo: profile '$R_PROFILE' is no longer defined; resuming $R_NAME without it"
+    fi
+  fi
+
+  echo "==> resuming $R_NAME ($R_SID) in $R_WT"
+  local label
+  label=$(session_label "$repo_key" "$R_WT")
+  prepare_claude_cmd "$repo_key" "$label" "$R_KEY"
+  launch_session "$R_WT" "$R_TITLE" "$YO_CLAUDE_LINE --resume $R_SID" \
+    "$repo_key" "$label" "$force_new_window"
+  YO_PROFILE_SELECTED="$saved_profile"
+}
+
+# Where a directory sits in yo's world, for a session yo didn't start. Sets
+# D_DIR (a yo worktree's root, else the directory as given), D_REPO, D_NAME,
+# D_MODE (worktree only for a yo worktree) and D_TITLE.
+_yo_classify_dir() {
+  local dir="$1" k clone
+  D_DIR="$dir"; D_REPO=""; D_NAME=""; D_MODE="here"
+  for k in $(_yo_repo_keys); do
+    clone=$(repo_path_for "$k")
+    case "$dir/" in
+      "$clone-worktrees/"*)
+        D_REPO="$k"
+        D_NAME="${dir#"$clone-worktrees/"}"; D_NAME="${D_NAME%%/*}"
+        D_DIR="$clone-worktrees/$D_NAME"
+        D_MODE="worktree"
+        break ;;
+      "$clone/"*)
+        D_REPO="$k"
+        D_NAME="$(basename "$clone")" ;;
+    esac
+  done
+  [ -n "$D_NAME" ] || D_NAME=$(basename "$dir")
+  D_TITLE="$(session_title_prefix "$D_REPO" "$(session_label "$D_REPO" "$D_DIR")")$D_NAME"
+}
+
+cmd_sessions() {
+  _yo_sync_ledger
+  local rows
+  rows=$(_yo_state list)
+  if [ -z "$rows" ]; then
+    echo "no sessions in the ledger ($YO_STATE_DIR)"
+    return 0
+  fi
+  local st pid name repo sid wt title key prof mode guest where
+  printf '%-8s %-7s %-12s %-36s %s\n' STATUS PID REPO SESSION NAME
+  while IFS="$_YO_TAB" read -r st pid name repo sid wt title key prof mode guest; do
+    where="$repo"
+    [ "$where" = "-" ] && [ "$prof" != "-" ] && where="($prof)"
+    [ "$title" != "$name" ] && name="$name — $title"
+    [ "$mode" = "here" ] && name="$name  (in place)"
+    printf '%-8s %-7s %-12s %-36s %s\n' "$st" "$pid" "$where" "$sid" "$name"
+  done <<EOF
+$rows
+EOF
+  echo
+  echo "ready = resumable (yo resume <name|id>, or yo resume-all); gone = directory removed"
+}
+
+cmd_resume() {
+  local query="" force_new_window=-1 a
+  for a in "$@"; do
+    case "$a" in
+      --new-window|--window) force_new_window=1 ;;
+      --tab)                 force_new_window=0 ;;
+      --*) die "unknown flag: $a" ;;
+      *)   [ -z "$query" ] || die "usage: yo resume [<name|session-id|dir>] [--new-window|--tab]"
+           query="$a" ;;
+    esac
+  done
+  if [ -z "$query" ]; then
+    cmd_sessions
+    return 0
+  fi
+  # A directory may be given relatively; the ledger holds absolute paths.
+  [ -d "$query" ] && query=$(cd "$query" && pwd -P)
+
+  _yo_sync_ledger
+  local row rc=0 how
+  how=$(mktemp)
+  row=$(_yo_state get "$query" 2>"$how") || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    cat "$how" >&2; rm -f "$how"
+    die "be more specific (use the session id)"
+  fi
+  [ "$rc" -eq 0 ] || { rm -f "$how"; die "no session matches '$query' (yo sessions lists them)"; }
+  local transcript_only=0
+  grep -q transcript-only "$how" && transcript_only=1
+  rm -f "$how"
+  _yo_read_row "$row"
+
+  case "$R_STATUS" in
+    running) die "$R_NAME is already running (pid $R_PID)" ;;
+    gone)    die "$R_NAME's directory is gone: $R_WT" ;;
+    no-id)   die "$R_NAME has no recorded session id to resume" ;;
+  esac
+
+  if [ "$transcript_only" -eq 1 ]; then
+    # Known only from its transcript: record it, so it carries a tab title,
+    # joins the ledger, and comes back with the rest on the next resume-all.
+    _yo_classify_dir "$R_WT"
+    R_REPO="$D_REPO"; R_NAME="$D_NAME"; R_TITLE="$D_TITLE"
+    R_PROFILE=$(profile_for "$D_REPO"); R_GUEST=""
+    R_KEY=$(_yo_state put "$R_WT" "$R_SID" "$R_TITLE" "$R_REPO" "$R_NAME" \
+      "$R_PROFILE" "$D_MODE" "") || R_KEY=""
+  fi
+  _yo_resume_row "$force_new_window"
   echo "==> ready."
 }
 
+cmd_resume_all() {
+  local dry=0 force_new_window=-1 a
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|-n)          dry=1 ;;
+      --new-window|--window) force_new_window=1 ;;
+      --tab)                 force_new_window=0 ;;
+      *) die "usage: yo resume-all [--dry-run] [--new-window|--tab]" ;;
+    esac
+  done
+
+  _yo_sync_ledger
+  local rows row n=0 skipped=""
+  rows=$(_yo_state list)
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    _yo_read_row "$row"
+    case "$R_STATUS" in
+      ready) : ;;
+      *) skipped="${skipped}  ${R_STATUS}  ${R_NAME}
+"; continue ;;
+    esac
+    n=$((n + 1))
+    if [ "$dry" -eq 1 ]; then
+      echo "would resume: $R_NAME ($R_SID) in $R_WT"
+    else
+      _yo_resume_row "$force_new_window"
+    fi
+  done <<EOF
+$rows
+EOF
+  if [ -n "$skipped" ]; then
+    echo "skipped:"
+    printf '%s' "$skipped"
+  fi
+  if [ "$dry" -eq 1 ]; then
+    echo "==> $n session(s) would be resumed"
+  else
+    echo "==> resumed $n session(s)"
+  fi
+}
+
 # --- teardown -----------------------------------------------------------------
+# The ledger key of the in-place session `yo down` runs in, if it can tell:
+# YO_SESSION_KEY (claude, and so the /yo-down skill, runs with it), else the
+# session id claude exports to its tools, else the one in-place record for this
+# directory. Empty when none or several match.
+_yo_here_session_key() {
+  local dir="$1" rows st pid name repo sid wt title k prof mode guest
+  local by_id="" by_dir="" n=0
+  if [ -n "${YO_SESSION_KEY:-}" ]; then
+    printf '%s' "$YO_SESSION_KEY"; return 0
+  fi
+  rows=$(_yo_state list) || return 0
+  while IFS="$_YO_TAB" read -r st pid name repo sid wt title k prof mode guest; do
+    [ -n "$k" ] || continue
+    [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ "$sid" = "$CLAUDE_CODE_SESSION_ID" ] \
+      && by_id="$k"
+    [ "$mode" = "here" ] || continue
+    case "$dir/" in "$wt/"*) : ;; *) continue ;; esac
+    by_dir="$k"; n=$((n + 1))
+  done <<EOF
+$rows
+EOF
+  if [ -n "$by_id" ]; then
+    printf '%s' "$by_id"
+  elif [ "$n" -eq 1 ]; then
+    printf '%s' "$by_dir"
+  fi
+  return 0
+}
+
 cmd_down() {
-  local toplevel
+  # --yes skips the prompt, for running from inside the session itself (a
+  # skill, or a remote-controlled claude) where nobody can answer it. Because
+  # nobody is looking, --yes alone refuses to throw away uncommitted work;
+  # --discard is the explicit "yes, lose it".
+  local yes=0 discard=0 dry=0 a ans
+  for a in "$@"; do
+    case "$a" in
+      --yes|-y)      yes=1 ;;
+      --discard)     discard=1 ;;
+      --dry-run|-n)  dry=1 ;;
+      *) die "usage: yo down [--dry-run] [--yes [--discard]]" ;;
+    esac
+  done
+
+  local toplevel tab_note
   toplevel=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  if [ -n "${ITERM_SESSION_ID:-}" ]; then
+    tab_note="  and close this iTerm2 tab, which ends the claude session in it."
+  else
+    tab_note="  (not inside iTerm2: no tab to close)"
+  fi
 
   # Not a yo worktree (a --here session, or not a git checkout at all): there
-  # is nothing on disk that is ours to remove, so teardown is just the tab.
+  # is nothing on disk that is ours to remove, so teardown is forgetting the
+  # session and closing the tab.
   case "$(dirname "${toplevel:-/}")" in
     *-worktrees) : ;;
-    *) echo "No yo worktree here — $(pwd) will be left exactly as it is."
-       printf 'Close this tab? [y/N] '
-       read -r ans
-       case "${ans:-}" in
-         y|Y|yes|YES) close_iterm_current_tab ;;
-         *) echo "aborted." ;;
-       esac
+    *) local key
+       key=$(_yo_here_session_key "$(pwd -P)")
+       if [ "$dry" -eq 1 ]; then
+         echo "Tearing down this session would:"
+       else
+         echo "About to tear down this session:"
+       fi
+       echo "  leave $(pwd) exactly as it is (no yo worktree here)"
+       if [ -n "$key" ]; then
+         echo "  forget it in yo's session ledger ($key)"
+       else
+         echo "  (no single ledger record for it here — yo forget <name> if one lingers)"
+       fi
+       echo "$tab_note"
+       if [ "$dry" -eq 1 ]; then
+         echo "dry run: nothing changed."
+         return 0
+       fi
+       if [ "$yes" -eq 0 ]; then
+         printf 'Close this tab? [y/N] '
+         read -r ans || ans=""
+         case "${ans:-}" in
+           y|Y|yes|YES) : ;;
+           *) echo "aborted."; return 0 ;;
+         esac
+       fi
+       [ -n "$key" ] && { _yo_state drop "$key" || true; }
+       close_iterm_own_tab
        return 0 ;;
   esac
 
-  local repo_key repo_path branch dirty unpushed ans
+  local repo_key repo_path branch dirty unpushed
   repo_key=$(detect_repo_key) || die "couldn't identify the repo from origin"
   repo_path=$(repo_path_for "$repo_key")
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')
@@ -1674,7 +2300,11 @@ cmd_down() {
   base_ref=$(base_ref_for "$repo_key")
   unpushed=$(git log --oneline "origin/${base_ref}..HEAD" 2>/dev/null || true)
 
-  echo "About to tear down this work session:"
+  if [ "$dry" -eq 1 ]; then
+    echo "Tearing down this work session would:"
+  else
+    echo "About to tear down this work session:"
+  fi
   echo "  repo:     $repo_key"
   echo "  worktree: $toplevel"
   echo "  branch:   $branch   (KEPT — not deleted)"
@@ -1689,28 +2319,57 @@ cmd_down() {
     printf '%s\n' "$unpushed" | sed 's/^/        /'
   fi
   echo
-  printf 'Remove the worktree and close this window? [y/N] '
-  read -r ans
-  case "${ans:-}" in
-    y|Y|yes|YES) : ;;
-    *) echo "aborted."; exit 0 ;;
-  esac
+  echo "$tab_note"
+
+  if [ "$dry" -eq 1 ]; then
+    if [ -n "$dirty" ]; then
+      echo "dry run: nothing changed. Uncommitted work means --yes alone will refuse; add --discard to lose it."
+    else
+      echo "dry run: nothing changed."
+    fi
+    return 0
+  fi
+
+  if [ "$yes" -eq 1 ]; then
+    if [ -n "$dirty" ] && [ "$discard" -eq 0 ]; then
+      die "refusing: uncommitted changes above would be lost. Commit/stash them, or pass --discard."
+    fi
+  else
+    printf 'Remove the worktree and close this tab? [y/N] '
+    read -r ans || ans=""
+    case "${ans:-}" in
+      y|Y|yes|YES) : ;;
+      *) echo "aborted."; exit 0 ;;
+    esac
+  fi
 
   local force=()
   [ -n "$dirty" ] && force=(--force)
 
+  # Step out first: the directory is about to vanish, and later commands
+  # (python for the ledger) can't start in a deleted cwd.
+  cd "$repo_path"
   # ${force[@]+...} guards against macOS bash 3.2, where expanding an empty
   # array under `set -u` errors with "unbound variable".
   git -C "$repo_path" worktree remove ${force[@]+"${force[@]}"} "$toplevel"
   git -C "$repo_path" worktree prune
+  _yo_state drop-dir "$toplevel" || true
   echo "worktree removed; branch '$branch' kept."
 
-  close_iterm_current_tab
+  close_iterm_own_tab
 }
 
 # --- dispatch -----------------------------------------------------------------
 main() {
   local sub="${1:-}"
+  # The ledger hook runs at every claude start, so it skips config loading
+  # entirely: fast, and it can't fail on a config problem.
+  if [ "$sub" = "_session-hook" ]; then
+    # The payload arrives on stdin, but python3 reads its program from stdin
+    # (the heredoc), so it's handed over through the environment instead.
+    YO_HOOK_INPUT="$(cat)" _yo_state hook || true
+    exit 0
+  fi
   # Help must work even outside a clone with no config, so it loads softly.
   case "$sub" in
     help|-h|--help) _yo_load_config 1; _yo_apply_defaults; usage; exit 0 ;;
@@ -1722,6 +2381,9 @@ main() {
   _yo_apply_defaults
   case "$sub" in
     down|rm|teardown|-d) shift; cmd_down "$@" ;;
+    resume|--resume)     shift; cmd_resume "$@" ;;
+    resume-all)          shift; cmd_resume_all "$@" ;;
+    sessions|ls)         shift; cmd_sessions "$@" ;;
     *)                   cmd_up "$@" ;;
   esac
 }

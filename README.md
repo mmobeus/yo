@@ -8,6 +8,7 @@ scripts/yo              iTerm2 work-session launcher (git worktrees, or in place
 config/yo.config.example.sh   starting point for your own config
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
+claude/skills/          skills that drive yo from inside a session (yo-down)
 install.sh              wires it all up
 ```
 
@@ -29,6 +30,7 @@ touches it again: it names your repos, so it lives outside this one.
 | `yo` | `~/.local/bin/` |
 | yo config | `~/.config/yo/config.sh` (a plain file, yours) |
 | settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
+| skills | `~/.claude/skills/` |
 | terminal peer | iTerm2's "Claude Code" workgroup (only if it has none) |
 
 Useful flags: `--dry-run`, `--uninstall`, `--copy` (no dependency on this
@@ -43,9 +45,39 @@ yo https://github.com/o/r/pull/7  # worktree at the PR's head, review seeded
 yo --repo=backend -  'look into the flaky test'
 yo --here - 'read HANDOFF.md'     # no worktree: this directory, as checked out
 yo down                           # tear the session down
+yo sessions                       # what yo knows about, and what's running
+yo resume-all                     # after a restart: bring them all back
 ```
 
 `yo help` has the full story, and lists the repos it can see.
+
+### Resuming after a restart
+
+Claude Code forgets which sessions were running as soon as it restarts, so yo
+keeps its own ledger under `~/.local/state/yo/sessions/`: each session's id,
+directory, repo, profile and title. yo picks the id itself when it creates a
+session, and a hook in the session's settings layer follows it through
+`/clear`.
+
+```sh
+yo sessions              # running, ready to resume, or gone
+yo resume my-fix         # one session, by name, session id or directory
+yo resume-all --dry-run  # every session that was live
+```
+
+A resumed session comes back under the same repo, profile, memory and settings
+layer it started with. `yo resume <session-id>` works for any session, even one
+yo didn't start: its directory is read from the transcript, and it joins the
+ledger from then on. `yo sessions` also picks up claude sessions running in a
+yo worktree that were started by hand, so run it before a planned restart.
+
+### Tearing down from inside the session
+
+`yo down --dry-run` reports what teardown would do; `yo down --yes` skips the
+prompt (and refuses to lose uncommitted work unless `--discard`). That is what
+the `/yo-down` skill uses, so a session can be wound up from inside claude,
+including a remote-controlled one with no terminal to type into. `yo down`
+closes its own iTerm2 tab, not whichever one has focus.
 
 ### Repos yo doesn't know
 
@@ -87,8 +119,8 @@ YO_MODE="here"                           # or for every repo
 Since nothing is fetched, a PR or issue URL opened in place gets a warning: the
 tree is whatever was last checked out, not the PR's head or a fresh base.
 
-In such a session `yo down` only closes the tab; there is no worktree to
-remove, and the directory is left exactly as it is.
+In such a session `yo down` only forgets the session and closes the tab;
+there is no worktree to remove, and the directory is left exactly as it is.
 
 ## Profiles
 
@@ -142,7 +174,9 @@ claude --settings ~/.local/state/yo/settings/<repo>.json
 
 The layer outranks every settings file on disk, and arrays such as hooks and
 permissions are merged with yours rather than replacing them. yo composes it
-per session from `claude/settings.json` plus the session's memory directory.
+per session from `claude/settings.json`, the profile's `--settings` file, the
+session's memory directory, and the hook that keeps the session ledger
+current. `--settings` takes a single value, so all of it goes in one file.
 
 Only sessions yo launches see the layer. To have those settings in every
 `claude` session, `./install.sh --merge-settings` `jq`-merges them into

@@ -88,6 +88,10 @@ add seed  "$REPO/config/yo.config.example.sh" "$CONFIG_DIR/yo/config.sh"
 # ~/.claude: nothing of Claude Code's own is replaced.
 add link  "$REPO/claude/statusline.sh"  "$CONFIG_DIR/yo/statusline.sh"
 add link  "$REPO/claude/settings.json"  "$CONFIG_DIR/yo/claude-settings.json"
+# Skills that drive yo from inside a session. These do go in ~/.claude, since
+# that is where Claude Code finds personal skills; each is its own directory,
+# so nothing already there is touched.
+add link  "$REPO/claude/skills/yo-down" "$CLAUDE_DIR/skills/yo-down"
 if [ "$MERGE_SETTINGS" -eq 1 ]; then
   add merge "$REPO/claude/settings.json" "$CLAUDE_DIR/settings.json"
 fi
