@@ -961,6 +961,10 @@ Two rules shape it:
   parity run offline, with fakes, so `cargo xtask ci` works on a fresh clone.
   Anything that does need a secret or the network is its own subcommand, and
   says which variables it needs when they're missing.
+- **Linux as well as macOS.** `osascript`, `ps` and the harnesses are faked,
+  so the default gates don't need a Mac, and CI can use Linux runners. `yo-app`
+  stays an empty crate without Tauri until phase 6, so the workspace builds
+  without WebKit's system libraries until then.
 - **The review skills already run locally,** and so does setting the
   `yo-review` status. If they ever move into CI, CI calls the same skills.
 
@@ -982,7 +986,7 @@ it.
 
 | rule | check |
 | --- | --- |
-| `yo-core` stays synchronous and light | a test over `cargo metadata` fails if `yo-core` depends on tokio, axum or the ACP crate |
+| `yo-core` stays synchronous and light | a test over `cargo metadata` fails if `yo-core` depends on tokio, axum, the ACP crate or Tauri |
 | the app holds no yo logic | the same test fails if `yo-app` depends on `yo-core`, `yo-local` or `yo-daemon`; it may use only `yo-client` and `yo-proto` |
 | the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
 | the core never prints | `clippy::print_stdout` and `clippy::print_stderr` denied in `yo-core` |
