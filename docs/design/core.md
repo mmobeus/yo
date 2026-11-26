@@ -10,7 +10,7 @@
 
 | phase | what | status |
 | --- | --- | --- |
-| 0 | this design | in review (#8) |
+| 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | not started (#11) |
 | 1 | Rust core with CLI parity | not started |
 | 2 | a second harness: Codex | not started |
