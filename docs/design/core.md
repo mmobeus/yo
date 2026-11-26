@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes. Create is ported. Next: `yo NAME` and reaching a session |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`). Next: the ledger commands and resume |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -256,6 +256,7 @@ yo-core/src/
   github.rs     the gh CLI: PR and issue titles, PR listings for sweep; URL parsing
   ledger.rs     session records: load, write, drop, liveness, sync, the hook; later put, adopt, retitle, get
   resolve.rs    `yo NAME`: the ordered lookup
+  reach.rs      reaching what it found: focus a running session (typing the message), resume a stopped one
   create.rs     plan a new session: INPUT (unnamed, PR, issue, existing or new branch), worktree, branch, title, codename, brief
   resume.rs     resume one, resume-all
   down.rs       tear down the current session
@@ -488,7 +489,7 @@ pub enum Action {
 }
 
 pub fn plan_create(ctx: &Ctx, req: CreateRequest) -> Result<Plan>;
-pub fn plan_reach(ctx: &Ctx, name: &str, message: Option<&str>) -> Result<Plan>;
+pub fn plan_reach(ctx: &Ctx, e: &Entry, st: State, label: &str, o: &ResumeOpts) -> Result<Plan>; // what resolve found
 pub fn plan_resume(ctx: &Ctx, q: &str, opts: ResumeOpts) -> Result<Plan>;
 pub fn plan_resume_all(ctx: &Ctx, opts: ResumeOpts) -> Result<Plan>;
 pub fn plan_down(ctx: &Ctx, here: &Path, opts: DownOpts) -> Result<Plan>;
@@ -507,15 +508,15 @@ sessions. It returns what NAME means; the caller acts on it.
 
 ```rust
 pub enum Resolved {
-    RepoOrProfile,                          // step 1: create, positionally
-    Agent(String),                          // step 2
-    Live(LiveSession),                      // step 3: by the harness's own name for it
-    Ledger(Entry, State),                   // step 4: by yo name, id, 8+ prefix
-    Home { repo: String, target: HomeTarget }, // step 5: running, else latest ready, else new in place
-    New,                                    // step 6
+    New,                                    // a flag, a repo or profile (positionally), or nothing matched
+    Agent(String),                          // a registered agent
+    Live(LiveSession),                      // by the harness's own name for it
+    Ledger(Box<Entry>, State),              // by yo name, id, 8+ prefix; running, ready or ended
+    Home { repo: String, target: HomeTarget }, // NAME-home: running, else live there, else latest ready, else new in place
 }
 
-pub fn resolve(ctx: &Ctx, name: &str, has_flags: bool, live: &[LiveSession]) -> Result<Resolved, Ambiguous>;
+pub fn resolve(reg: &Registry, entries: &[Entry], live: &[LiveSession],
+               args: &[String], has_flags: bool) -> Result<Resolved, Ambiguous>;
 ```
 
 Today this order is spread over `main`, `cmd_reach` and `cmd_home_reach`.
@@ -937,6 +938,9 @@ scaffolding for that one day. Instead:
     line says `opened iTerm2 tab ...` after the tab opens
   - an unknown URL's repo is placed before planning, since the plan needs
     its clone: with `--dry-run`, yo says where it would go and stops there
+  - `yo NAME` takes `--dry-run` too (it doesn't count as a flag, so the
+    lookup still runs); a resumed session is passed `--name` like a new one
+  - `yo AGENT` says `yo agent` isn't ported yet, until area 4
   - a settings layer that can't be written stops the create, before the
     record and the launch, rather than launching without it
 

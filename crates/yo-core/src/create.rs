@@ -357,6 +357,12 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         (Mode::Worktree, Some(r)) if trusted(ctx, r) => Some(r.path.as_path()),
         _ => None,
     };
+    if let (Mode::Worktree, Some(r), None) = (mode, repo, trusted_clone) {
+        plan.notes.push(Note::Info(format!(
+            "not pre-trusting the worktree ({} isn't a trusted repo) — Claude will ask",
+            r.key
+        )));
+    }
     let prepared = harness.prepare(
         ctx,
         &PrepareAsk {
@@ -423,6 +429,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         codename: codename.clone(),
         first_message: brief.clone(),
         settings: prepared.settings,
+        remote_control: None,
     };
     let mut argv = harness.tui_command(&spec);
     argv.env.insert(0, ("YO_SESSION_KEY".into(), key.0.clone()));

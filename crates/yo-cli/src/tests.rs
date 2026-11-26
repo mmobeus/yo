@@ -368,3 +368,59 @@ fn the_session_hook_updates_its_record_and_never_fails() {
         crate::run::session_hook(sys.clone(), junk);
     }
 }
+
+#[test]
+fn yo_name_resumes_a_ready_session_and_refuses_an_ambiguous_one() {
+    let (t, sys, api) = with_clone();
+    sys.set_env("YO_DRY_LAUNCH", "1");
+    let wt = api.with_file_name("api-worktrees").join("feat");
+    fs::create_dir_all(&wt).unwrap();
+    let ledger = t.path().join(".local/state/yo/sessions");
+    fs::create_dir_all(&ledger).unwrap();
+    let rec = |id: &str, name: &str| {
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "{id}", "name": "{name}", "repo": "api", "title": "feat"}}"#,
+            wt.display()
+        )
+    };
+    fs::write(
+        ledger.join("a.json"),
+        rec("abcdef12-0000-4000-8000-000000000000", "feat"),
+    )
+    .unwrap();
+    let out = yo(&sys, &api, &["feat", "keep going"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(out.out.starts_with(&format!(
+        "==> resuming feat (abcdef12-0000-4000-8000-000000000000) in {}\n",
+        wt.display()
+    )));
+    assert!(
+        out.out
+            .contains("--name feat --resume abcdef12-0000-4000-8000-000000000000 'keep going'\n")
+    );
+    assert!(out.out.ends_with("==> ready.\n"));
+
+    fs::write(
+        ledger.join("b.json"),
+        rec("abcdef12-1111-4000-8000-000000000000", "feat"),
+    )
+    .unwrap();
+    let out = yo(&sys, &api, &["feat"]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.err
+            .starts_with("yo: ambiguous: 2 sessions match 'feat'\n"),
+        "{}",
+        out.err
+    );
+    assert!(
+        out.err
+            .ends_with("yo: be more specific (use the session id)\n")
+    );
+    // Nothing was created.
+    assert!(
+        !sys.calls()
+            .iter()
+            .any(|c| c.args.iter().any(|a| a == "worktree"))
+    );
+}

@@ -570,6 +570,13 @@ impl Harness for Bare {
             args: vec![s.codename.clone()],
         }
     }
+    fn resume_command(&self, id: &str, _s: &SessionSpec) -> Argv {
+        Argv {
+            env: Vec::new(),
+            command: "bare".into(),
+            args: vec!["resume".into(), id.into()],
+        }
+    }
 }
 
 #[test]

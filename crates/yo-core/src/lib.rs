@@ -26,7 +26,9 @@ pub mod ojson;
 pub mod paths;
 pub mod place;
 pub mod plan;
+pub mod reach;
 pub mod registry;
+pub mod resolve;
 pub mod runner;
 pub mod sys;
 

@@ -24,6 +24,20 @@ pub enum RunnerKind {
 pub trait Runner {
     fn kind(&self) -> RunnerKind;
     fn launch(&self, sys: &dyn Sys, spec: &LaunchSpec) -> Result<Launched>;
+    /// Brings forward the session on terminal `tty` (`/dev/ttys003`) and
+    /// types `message` into it, if given. `Focused::NotFound` when no tab
+    /// of this runner's has that terminal.
+    fn focus(&self, sys: &dyn Sys, tty: &str, message: Option<&str>) -> Result<Focused>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Focused {
+    Yes,
+    NotFound,
+    /// Nothing ran: what would have.
+    Dry {
+        tty: String,
+    },
 }
 
 /// A session to open.
@@ -73,6 +87,12 @@ impl Runner for DryLaunch {
     fn launch(&self, _sys: &dyn Sys, spec: &LaunchSpec) -> Result<Launched> {
         Ok(Launched::Dry {
             line: spec.argv.line(),
+        })
+    }
+
+    fn focus(&self, _sys: &dyn Sys, tty: &str, _message: Option<&str>) -> Result<Focused> {
+        Ok(Focused::Dry {
+            tty: tty.to_string(),
         })
     }
 }

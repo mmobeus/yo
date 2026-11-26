@@ -7,10 +7,13 @@ use std::sync::Arc;
 use yo_core::Ctx;
 use yo_core::create::{CreateRequest, plan_create, unplaced};
 use yo_core::ledger::Ledger;
+use yo_core::ledger::State;
 use yo_core::paths::Paths;
 use yo_core::place::{self, PlaceTo};
-use yo_core::plan::{Report, execute};
+use yo_core::plan::{Note, Plan, Report, execute};
+use yo_core::reach::{ResumeOpts, ensure_guest, plan_focus, plan_reach};
 use yo_core::registry::Mode;
+use yo_core::resolve::{Ambiguous, HomeTarget, Resolved, resolve};
 use yo_core::runner::iterm::Iterm;
 use yo_core::runner::{DryLaunch, Runner, WindowChoice};
 use yo_core::sys::Sys;
@@ -43,7 +46,7 @@ fn go(
     err: &mut dyn Write,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if cli.command.is_none() {
-        return create(&cli.up, sys, cwd, out);
+        return up(&cli.up, sys, cwd, out);
     }
     let Some(name) = read_only(cli.command.as_ref()) else {
         if let Some(c) = &cli.command {
@@ -90,16 +93,178 @@ pub fn session_hook(sys: Arc<dyn Sys>, payload: &str) {
     }
 }
 
-/// `yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]`. Reaching a session by
-/// name (`yo NAME`) isn't ported yet, so this always creates.
-fn create(
+/// Whether any flag was given: `yo NAME --flag` always creates. `--dry-run`
+/// doesn't count, so a reach can be tried dry too.
+fn has_flags(up: &Up) -> bool {
+    up.repo.is_some()
+        || up.profile.is_some()
+        || up.here
+        || up.worktree
+        || up.window.new_window
+        || up.window.tab
+        || up.add_to.is_some()
+        || up.title.is_some()
+        || up.from.is_some()
+        || up.model.is_some()
+        || up.agent.is_some()
+}
+
+/// `yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]`: reach what NAME names, or
+/// create a session.
+fn up(
     up: &Up,
     sys: Arc<dyn Sys>,
     cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    let dry_launch = sys.env_nonempty("YO_DRY_LAUNCH").is_some();
     let mut ctx = Ctx::load(sys, cwd)?;
+    let live = ctx.live();
+    let entries = ctx.ledger().all();
+    let message = up.args.get(1).cloned();
+    let opts = ResumeOpts {
+        message: message.clone(),
+        ..ResumeOpts::default()
+    };
+    let found = resolve(&ctx.registry, &entries, &live, &up.args, has_flags(up))
+        .map_err(|a| ambiguous(&ctx, &a))?;
+    let (plan, ready) = match found {
+        Resolved::New => return create(up, &mut ctx, cwd, out),
+        Resolved::Agent(n) => {
+            return Err(format!(
+                "{n} is an agent; `yo agent` isn't in the Rust yo yet (scripts/yo still has it)"
+            )
+            .into());
+        }
+        Resolved::Live(l) => {
+            let name = &up.args[0];
+            (
+                plan_focus(&ctx, l.pid, name, None, message.as_deref()),
+                false,
+            )
+        }
+        Resolved::Ledger(e, st) => {
+            let label = e.record.name.clone().unwrap_or_else(|| up.args[0].clone());
+            say(out, &ensure_guest(&mut ctx, &e)?);
+            let running = matches!(st, State::Running { .. });
+            (plan_reach(&ctx, &e, st, &label, &opts)?, !running)
+        }
+        Resolved::Home { repo, target } => {
+            let name = &up.args[0];
+            let dir = ctx
+                .registry
+                .repo(&repo)
+                .map(|r| r.path.clone())
+                .unwrap_or_default();
+            if !dir.is_dir() {
+                return Err(format!(
+                    "{name}'s home, repo '{repo}', has no clone at {}",
+                    dir.display()
+                )
+                .into());
+            }
+            match target {
+                HomeTarget::Live(l) => (
+                    plan_focus(
+                        &ctx,
+                        l.pid,
+                        &format!("{name}'s home"),
+                        None,
+                        message.as_deref(),
+                    ),
+                    false,
+                ),
+                HomeTarget::Ledger(e, st) => {
+                    let label =
+                        format!("{name}'s home ({})", e.record.name.as_deref().unwrap_or(""));
+                    say(out, &ensure_guest(&mut ctx, &e)?);
+                    let running = matches!(st, State::Running { .. });
+                    (plan_reach(&ctx, &e, st, &label, &opts)?, !running)
+                }
+                HomeTarget::New => {
+                    writeln!(
+                        out,
+                        "==> starting a session in {name}'s home ({})",
+                        dir.display()
+                    )?;
+                    let mut start = Up {
+                        repo: Some(repo),
+                        here: true,
+                        dry_run: up.dry_run,
+                        ..Up::default()
+                    };
+                    start.args = std::iter::once("-".to_string()).chain(message).collect();
+                    return create(&start, &mut ctx, cwd, out);
+                }
+            }
+        }
+    };
+    run_plan(&ctx, &plan, up.dry_run, ready, out)
+}
+
+/// Prints notes as progress does.
+fn say(out: &mut dyn Write, notes: &[Note]) {
+    let mut report = render::Progress::new(out);
+    for n in notes {
+        report.note(n);
+    }
+}
+
+/// More than one session matches: list them, and ask for the id.
+fn ambiguous(ctx: &Ctx, a: &Ambiguous) -> Box<dyn std::error::Error> {
+    let mut s = if a.entries.is_empty() {
+        format!(
+            "ambiguous: {} live sessions are named '{}'\n",
+            a.live, a.query
+        )
+    } else {
+        format!(
+            "ambiguous: {} sessions match '{}'\n",
+            a.entries.len(),
+            a.query
+        )
+    };
+    if !a.entries.is_empty() {
+        let table = render::sessions(ctx, &a.entries, &ctx.live());
+        // The rows, without the legend under them.
+        for l in table.lines().take(a.entries.len() + 1) {
+            s.push_str(l);
+            s.push('\n');
+        }
+    }
+    s.push_str("yo: be more specific (use the session id)");
+    s.into()
+}
+
+/// Shows a plan (`--dry-run`) or runs it, on iTerm unless `YO_DRY_LAUNCH`.
+fn run_plan(
+    ctx: &Ctx,
+    plan: &Plan,
+    dry_run: bool,
+    ready: bool,
+    out: &mut dyn Write,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    if dry_run {
+        out.write_all(render::dry_run(plan).as_bytes())?;
+        return Ok(0);
+    }
+    let dry_launch = ctx.sys.env_nonempty("YO_DRY_LAUNCH").is_some();
+    let mut report = render::Progress::new(out);
+    let iterm = Iterm::new(&ctx.registry.defaults);
+    let runner: &dyn Runner = if dry_launch { &DryLaunch } else { &iterm };
+    execute(ctx, plan, runner, &mut report)?;
+    if ready {
+        report.finish()?;
+    }
+    Ok(0)
+}
+
+/// Creates a session.
+fn create(
+    up: &Up,
+    ctx: &mut Ctx,
+    cwd: &Path,
+    out: &mut dyn Write,
+) -> Result<i32, Box<dyn std::error::Error>> {
     let req = CreateRequest {
         cwd: cwd.to_path_buf(),
         repo: up.repo.clone(),
@@ -121,27 +286,28 @@ fn create(
     };
     // A URL's repo nobody registered goes somewhere first: planning the
     // worktree needs its clone.
-    if let Some(owner_repo) = unplaced(&ctx, &req)? {
-        let to = if place::claimed_by(&ctx, &owner_repo).is_some() {
+    if let Some(owner_repo) = unplaced(ctx, &req)? {
+        let to = if place::claimed_by(ctx, &owner_repo).is_some() {
             PlaceTo::Guest // the claiming profile wins in `place`
         } else if let Some(a) = &up.add_to {
-            PlaceTo::parse(&ctx, a)?
-        } else if can_ask(&ctx) {
-            ask_placement(&place::choices(&ctx, &owner_repo), &owner_repo)
+            PlaceTo::parse(ctx, a)?
+        } else if can_ask(ctx) {
+            ask_placement(&place::choices(ctx, &owner_repo), &owner_repo)
         } else {
             PlaceTo::Guest
         };
         if up.dry_run {
+            let ctx = &*ctx;
             write!(
                 out,
                 "dry run: {owner_repo} isn't registered; yo would {} {} and register it {}, then plan the session\ndry run: nothing changed.\n",
-                if place::clone_path(&ctx, &owner_repo).exists() {
+                if place::clone_path(ctx, &owner_repo).exists() {
                     "use the clone at"
                 } else {
                     "clone it to"
                 },
-                place::clone_path(&ctx, &owner_repo).display(),
-                match (place::claimed_by(&ctx, &owner_repo), &to) {
+                place::clone_path(ctx, &owner_repo).display(),
+                match (place::claimed_by(ctx, &owner_repo), &to) {
                     (Some(p), _) => format!("in profile '{p}'"),
                     (None, PlaceTo::Profile(p)) => format!("in profile '{p}'"),
                     (None, PlaceTo::NewProfile(p)) => format!("in a new profile '{p}'"),
@@ -150,23 +316,11 @@ fn create(
             )?;
             return Ok(0);
         }
-        let (_, notes) = place::place(&mut ctx, &owner_repo, &to)?;
-        let mut report = render::Progress::new(out);
-        for n in &notes {
-            report.note(n);
-        }
+        let (_, notes) = place::place(ctx, &owner_repo, &to)?;
+        say(out, &notes);
     }
-    let plan = plan_create(&ctx, &req)?;
-    if up.dry_run {
-        out.write_all(render::dry_run(&plan).as_bytes())?;
-        return Ok(0);
-    }
-    let mut report = render::Progress::new(out);
-    let iterm = Iterm::new(&ctx.registry.defaults);
-    let runner: &dyn Runner = if dry_launch { &DryLaunch } else { &iterm };
-    execute(&ctx, &plan, runner, &mut report)?;
-    report.finish()?;
-    Ok(0)
+    let plan = plan_create(ctx, &req)?;
+    run_plan(ctx, &plan, up.dry_run, true, out)
 }
 
 /// Whether to ask where a repo goes: at a terminal, outside a Claude

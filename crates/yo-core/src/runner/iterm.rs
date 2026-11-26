@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{LaunchSpec, Launched, Runner, RunnerKind, WindowChoice};
+use super::{Focused, LaunchSpec, Launched, Runner, RunnerKind, WindowChoice};
 use crate::harness::shell_word;
 use crate::registry::{Defaults, Layout, WindowMode};
 use crate::sys::{CommandSpec, Sys};
@@ -19,6 +19,7 @@ use crate::{Error, Result};
 const PREFS: &str = include_str!("iterm/prefs.js");
 const OPEN: &str = include_str!("iterm/open.applescript");
 const RETITLE: &str = include_str!("iterm/retitle.applescript");
+const FOCUS: &str = include_str!("iterm/focus.applescript");
 
 /// The settings it runs with, from the registry's defaults.
 #[derive(Clone, Debug)]
@@ -184,6 +185,27 @@ impl Runner for Iterm {
             warnings,
         })
     }
+
+    fn focus(&self, sys: &dyn Sys, tty: &str, message: Option<&str>) -> Result<Focused> {
+        let spec = CommandSpec {
+            stdin: Some(FOCUS.as_bytes().to_vec()),
+            ..CommandSpec::new("osascript").args([
+                "-".to_string(),
+                tty.to_string(),
+                message.unwrap_or("").to_string(),
+            ])
+        };
+        let found = sys
+            .cmd()
+            .run(&spec)
+            .ok()
+            .is_some_and(|o| o.success() && o.text() == "found");
+        Ok(if found {
+            Focused::Yes
+        } else {
+            Focused::NotFound
+        })
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +312,21 @@ mod tests {
         // Unchanged next time: not rewritten, no wait.
         let _ = iterm(Layout::Auto).launch(&sys, &s);
         assert_eq!(sys.slept().len(), 1);
+    }
+
+    #[test]
+    fn focus_passes_the_tty_and_message_as_arguments() {
+        let sys = FakeSys::new("/h");
+        let it = iterm(Layout::Auto);
+        assert_eq!(
+            it.focus(&sys, "/dev/ttys003", Some("hi 'there'")).unwrap(),
+            Focused::NotFound
+        );
+        sys.answer("osascript", &["-", "/dev/ttys003", ""], ok("found\n"));
+        assert_eq!(it.focus(&sys, "/dev/ttys003", None).unwrap(), Focused::Yes);
+        let c = &sys.calls()[0];
+        assert_eq!(c.args, ["-", "/dev/ttys003", "hi 'there'"]);
+        assert_eq!(c.stdin.as_deref(), Some(FOCUS.as_bytes()));
     }
 
     #[test]
