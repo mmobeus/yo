@@ -94,8 +94,13 @@ impl Record {
         })
     }
 
-    fn id(&self) -> Option<&str> {
-        self.session_id.as_deref().filter(|s| !s.is_empty())
+    /// The session id, if it's one yo can use: a record edited by hand to
+    /// hold something else counts as having none, so it never reaches a
+    /// command line.
+    pub fn id(&self) -> Option<&str> {
+        self.session_id
+            .as_deref()
+            .filter(|s| crate::harness::valid_session_id(s))
     }
 }
 
@@ -290,7 +295,7 @@ impl Ledger {
         let (id, cwd) = match ev {
             HookEvent::Start { id, cwd } | HookEvent::End { id, cwd, .. } => (id.as_str(), cwd),
         };
-        if id.is_empty() {
+        if !crate::harness::valid_session_id(id) {
             return;
         }
         let key = self.sys.env_nonempty("YO_SESSION_KEY");
@@ -521,6 +526,7 @@ mod tests {
         );
         assert_eq!(state_of(&rec(None, None, &wt), &l), State::NoId);
         assert_eq!(state_of(&rec(Some(""), None, &wt), &l), State::NoId);
+        assert_eq!(state_of(&rec(Some("a b"), None, &wt), &l), State::NoId);
         assert_eq!(state_of(&rec(Some("s2"), Some(9), &wt), &l), State::Ended);
         assert_eq!(state_of(&rec(Some("s2"), None, &wt), &l), State::Ready);
     }

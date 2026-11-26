@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{Capabilities, Harness, LiveSession};
+use super::{Capabilities, Harness, LiveSession, valid_session_id};
 use crate::ledger::HookEvent;
 use crate::sys::Sys;
 
@@ -69,7 +69,7 @@ impl Harness for Claude {
     fn hook_event(&self, payload: &str) -> Option<HookEvent> {
         let d: Value = serde_json::from_str(payload).ok()?;
         let s = |k: &str| d.get(k).and_then(Value::as_str);
-        let id = s("session_id").filter(|s| !s.is_empty())?.to_string();
+        let id = s("session_id").filter(|s| valid_session_id(s))?.to_string();
         let cwd = PathBuf::from(s("cwd").unwrap_or(""));
         match s("hook_event_name").unwrap_or("SessionStart") {
             "SessionEnd" => Some(HookEvent::End {
@@ -97,7 +97,7 @@ fn session(d: &Value) -> Option<LiveSession> {
     {
         return None;
     }
-    let id = d["sessionId"].as_str().filter(|s| !s.is_empty())?;
+    let id = d["sessionId"].as_str().filter(|s| valid_session_id(s))?;
     Some(LiveSession {
         harness: "claude".to_string(),
         id: id.to_string(),
@@ -146,6 +146,12 @@ mod tests {
         write(t.path(), 14, r#"{"pid":14,"sessionId":"s14","cwd":"/w/e"}"#);
         // no kind: interactive
         write(t.path(), 15, r#"{"pid":15,"sessionId":"s15","cwd":"/w/f"}"#);
+        // an id that isn't one
+        write(
+            t.path(),
+            18,
+            r#"{"pid":18,"sessionId":"x y'z","cwd":"/w/h"}"#,
+        );
         // a pid written as a string
         write(
             t.path(),
@@ -153,7 +159,7 @@ mod tests {
             r#"{"pid":"17","sessionId":"s17","cwd":"/w/g"}"#,
         );
         fs::write(t.path().join(".claude/sessions/16.json"), "not json").unwrap();
-        for pid in [10, 11, 12, 15, 17] {
+        for pid in [10, 11, 12, 15, 17, 18] {
             sys.add_process(pid, "claude", None);
         }
         sys.add_process(14, "vim", None);
@@ -208,6 +214,8 @@ mod tests {
             r#"{"session_id": 5}"#,
             r#"{"session_id": ""}"#,
             r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+            r#"{"session_id":"s; rm -rf ~"}"#,
+            r#"{"session_id":"$(touch x)"}"#,
         ] {
             assert_eq!(Claude.hook_event(p), None, "{p}");
         }

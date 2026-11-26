@@ -203,11 +203,6 @@ impl Registry {
                 })?),
                 None => None,
             };
-            if profiles.iter().any(|q: &Profile| q.name == name) {
-                return Err(Error::Setting(format!(
-                    "yo_profile: '{name}' is already defined"
-                )));
-            }
             profiles.push(Profile {
                 name: name.to_string(),
                 mode,
@@ -1021,6 +1016,41 @@ mod tests {
         // Outside a clone, with no config: no repos, and no error.
         let r = Registry::load(&sys, Path::new("/no/config.json"), Path::new("/tmp")).unwrap();
         assert!(r.repos().is_empty());
+    }
+
+    #[test]
+    fn more_bad_values() {
+        let sys = FakeSys::new("/h");
+        for (json, want) in [
+            (
+                r#"{"repos": {"a": {"path": ""}}}"#,
+                "yo_repo a: --path is required",
+            ),
+            (
+                r#"{"agents": {"x": {"repo": ""}}}"#,
+                "yo_agent x: --repo is required",
+            ),
+            (
+                r#"{"profiles": {"p": {"mode": "there"}}}"#,
+                "yo_profile p: --mode must be 'here' or 'worktree' (got: 'there')",
+            ),
+            (
+                r#"{"defaults": {"cloneProtocol": "ftp"}}"#,
+                "YO_CLONE_PROTOCOL must be 'ssh' or 'https' (got: 'ftp')",
+            ),
+            (
+                r#"{"defaults": {"layout": "tiles"}}"#,
+                "YO_LAYOUT must be 'auto', 'split' or 'workgroup' (got: 'tiles')",
+            ),
+        ] {
+            assert_eq!(err(&sys, json), want, "{json}");
+        }
+        // From the environment, over a good value in the file.
+        sys.set_env("YO_LAYOUT", "grid");
+        assert_eq!(
+            err(&sys, r#"{"defaults": {"layout": "split"}}"#),
+            "YO_LAYOUT must be 'auto', 'split' or 'workgroup' (got: 'grid')"
+        );
     }
 
     #[test]

@@ -321,13 +321,21 @@ impl Ctx {
 }
 
 pub struct Config {            // the JSON file, as today, plus harness settings
-    pub defaults: Defaults,
-    pub profiles: BTreeMap<String, ProfileCfg>,
-    pub repos: BTreeMap<String, RepoCfg>,
-    pub repos_in: Vec<PathBuf>,
-    pub agents: BTreeMap<String, AgentCfg>,
-    pub harnesses: BTreeMap<String, HarnessCfg>,   // new in phase 2, optional: command, extra args per harness
+    pub defaults: DefaultsCfg,
+    pub profiles: Ordered<ProfileCfg>,
+    pub repos: Ordered<RepoCfg>,
+    pub repos_in: Vec<Text>,                       // ~/ expanded when resolved
+    pub agents: Ordered<AgentCfg>,
+    pub harnesses: Ordered<HarnessCfg>,            // new in phase 2, optional: command, extra args per harness
 }
+```
+
+`Ordered<T>` is a JSON object that keeps the file's order, because order is
+behavior: the first repo registered is the default one, and repos are listed
+in that order. `Text` is a scalar taken as its text, as bash takes it (a number
+or a boolean, too).
+
+```rust
 
 impl Registry {
     pub fn repo(&self, key: &str) -> Option<&Repo>;

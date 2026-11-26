@@ -14,7 +14,17 @@ pub fn owner_repo_from_url(url: &str) -> Option<String> {
     let (owner, rest) = rest.split_once('/')?;
     let repo = rest.split('/').next().unwrap_or("");
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    (!owner.is_empty() && !repo.is_empty()).then(|| format!("{owner}/{repo}"))
+    (name_ok(owner) && name_ok(repo)).then(|| format!("{owner}/{repo}"))
+}
+
+/// A GitHub owner or repo name: not empty, not only dots, not starting with
+/// `-` (it would read as a flag), and no characters GitHub doesn't allow.
+fn name_ok(n: &str) -> bool {
+    !n.is_empty()
+        && !n.starts_with('-')
+        && !n.chars().all(|c| c == '.')
+        && n.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// `owner/repo` out of a conventional `.../github.com/<owner>/<repo>`
@@ -25,7 +35,7 @@ pub fn owner_repo_from_path(path: &str) -> Option<String> {
     let rest = rest.trim_end_matches('/');
     let (owner, rest) = rest.split_once('/')?;
     let repo = rest.split('/').next().unwrap_or("");
-    (!owner.is_empty() && !repo.is_empty()).then(|| format!("{owner}/{repo}"))
+    (name_ok(owner) && name_ok(repo)).then(|| format!("{owner}/{repo}"))
 }
 
 #[cfg(test)]
@@ -42,6 +52,10 @@ mod tests {
             ("https://github.com/acme", None),
             ("https://gitlab.com/acme/api", None),
             ("https://github.com//api", None),
+            ("https://github.com/../api", None),
+            ("https://github.com/acme/..", None),
+            ("https://github.com/-x/api", None),
+            ("https://github.com/acme/a%20b", None),
         ] {
             assert_eq!(owner_repo_from_url(url).as_deref(), want, "{url}");
         }

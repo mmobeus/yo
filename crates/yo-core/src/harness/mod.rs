@@ -60,6 +60,17 @@ pub struct LiveSession {
     pub updated_at: i64,
 }
 
+/// Whether `id` looks like a session id yo can pass on: letters, digits,
+/// `-` and `_`, at most 128 of them. It ends up on command lines
+/// (`--resume <id>`), so anything else is no id at all.
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Every harness yo has.
 pub fn all() -> Vec<Box<dyn Harness>> {
     vec![Box::new(claude::Claude)]
