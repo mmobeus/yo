@@ -40,7 +40,7 @@ script's own summary plus the repos, profiles and agents it can see.
 | `.../pull/<n>` URL | `review_pr_<n>`: a worktree at the PR's head that tracks `refs/pull/<n>/head`, seeded with `<reviewCmd> <url>` |
 | `.../issues/<n>` URL | `issue_<n>` off the base branch, seeded to work the issue |
 | an existing branch | that branch, checked out as-is |
-| anything else | a new branch `<prefix>/<INPUT>` off the base branch |
+| anything else | a new branch `<INPUT>` off the base branch (`<prefix>/<INPUT>` with a `branchPrefix`) |
 
 `yo <repo> [INPUT] [message]` and `yo <profile> [INPUT] [message]` pick the
 repo or profile positionally.
@@ -109,7 +109,7 @@ setting's environment variable, if set, beats the file.
 
 | key | sets | default | env |
 | --- | --- | --- | --- |
-| `branchPrefix` | prefix for branches yo creates | `$USER` | `YO_BRANCH_PREFIX` |
+| `branchPrefix` | prefix for branches yo creates, as `<prefix>/<name>` | none | `YO_BRANCH_PREFIX` |
 | `mode` | `worktree` or `here` | `worktree` | `YO_MODE` |
 | `defaultRepo` | the repo used outside any known clone | the first repo | `YO_DEFAULT_REPO` |
 | `claude` | the claude command | `claude --permission-mode auto` | `YO_CLAUDE_CMD` |
@@ -182,7 +182,7 @@ setting's environment variable, if set, beats the file.
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
 | skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title` |
-| worktrees | `<clone>-worktrees/<name>`, branch `<prefix>/<name>` |
+| worktrees | `<clone>-worktrees/<name>`, branch `<name>` (or `<prefix>/<name>`) |
 | an agent's home | `<clone>-worktrees/agent-<name>`, Remote Control and session name `<name>-home` |
 | unknown repos | `<cloneRoot>/<owner>/<repo>` |
 | iTerm title-lock profile | `~/Library/Application Support/iTerm2/DynamicProfiles/worksesh.json` |

@@ -30,8 +30,9 @@
 #     PR / issue URL     github.com/.../pull/N or /issues/N (see below)
 #     existing branch    exact branch name (local or origin) -> reused as-is;
 #                        also matches <prefix>/<INPUT> (the classic reuse case)
-#     session name       otherwise: new branch <prefix>/<INPUT> off the repo's
-#                        base branch
+#     session name       otherwise: a new branch off the repo's base branch,
+#                        named <INPUT> (<prefix>/<INPUT> when a branchPrefix
+#                        is configured)
 #     - or (omitted)     timestamped session (sesh_YYYYmmdd_HHMMSS) with a fun
 #                        window title ("Adventurous Possum"). `-` is the
 #                        explicit spelling so an [extra] can follow:
@@ -242,7 +243,8 @@
 #
 # What "create" does:
 #   1. fetch the repo's base branch in the primary clone
-#   2. worktree add  <clone>-worktrees/<name>  on branch  <prefix>/<name> —
+#   2. worktree add  <clone>-worktrees/<name>  on branch  <name> (or
+#      <prefix>/<name>, with a branchPrefix) —
 #      REUSED if it already exists locally (must not be checked out elsewhere),
 #      created tracking origin/<prefix>/<name> if that exists, else created
 #      fresh from the base branch (or the PR's head commit in PR-review mode)
@@ -1132,7 +1134,8 @@ _yo_load_config() {
 
 # Defaults land AFTER the config file, so the config can set any of them.
 _yo_apply_defaults() {
-  BRANCH_PREFIX="${YO_BRANCH_PREFIX:-${USER:-work}}"
+  # No prefix unless one is configured: a branch is just the session name.
+  BRANCH_PREFIX="${YO_BRANCH_PREFIX-}"
   CLAUDE_CMD="${YO_CLAUDE_CMD:-claude --permission-mode auto}"
   WIN_WIDTH="${YO_WIN_WIDTH:-1403}"
   WIN_HEIGHT="${YO_WIN_HEIGHT:-824}"
@@ -2535,7 +2538,7 @@ create_session_worktree() {
       echo "==> note: '$name' doesn't match any existing branch; treating it as a session name (flattened: ${name//\//-})"
       name="${name//\//-}"
     fi
-    branch="$prefix/$name"
+    branch="${prefix:+$prefix/}$name"
   fi
   local wt_root="${repo_path}-worktrees"
   wt_path="$wt_root/$name"
