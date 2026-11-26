@@ -84,7 +84,7 @@ Don't weaken a check to get a PR green. That includes:
 - deleting, skipping or `#[ignore]`-ing a test, or relaxing its assertions,
   or an `accepted.diff` entry
   that hides a change in effects
-- the review skills' test cases
+- the review skills' example cases (`cases/`)
 
 If a change really needs one of these, do it in its own commit and list it
 under "Gates loosened" in the PR. The maintainer approves it explicitly in
