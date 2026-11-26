@@ -5,7 +5,7 @@ config that goes with it, installed into `~` as symlinks back into this checkout
 
 ```
 scripts/yo              iTerm2 work-session launcher (git worktrees, or in place)
-config/yo.config.example.sh   starting point for your own config
+config/yo.config.example.json  an example config, every part of it used
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
 claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt, yo-title)
@@ -21,14 +21,14 @@ cd yo
 ./install.sh
 ```
 
-Then edit `~/.config/yo/config.sh` to point `yo` at your own clones. The
-installer creates that file once, from `config/yo.config.example.sh`, and never
-touches it again: it names your repos, so it lives outside this one.
+Then point `yo` at your own clones (see [Configuration](#configuration)). The
+installer creates `~/.config/yo/config.json` once, listing this checkout, and
+never touches it again: it names your repos, so it lives outside this one.
 
 | what | where it lands |
 | --- | --- |
 | `yo` | `~/.local/bin/` |
-| yo config | `~/.config/yo/config.sh` (a plain file, yours) |
+| yo config | `~/.config/yo/config.json` (a plain file, yours) |
 | settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
 | skills | `~/.claude/skills/` |
 | terminal peer | iTerm2's "Claude Code" workgroup (only if it has none) |
@@ -123,20 +123,37 @@ own branches on `origin`. Without `--github`, the owner/repo comes from
 ### Repos yo doesn't know
 
 A PR or issue URL needs no configuration. If its repo isn't registered, yo
-clones it to `<YO_CLONE_ROOT>/<owner>/<repo>` — by default
+clones it to `<cloneRoot>/<owner>/<repo>` — by default
 `~/dev/src/github.com/<owner>/<repo>` — or uses the clone already there, and
-gives the session a worktree as usual.
+gives the session a worktree as usual. Where the repo belongs:
 
-Such a session is a guest:
+- a profile whose `owners` include the repo's owner: it joins that profile, no
+  questions asked;
+- `--add-to=PROFILE`: it joins that profile, and is saved there in the config;
+- otherwise yo asks, when there's a terminal to ask at:
+
+  ```
+  acme/widgets isn't configured. Where does it go?
+    [1] add it to profile mmobeus
+    [n] a new profile "acme" that claims every acme/* repo
+    [g] just this once, as a guest (no shared memory, not pre-trusted)
+  choice [g]:
+  ```
+
+  Either profile choice is saved, so it's asked once per repo (or once per
+  owner, for a new profile);
+- with nobody to ask (no terminal, or yo started from inside claude), a guest.
+
+A guest gets:
 
 - **no shared memory** — Claude keeps its own per-folder memory for it;
 - **no pre-trusted worktree** — the repo is code nobody here has vetted, and it
   can configure hooks and MCP servers, so Claude's trust prompt is left to
   appear.
 
-`YO_CLONE_PROTOCOL` picks `ssh` (default) or `https`; `YO_ADHOC_PROFILE` names
-a profile to run guests under. Register the repo with `yo_repo` once it stops
-being a guest.
+`cloneProtocol` picks `ssh` (default) or `https`; `guestProfile` names a
+profile to run guests under. `yo config add-repo <owner/repo>` registers a repo
+once it stops being a guest.
 
 ### In place: `--here`
 
@@ -152,10 +169,13 @@ directory, which needn't be a git clone.
 In place can also be the default, per repo or everywhere, with `--worktree` to
 opt out for one session:
 
-```sh
-yo_repo backend --path=... --mode=here   # in ~/.config/yo/config.sh
-YO_MODE="here"                           # or for every repo
+```json
+"repos":    { "backend": { "path": "...", "mode": "here" } },
+"defaults": { "mode": "here" }
 ```
+
+(the first for one repo, the second for every repo; a profile takes `"mode"`
+too).
 
 Since nothing is fetched, a PR or issue URL opened in place gets a warning: the
 tree is whatever was last checked out, not the PR's head or a fresh base.
@@ -186,7 +206,8 @@ yo agent                  # the agents registered in the config
   with `yo --agent=<name> --from=<name>-home ...` can report back to it by
   `SendMessage`. Each start moves a clean home to the newest base branch.
   `yo down` and `yo sweep` never remove it; quit it with `/exit`.
-- `yo_agent` in the config gives an agent a default repo and a display name.
+- An entry under `"agents"` in the config gives an agent a default repo and a
+  display name.
   Unregistered merged agents still work with `--agent` and a repo.
 
 ### Reaching a session by name
@@ -206,43 +227,93 @@ its first prompt. A name that matches nothing creates a session as before. A
 repo or profile name keeps its own meaning (`yo <repo>`), and any flag makes it
 an ordinary new session (`yo --repo=backend cindy`).
 
-## Profiles
+## Configuration
 
-A profile is one of *your* projects: a named bundle of defaults that the repos
+`~/.config/yo/config.json` (or `$YO_CONFIG`) is plain data:
+
+```json
+{
+  "defaults": { "branchPrefix": "me", "cloneRoot": "~/src/github.com" },
+  "profiles": {
+    "acme": {
+      "owners": ["acme"],
+      "memory": "acme",
+      "windowGroup": "acme",
+      "repos":  { "backend": { "path": "~/src/github.com/acme/backend", "base": "dev" } },
+      "agents": { "cindy": { "repo": "backend" } }
+    },
+    "notes": { "dir": "~/notes", "memory": "notes" }
+  },
+  "repos": { "yo": { "path": "~/src/github.com/me/yo" } }
+}
+```
+
+`config/yo.config.example.json` uses every part. Unknown keys are an error, so
+a typo doesn't quietly do nothing.
+
+```sh
+yo config                 # the file, and every repo, profile and agent it registers
+yo config add-repo ~/src/github.com/acme/frontend --profile=acme
+yo config add-repo acme/frontend --profile=acme    # clones it first, if need be
+yo config edit            # $EDITOR, then validated
+yo config migrate         # an older config.sh -> config.json (the old file is kept)
+```
+
+Precedence is the same for everything: command-line flag, then the repo, then
+its profile, then `defaults`. A setting already in the environment
+(`YO_MODE=here yo ...`) beats the file, for one run.
+
+### Profiles
+
+A profile is one of *your* projects: a named bundle of settings that the repos
 belonging to it share, and that can be picked on its own.
 
 ```sh
-# ~/.config/yo/config.sh
-yo_profile acme  --memory=acme --window-group=acme
-yo_repo backend  --path=… --profile=acme
-yo_repo frontend --path=… --profile=acme
-
-yo_profile notes --dir="$HOME/notes" \
-  --memory=notes --settings="$HOME/.config/yo/notes.settings.json"
-```
-
-```sh
-yo frontend my-fix       # frontend belongs to acme, so acme's defaults apply
-yo notes                 # from anywhere: a session in the profile's --dir
+yo backend my-fix        # backend belongs to acme, so acme's settings apply
+yo notes                 # from anywhere: a session in the profile's dir
 yo --profile=acme -      # the cwd's repo if it is acme's, else its first repo
 ```
 
-| option | what it sets |
+A repo belongs to a profile by being listed in its `repos`, by being a clone
+under one of its `reposIn` directories, or by belonging to a GitHub owner it
+claims in `owners`: every clone at `<cloneRoot>/<owner>/*` joins, with nothing
+to list, and so does a PR or issue URL for one.
+
+| profile key | what it sets |
 | --- | --- |
-| `--mode=here\|worktree` | in place, or a worktree per session |
-| `--memory=STORE` | the profile's own memory store |
-| `--branch-prefix=S` | prefix for branches yo creates |
-| `--claude="CMD"` | the claude command (permission mode, model, …) |
-| `--settings=FILE` | Claude settings stacked over yo's layer: permissions, hooks, env |
-| `--dir=PATH` | the profile's home, used when no repo is named; needn't be a git clone |
-| `--window-group=LABEL` | the shared iTerm window its sessions join |
+| `owners` | GitHub owners whose repos join this profile |
+| `repos`, `reposIn`, `agents` | what belongs to it |
+| `mode` | `here` (in place) or `worktree` |
+| `memory` | the profile's own memory store |
+| `branchPrefix` | prefix for branches yo creates |
+| `claude` | the claude command (permission mode, model, …) |
+| `settings` | Claude settings stacked over yo's layer: permissions, hooks, env |
+| `dir` | the profile's home, used when no repo is named; needn't be a git clone |
+| `windowGroup` | the shared iTerm window its sessions join |
+| `trust` | `false`: don't pre-trust its worktrees (Claude asks, as for a guest) |
 
-Precedence is the same for everything: command-line flag, then the `yo_repo`
-option, then the profile, then the global setting. `--profile=P` on the command
-line beats the repo's own profile.
+A repo takes `path` (required), `base`, `github`, `mcp` and `mirror` (lists),
+`titlePrefix`, `memory`, `branchPrefix` and `mode`. `--profile=P` on the
+command line beats the repo's own profile. A `dir` that isn't a registered
+clone has nothing to take a worktree from, so those sessions always run in
+place.
 
-A `--dir` that isn't a registered clone has nothing to take a worktree from, so
-those sessions always run in place.
+### Defaults
+
+| key | what it sets | default |
+| --- | --- | --- |
+| `branchPrefix` | prefix for branches yo creates | `$USER` |
+| `mode` | `worktree` or `here` | `worktree` |
+| `defaultRepo` | where bare `yo` goes outside a known clone | the first repo |
+| `claude` | the claude command | `claude --permission-mode auto` |
+| `memories`, `memory` | the shared memory root and store (see [Memory](#memory)) | `~/.claude/memories`, `yo` |
+| `settings` | yo's base settings layer | `claude-settings.json` beside the config |
+| `cloneRoot`, `cloneProtocol` | where unknown repos are cloned, and how | `~/dev/src/github.com`, `ssh` |
+| `guestProfile` | a profile to run guests under | none |
+| `reviewCmd` | the command a PR-review session is seeded with | `/code-review` |
+| `layout` | `auto`, `split` or `workgroup` | `auto` |
+| `windowMode`, `windowGroup` | `tab` or `window`; the shared window's label | `tab`, `yo` |
+| `winWidth`, `winHeight`, `itermProfile` | new-window size; the title-locking iTerm profile | `1403`, `824`, `worksesh` |
 
 ## Claude settings: stacked, not merged
 
@@ -276,17 +347,17 @@ directories — at `~/.claude/memories/yo`.
 
 To keep it in a repo of your own, point yo at the checkout in your config:
 
-```sh
-YO_MEMORIES="$HOME/src/github.com/me/memories"
+```json
+"defaults": { "memories": "~/src/github.com/me/memories" }
 ```
 
 | setting | memory directory |
 | --- | --- |
 | default | `~/.claude/memories/yo` |
-| `YO_MEMORIES=DIR` | `DIR/yo` |
-| `YO_MEMORY_STORE=NAME` | `<YO_MEMORIES>/NAME` |
-| `yo_repo … --memory=NAME` | `<YO_MEMORIES>/NAME`, for that repo only |
-| `YO_MEMORIES=""` | off — Claude's own per-folder memory |
+| `"memories": DIR` | `DIR/yo` |
+| `"memory": NAME` in `defaults` | `<memories>/NAME` |
+| `"memory": NAME` on a repo or profile | `<memories>/NAME`, for that repo or profile only |
+| `"memories": ""` | off — Claude's own per-folder memory |
 
 This has to come from yo (or user settings): Claude ignores
 `autoMemoryDirectory` in project settings, so a cloned repo can't redirect
@@ -298,7 +369,7 @@ where memory is written. Memories Claude already wrote under
 yo works with iTerm2's Claude Code integration rather than around it. When the
 "Claude Code" workgroup has a terminal peer (e.g. "CLI"), that peer is the
 session's shell, so yo opens claude alone in the tab instead of splitting a
-pane. Without one it splits, as before. `YO_LAYOUT` (`auto`, `split`,
+pane. Without one it splits, as before. `"layout"` in `defaults` (`auto`, `split`,
 `workgroup`) overrides the choice.
 
 The installer adds a "CLI" peer when the workgroup has none, saving the
@@ -328,7 +399,7 @@ Merge to `main` and the installed symlinks pick it up with nothing to re-run.
 
 ## yo without this repo
 
-`yo` is generic: every site-specific thing lives in `~/.config/yo/config.sh`, and
+`yo` is generic: every site-specific thing lives in `~/.config/yo/config.json`, and
 with no config file at all it runs in single-repo mode against whatever clone
 you are standing in. `yo help` prints the repos it can currently see.
 

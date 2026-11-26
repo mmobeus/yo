@@ -5,8 +5,9 @@
 # Everything is installed as a SYMLINK back into this repo, so editing a file
 # here takes effect immediately and `git status` is the source of truth for what
 # has drifted. The one exception is yo's config, which names YOUR repos: it is
-# created once from config/yo.config.example.sh as a plain file, and never
-# touched again — not by a re-install, not by --uninstall.
+# created once, as a plain config.json listing this checkout, and never touched
+# again — not by a re-install, not by --uninstall. (An older config.sh counts:
+# none is created next to it. `yo config migrate` converts it.)
 #
 # Claude Code's own ~/.claude/settings.json is left alone by default: yo stacks
 # claude/settings.json on top of it per session (`claude --settings`), so only
@@ -73,7 +74,8 @@ done
 # --- the manifest -------------------------------------------------------------
 # One record per line: <kind> <TAB> <source> <TAB> <destination>
 #   link   symlink dest -> source (or copy, under --copy)
-#   seed   copy source to dest ONCE; an existing dest is the user's and stays
+#   seed   create yo's config at dest ONCE (source unused); an existing one —
+#          or an older config.sh beside it — is the user's and stays
 #   merge  jq-merge source into dest, source's keys winning
 #   peer   make sure iTerm2's Claude Code workgroup has a terminal peer named
 #          <source> (there is no destination; it lives in iTerm's preferences)
@@ -83,7 +85,7 @@ add() { PLAN="${PLAN}${1}${TAB}${2}${TAB}${3}
 "; }
 
 add link  "$REPO/scripts/yo"            "$BIN/yo"
-add seed  "$REPO/config/yo.config.example.sh" "$CONFIG_DIR/yo/config.sh"
+add seed  "-"                           "$CONFIG_DIR/yo/config.json"
 # The settings layer and the statusline it names live with yo's config, not in
 # ~/.claude: nothing of Claude Code's own is replaced.
 add link  "$REPO/claude/statusline.sh"  "$CONFIG_DIR/yo/statusline.sh"
@@ -160,8 +162,8 @@ install_link() {
 # The config is the user's own file. A symlink that points nowhere is what an
 # older install left behind (it used to link the config into the repo).
 install_seed() {
-  local src="$1" dest="$2"
-  [ -f "$src" ] || die "missing source: $src"
+  local dest="$2" legacy
+  legacy="$(dirname "$dest")/config.sh"
   if [ -L "$dest" ] && [ ! -e "$dest" ]; then
     note "  ${YEL}unlink${RST}  $dest ${DIM}(dangling, was -> $(readlink "$dest"))${RST}"
     [ "$DRY" -eq 1 ] || rm "$dest"
@@ -169,16 +171,15 @@ install_seed() {
     note "  ${GRN}ok${RST}      $dest ${DIM}(yours — left alone)${RST}"
     return 0
   fi
-  note "  ${GRN}create${RST}  $dest ${DIM}<- ${src#$REPO/} (edit it: it names your repos)${RST}"
+  if [ -e "$legacy" ]; then
+    note "  ${GRN}ok${RST}      $legacy ${DIM}(yours — left alone; \`yo config migrate\` makes it config.json)${RST}"
+    return 0
+  fi
+  note "  ${GRN}create${RST}  $dest ${DIM}(lists this checkout; add yours with \`yo config add-repo\`)${RST}"
   [ "$DRY" -eq 1 ] && return 0
   mkdir -p "$(dirname "$dest")"
-  cp "$src" "$dest"
-  cat >> "$dest" <<EOF
-
-# --- added by install.sh ------------------------------------------------------
-# This checkout, so yo can open sessions on itself.
-yo_repo yo --path="$REPO"
-EOF
+  # This checkout, so yo can open sessions on itself.
+  jq -n --arg path "$REPO" '{repos: {yo: {path: $path}}}' > "$dest"
 }
 
 # jq's `*` merges objects recursively, right operand winning — so this repo's
