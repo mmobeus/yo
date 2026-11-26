@@ -6,7 +6,7 @@ below, and calls `cargo xtask <gate>`.
 
 ```
 cargo xtask ci          # every default gate, in CI's order
-cargo xtask <gate>      # one gate: lint, arch, deny, test, parity
+cargo xtask <gate>      # one gate: lint, arch, deny, test
 cargo xtask advisories  # needs the network
 cargo xtask help
 ```

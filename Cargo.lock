@@ -145,13 +145,6 @@ name = "yo-proto"
 version = "0.0.0"
 
 [[package]]
-name = "yo-testkit"
-version = "0.0.0"
-dependencies = [
- "yo-core",
-]
-
-[[package]]
 name = "yo-tui"
 version = "0.0.0"
 dependencies = [
