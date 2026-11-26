@@ -55,14 +55,15 @@ builds against it.
 
 | question | decision |
 | --- | --- |
-| language | Rust, for the core, CLI, daemon and TUI |
+| language | Rust, for the core, CLI, daemon, TUI and the app's native side |
 | coding agents | more than Claude Code. yo calls them **harnesses** (`claude`, `codex`, ...), because "agent" already means a persona like `--agent=cindy`. Claude is the first; Codex is the second, right after the port |
 | background sessions | run over [ACP](https://agentclientprotocol.com) (the Agent Client Protocol), which works for many harnesses, not by driving one harness's own stream format |
 | messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
 | app | a Tauri app (`yo app`): one web UI, wrapped by Tauri, talking to the daemon over its Unix socket. The app holds no yo logic. The same UI can be served over the daemon's opt-in HTTP, for a phone or for UI development. Not Wails |
 | compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
 | parity | the port must have today's *effects* exactly (ledger, config, git, files written, commands launched). Output text is compared too, but may change deliberately: every difference is recorded |
-| daemon | optional for the CLI; started on demand by what needs it (`yo tui`, `yo app`, background sessions, the relay). A launchd agent can come later |
+| daemon | optional for the CLI and the TUI; started on demand by what needs it (`yo app`, background sessions, the relay). Listens only on a Unix socket unless TCP is turned on. A launchd agent can come later |
+| how it's built | gates cheapest first, everything CI runs can run locally (`cargo xtask`), review skills by hand, and only the maintainer loosens a gate; see [how it's built](#how-its-built) |
 | "latest focus" | raw: the last prompt and the last tool used. A summary can come later |
 | phone | Claude's Remote Control for Claude sessions, for now; for every harness later, the same web UI over the daemon's opt-in HTTP, on a tailnet |
 | iTerm automation | keep shelling out to `osascript` |
@@ -84,8 +85,12 @@ builds against it.
   requires them: anything a harness lacks shows up as "unknown" or "not
   available", not as a failure.
 - **Two of everything that's meant to be general.** An interface with one
-  implementation is a guess. Each harness-facing interface gets a second
-  implementation in the phase that introduces it, or soon after.
+  implementation is a guess. Each interface meant to be general (harnesses,
+  ACP's harnesses, the yo API) gets a second implementation in the phase that
+  introduces it, or soon after.
+- **The same bar for every change.** Most of yo will be written by coding
+  agents, so every PR clears the same gates whoever wrote it, and everything
+  CI runs can run locally. See [how it's built](#how-its-built).
 
 ## Language: Rust
 
@@ -111,6 +116,22 @@ events and glue. Rust wins here for reasons specific to how yo is built:
 - **ACP's official Rust crate** (`agent-client-protocol`) is at 1.0, and Zed
   uses it. **Tauri**, for the app, is Rust too: the same workspace, the same
   `yo-proto` types, the same gates.
+
+### Keeping Rust's costs down
+
+- **A synchronous core.** Config, the ledger, name resolution, sweep's rules,
+  git calls, harnesses and the iTerm runner don't need async. Only the daemon
+  (the ACP runner, the relay, the API) uses tokio. The CLI stays plain and
+  starts fast, which matters for the ledger hook that runs at every `claude`
+  start and exit.
+- **Simple ownership.** Owned data, `Arc` where something is shared, and one
+  task that owns the daemon's session table and takes messages. No
+  long-lived borrowed references in the API.
+- **Fast incremental builds:** a workspace of several crates, with the heavy
+  dependencies (tokio, axum, ratatui, the ACP crate, Tauri) kept out of
+  `yo-core`.
+- **One bar to clear:** `cargo xtask ci`, the same in every session's loop as
+  in CI; see [how it's built](#how-its-built).
 
 ## The app: Tauri
 
@@ -158,21 +179,6 @@ Costs, accepted:
 
 Wails was considered and rejected.
 
-### Keeping Rust's costs down
-
-- **A synchronous core.** Config, the ledger, name resolution, sweep's rules,
-  git calls, harnesses and the iTerm runner don't need async. Only the daemon
-  (the ACP runner, the relay, the API) uses tokio. The CLI stays plain and
-  starts fast, which matters for the ledger hook that runs at every `claude`
-  start and exit.
-- **Simple ownership.** Owned data, `Arc` where something is shared, and one
-  task that owns the daemon's session table and takes messages. No
-  long-lived borrowed references in the API.
-- **Fast incremental builds:** a workspace of several crates, with the heavy
-  dependencies (tokio, axum, ratatui, the ACP crate) kept out of `yo-core`.
-- **One bar to clear:** `cargo fmt --check`, `cargo clippy -- -D warnings` and
-  the tests (`cargo nextest`), in CI and in every session's loop.
-
 ## Shape
 
 ```
@@ -197,7 +203,7 @@ Wails was considered and rejected.
 
 - The CLI calls `yo-core` directly and works with no daemon running, as
   today. For what only a daemon has (ACP sessions, the relay), it starts one
-  or asks the running one.
+  or asks the running one, through `yo-client`.
 - The TUI and the app use **the yo API**: one trait, with its types in
   `yo-proto`, and two implementations.
   - **In process,** over `yo-core` and the event log files, with no daemon.
@@ -227,7 +233,7 @@ A Cargo workspace:
 | `yo-cli` | bin `yo` | clap commands, flags, output rendering, prompts. Thin over `yo-core` |
 | `yo-proto` | lib | the yo API: its trait and types (requests, responses, the event stream), shared by daemon and clients; an OpenAPI spec is generated from them. Types only |
 | `yo-local` | lib | the yo API in process, over `yo-core` and the event log files: what the TUI uses with no daemon |
-| `yo-client` | lib | the yo API over a daemon's Unix socket (or HTTPS, for a daemon elsewhere), used by the TUI, the app and the CLI |
+| `yo-client` | lib | the yo API over this machine's daemon's Unix socket, used by the TUI, the app and the CLI. Later, also over HTTPS, for daemons reaching the hub and each other |
 | `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the ACP runner, the relay |
 | `yo-tui` | lib | `yo tui` |
 | `yo-app` | bin, Tauri | `yo app`: the Tauri shell around `web/`. Forwards to the daemon through `yo-client`; tray, notifications, shortcut, Keychain. No yo logic |
@@ -492,7 +498,7 @@ pub struct Capabilities {
     pub settings_layer: bool,     // Claude: --settings, composed per session
     pub memory: bool,             // Claude: autoMemoryDirectory
     pub personas: bool,           // Claude: --agent; yo's `agents`
-    pub ledger_hooks: bool,       // Claude: SessionStart / SessionEnd call `yo _hook`
+    pub ledger_hooks: bool,       // Claude: SessionStart / SessionEnd call yo (`_session-hook`, then `_hook`)
     pub remote_control: bool,
     pub models: bool,             // --model
 }
@@ -516,9 +522,9 @@ pub struct SessionSpec {
   from `claude agents --json`. It also starts passing `--name <yo name>`, so
   other sessions (and the relay) can address it by yo's name.
 - **The Codex harness** (phase 2) is the second implementation: launch, resume,
-  live sessions, a ledger record with an id learned after launch, messages
-  typed into its tab, and ACP through `codex-acp`. Everything else is "not
-  available" until Codex offers it. Its details (how it names sessions, what
+  live sessions, a ledger record with an id learned after launch, and
+  messages typed into its tab. Its ACP command (`codex-acp`) is used from
+  phase 5. Everything else is "not available" until Codex offers it. Its details (how it names sessions, what
   it reports while running, whether it has hooks) are checked when that phase
   starts, against what Codex ships then.
 - **Flags that don't apply** to a session's harness (`--agent` on Codex, say)
@@ -568,7 +574,9 @@ pub struct LaunchSpec {
     the ledger.
   - `session/prompt` sends messages.
   - `session/update` notifications become events. ACP v2's `state_update`
-    (running, idle, requires_action) gives "needs me" for every harness.
+    (running, idle, requires_action) gives "needs me" for every harness. v2 is
+    a preview; on v1, yo infers it from turns in flight and pending
+    permission requests (see [open questions](#open-questions)).
   - `session/request_permission` becomes a "needs me" with the question in
     it. Answering it from the TUI or app is possible, but yo's first answer
     is the principle above: open the session in the harness's TUI
@@ -609,6 +617,14 @@ summary of what it did: it reads the relay's tool calls from the
 with exactly the right text. Anything else is a failed delivery, and is
 reported as one.
 
+- **To verify first, in phase 5:** that a session run through
+  `claude-agent-acp` (which is built on the Claude Agent SDK) opens an inbox
+  and has `ListAgents` and `SendMessage`. Claude's docs say `--bare` sessions
+  get no inbox, and don't say what an SDK session gets. If it doesn't, the
+  relay is a plain `claude -p` run per message, with the same tool limits and
+  the same check of its output, instead of a long-running ACP session.
+- **Reaching other machines** needs the relay itself connected to Remote
+  Control, and signed in with a claude.ai account rather than an API key.
 - **It runs on a cheap model** (Haiku), and costs one short turn per message.
 - **Replies come back.** A session answers a peer with `SendMessage` to the
   sender's address, so replies arrive at the relay. The daemon turns them into
@@ -630,8 +646,9 @@ So `yo NAME 'message'` delivers in your voice where it can:
 
 1. ACP `session/prompt`, for a session on the ACP runner.
 2. Typing into the tab, for a session in iTerm.
-3. Otherwise, the relay, for a Claude session neither can reach: in the
-   background, on another machine, or with no tab yo can find. Today that case
+3. Otherwise, the relay, for a Claude session neither can reach: one started
+   outside yo (with `claude --bg`, say), one on another machine, or one with
+   no tab yo can find. Today that case
    prints "your message was not delivered". yo says when it used the relay.
 
 `--via=tab|acp|relay` picks one explicitly, and a `messages` setting can make
@@ -705,14 +722,16 @@ pub enum EventKind {
 }
 ```
 
-The hook entry point becomes `yo _hook`, reading the event name from the
-payload. Phase 1 handles `SessionStart` and `SessionEnd` (today's ledger
-updates). Phase 3 adds Claude's `UserPromptSubmit`, `PostToolUse`,
-`Notification` and `Stop` to yo's settings layer. Events from ACP sessions use
+Phase 1 keeps today's hook entry point, `yo _session-hook`, for
+`SessionStart` and `SessionEnd` (today's ledger updates), so the composed
+settings compare exactly in the parity tests. Phase 3 renames it `yo _hook`,
+reading the event name from the payload, and adds Claude's
+`UserPromptSubmit`, `PostToolUse`, `Notification` and `Stop` to yo's settings
+layer. Events from ACP sessions use
 the same kinds, so nothing downstream cares which harness or runner a session
 is on.
 
-### Status
+### Session status
 
 Status is derived, never stored: a fold over ledger records, the harness's
 live sessions and status, and events.
@@ -748,8 +767,8 @@ needed, a dialog) says more than a hook can.
 
 ## The daemon
 
-`yo serve`. It's needed earlier than first planned, because the ACP runner and
-the relay live in it, but it stays small.
+`yo serve`, from phase 5. It exists because the ACP runner and the relay need
+a long-running process; everything else works without it. It stays small.
 
 - **Started on demand** by whatever needs it, and left running. One per
   machine: a pid file and a lock in the state directory.
@@ -821,7 +840,7 @@ A sandbox is a temporary directory with:
 | `YO_DRY_LAUNCH` | unset, so the real launch path runs against the fakes below; set only for scenarios about dry launch itself |
 | git repos | built by the fixture: a bare repo as `origin` (and one as `upstream`, for forks), a clone, branches, merged and unmerged work |
 | remotes | `GIT_CONFIG_GLOBAL` with `url.<file path>.insteadOf` rules, so `git@github.com:owner/repo` and `https://github.com/...` URLs resolve to the local bare repos; nothing touches the network |
-| `PATH` | a shim directory first: fake `gh`, `osascript`, `ps`, `uuidgen`, `date` and `claude` |
+| `PATH` | a shim directory first: fake `gh`, `osascript`, `ps`, `uuidgen`, `date` and `claude` (which later also answers `claude agents --json` from fixtures) |
 | live sessions | a long-running dummy process named `claude` (a copied `sleep`), with a matching `~/.claude/sessions/<pid>.json`, so the `kill -0` and `ps -o comm=` checks pass |
 
 The shims record each call (argv, stdin, cwd) to a log and answer from the
@@ -851,9 +870,9 @@ the comparison normalizes timestamps (below).
 | what | how |
 | --- | --- |
 | exit code | exactly |
-| ledger | every record, as JSON, with `createdAt`, `updatedAt` and `endedAt` replaced by `<ts>`, and the new `machine` and `harness` fields ignored |
+| ledger | every record, as JSON, with `createdAt`, `updatedAt` and `endedAt` replaced by `<ts>`, and the new `machine`, `harness` and `runner` fields ignored |
 | config | the file, byte for byte (`yo config add-repo` writes it) |
-| composed settings | `$XDG_STATE_HOME/yo/settings/*.json`, as JSON |
+| composed settings | `$XDG_STATE_HOME/yo/settings/*.json`, as JSON, with yo's own path in the hook command normalized (the script's path in one run, the binary's in the other) |
 | Claude's files | `~/.claude.json` (trust), each worktree's `.claude/settings.local.json`, mirrored files |
 | iTerm | the dynamic profile JSON, and the AppleScript sent to `osascript`, normalized for whitespace |
 | git | `git worktree list --porcelain` and every branch with its commit, for each fixture repo |
@@ -968,7 +987,7 @@ it.
 | the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
 | the core never prints | `clippy::print_stdout` and `clippy::print_stderr` denied in `yo-core` |
 | every outside effect goes through `Sys` | `clippy::disallowed-methods` bans `std::process::Command::new`, the system clock and randomness in `yo-core` outside `sys.rs` |
-| a dry run changes nothing | every parity scenario also runs with `--dry-run`, and the sandbox must be byte-identical afterwards |
+| a dry run changes nothing | every scenario also runs against the Rust version with `--dry-run` (which every changing command has there, through plans), and the sandbox must be byte-identical afterwards |
 | Claude-specific, not Claude-assumed | a fake harness with no optional capabilities runs the whole scenario suite |
 
 ### Security tests
@@ -1012,6 +1031,10 @@ to run before opening a PR.
   with it. It posts one PR comment with blocking and non-blocking findings and
   the commit it reviewed, and sets the `yo-review` status on that commit.
 
+`yo-review` records that review ran on that commit. It doesn't prove the
+blocking findings were dealt with, and anyone who can run the skill can set
+it. Checking the findings before merging stays the maintainer's job.
+
 They focus on yo's own rules. General correctness is the built-in
 `/code-review`'s job.
 
@@ -1042,7 +1065,9 @@ These stay open. Nothing in the design depends on how they're answered.
   another client started isn't settled.
 - **Approvals in yo's UI:** for ACP sessions, showing and answering
   `session/request_permission` is possible. Whether yo should, or always send
-  you to the harness's TUI, is for phase 4 or 5.
+  you to the harness's TUI, is for phase 5 or 6.
+- **The relay inside ACP:** whether a `claude-agent-acp` session can use
+  `SendMessage` (see [the relay](#the-relay)). Checked first thing in phase 5.
 - **The relay's reach:** whether cross-machine messages to sessions that
   aren't connected over Remote Control are useful enough to need anything
   more, and how replies with no reply address show up.
@@ -1050,4 +1075,4 @@ These stay open. Nothing in the design depends on how they're answered.
 - **Distribution:** stay "clone and `install.sh`" (which would then run
   `cargo build`), release binaries, or a Homebrew tap.
 - **An MCP server:** coordinating sessions calling yo as tools rather than
-  shelling out. It would sit on `yo-client` next to the TUI.
+  shelling out. It would sit on the yo API, like the TUI.
