@@ -32,6 +32,8 @@ pub trait Sys: Send + Sync {
     fn cmd(&self) -> &dyn CommandRunner;
     fn procs(&self) -> &dyn ProcessTable;
     fn hostname(&self) -> String;
+    /// The yo binary that's running, for hooks that call yo back.
+    fn exe(&self) -> PathBuf;
 }
 
 impl dyn Sys + '_ {
@@ -185,6 +187,16 @@ impl Sys for RealSys {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|h| !h.is_empty())
             .unwrap_or_else(|| "localhost".to_string())
+    }
+
+    fn exe(&self) -> PathBuf {
+        RealSys::current_exe()
+    }
+}
+
+impl RealSys {
+    fn current_exe() -> PathBuf {
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yo"))
     }
 }
 

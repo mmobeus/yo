@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use yo_core::Ctx;
-use yo_core::harness::LiveSession;
+use yo_core::harness::{LiveSession, Prep, claude};
 use yo_core::ledger::{Entry, State, state_of};
 use yo_core::plan::{Action, BranchSpec, Note, Plan, Report};
 use yo_core::registry::Mode;
@@ -204,6 +204,15 @@ fn action(a: &Action) -> String {
         } => {
             format!("set {branch} to pull {remote} {merge}")
         }
+        Action::MirrorFiles { files, .. } => {
+            format!(
+                "copy {} from the main clone, if gitignored",
+                files.join(" ")
+            )
+        }
+        Action::MakeDir { path, what } => format!("make the {what} directory {}", path.display()),
+        Action::WriteFile { path, .. } => format!("write the settings layer {}", path.display()),
+        Action::Prepare(p) => prep(p).to_string(),
         Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
         Action::Launch(l) => format!(
             "open [{}] in {}\n      {}",
@@ -211,6 +220,15 @@ fn action(a: &Action) -> String {
             l.dir.display(),
             l.argv.line()
         ),
+    }
+}
+
+fn prep(p: &Prep) -> &'static str {
+    match p {
+        Prep::Claude(claude::Prep::Trust { .. }) => "pre-trust the worktree in ~/.claude.json",
+        Prep::Claude(claude::Prep::LocalSettings { .. }) => {
+            "copy .claude/settings.local.json, with the repo's MCP servers approved"
+        }
     }
 }
 
@@ -261,6 +279,14 @@ impl Report for Progress<'_> {
             Action::SetUpstream { remote, merge, .. } => {
                 format!("        tracking {remote} {merge} — git pull refreshes the PR\n")
             }
+            Action::MakeDir { path, what } => format!("==> {what}: {}\n", path.display()),
+            Action::Prepare(Prep::Claude(claude::Prep::Trust { .. })) => {
+                "==> pre-trusting worktree in ~/.claude.json\n".into()
+            }
+            Action::Prepare(Prep::Claude(claude::Prep::LocalSettings { .. })) => {
+                "==> settings.local.json in place (MCP approvals: base clone + per-repo allow-list)\n".into()
+            }
+            Action::MirrorFiles { .. } | Action::WriteFile { .. } => String::new(),
             Action::PutRecord(e) => {
                 let r = &e.record;
                 let mut s = String::new();

@@ -140,6 +140,10 @@ impl Sys for FakeSys {
     fn hostname(&self) -> String {
         self.hostname.clone()
     }
+
+    fn exe(&self) -> PathBuf {
+        PathBuf::from("/opt/yo/bin/yo")
+    }
 }
 
 struct Answer {

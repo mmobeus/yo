@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`), launching only with `YO_DRY_LAUNCH` so far. Next: Claude's settings layer, trust, memory, `mirror` and `mcp`; then the iTerm runner and `--add-to` |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook`. Launching only with `YO_DRY_LAUNCH` so far. Next: the iTerm runner and `--add-to` |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -288,6 +288,7 @@ pub trait Sys: Send + Sync {
     fn cmd(&self) -> &dyn CommandRunner;             // git, gh, osascript, claude, codex
     fn procs(&self) -> &dyn ProcessTable;            // a pid's comm (None: not running), its tty
     fn hostname(&self) -> String;
+    fn exe(&self) -> PathBuf;                        // this yo, for hooks that call it back
 }
 
 pub trait CommandRunner: Send + Sync {
@@ -526,7 +527,9 @@ trait.
 
 Like the rest of the core's API, the trait grows with the commands that use
 it: phase 1's foundations have `name`, `live`, `capabilities` and `hook_event`, create added
-`tui_command`, and resuming comes with the commands that do it.
+`tui_command` and `prepare` (Claude's steps are `Action::Prepare(Prep::Claude(..))`; the
+settings layer and memory directory are plain `WriteFile` and `MakeDir` actions), and
+resuming comes with the commands that do it.
 
 ```rust
 pub trait Harness {
@@ -923,6 +926,11 @@ scaffolding for that one day. Instead:
   - a session name with an empty or dot-only part, or a part starting with
     `-`, is refused (bash let `..` climb out of the worktree root)
   - every argument on the launch line is quoted only where it needs to be
+  - `~/.claude.json`, settings layers and `settings.local.json` are written
+    with their keys sorted (serde_json's maps), where Python kept the file's
+    order; Claude reads them the same
+  - a settings layer that can't be written stops the create, before the
+    record and the launch, rather than launching without it
 
   The reference is updated to match at the switch (#21).
 - **Fakes can't prove the AppleScript drives iTerm correctly.** A short manual
