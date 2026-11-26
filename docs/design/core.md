@@ -338,14 +338,21 @@ or a boolean, too).
 ```rust
 
 impl Registry {
+    pub fn load(sys: &dyn Sys, config: &Path, cwd: &Path) -> Result<Registry>;  // single-repo mode with no file
+    pub fn repos(&self) -> &[Repo];                            // registration order
     pub fn repo(&self, key: &str) -> Option<&Repo>;
-    pub fn repo_at(&self, dir: &Path) -> Option<&Repo>;        // detect from the cwd
-    pub fn repo_for_github(&self, owner_repo: &str) -> Option<&Repo>;
+    pub fn repo_at(&self, dir: &Path) -> Option<&Repo>;        // the repo whose clone is dir
+    pub fn default_repo(&self) -> Option<&Repo>;               // YO_DEFAULT_REPO, else the first
+    pub fn repos_of_profile(&self, name: &str) -> impl Iterator<Item = &Repo>;
+    pub fn detect_repo(&self, sys: &dyn Sys, dir: &Path) -> Option<&Repo>;  // by remote, else by clone
+    pub fn repo_for_url(&self, sys: &dyn Sys, url: &str) -> Option<&Repo>;  // any GitHub URL
+    pub fn github_for(&self, sys: &dyn Sys, repo: &Repo) -> Option<String>; // owner/repo
+    pub fn base_ref(&self, sys: &dyn Sys, repo: &Repo) -> String;
     pub fn profile(&self, name: &str) -> Option<&Profile>;
-    pub fn profile_for(&self, repo: &Repo) -> Option<&Profile>;
+    pub fn profile_of(&self, repo: Option<&Repo>, picked: Option<&str>) -> Option<&Profile>;
+    pub fn profile_for_owner(&self, owner: &str) -> Option<&Profile>;
     pub fn agent(&self, name: &str) -> Option<&Agent>;
-    pub fn home_repo(&self, name: &str) -> Option<&Repo>;      // NAME-home
-    pub fn harness(&self, name: &str) -> Option<&dyn Harness>;
+    pub fn home_repo(&self, name: &str) -> Option<&Repo>;      // later: NAME-home
     pub fn layered<T>(&self, flag: Option<T>, repo: Option<&Repo>, picked_profile: Option<&str>,
                       of_repo: impl Fn(&Repo) -> Option<T>, of_profile: impl Fn(&Profile) -> Option<T>,
                       default: T) -> T;
@@ -359,6 +366,14 @@ profile, then `defaults`. Each setting is a named method over it. A global
 setting's environment variable beats the file when it's set, even to nothing,
 as bash's `${X+x}` does; `Defaults` holds the global settings resolved that
 way. Today that's spread over `*_for` functions.
+
+Harnesses are looked up through `Ctx::harnesses`, not the registry, since
+they aren't configured yet; per-harness settings (`harnesses.<name>`) join the
+registry in phase 2.
+
+Two small differences from bash, both deliberate: a profile's `owners`
+written as one string is split into words (bash scanned it a character at a
+time, which no one meant), and keys made only of dots are refused.
 
 The machine id isn't in `Ctx`: it's read (and made, the first time) when a
 ledger record is written, so commands that write nothing never create it.

@@ -368,7 +368,7 @@ impl Ledger {
                     created_at: Some(self.sys.unix_now()),
                     ..Record::default()
                 });
-                if rec.id() != Some(l.id.as_str()) || rec.ended_at.is_some() {
+                if rec.id() != Some(l.id.as_str()) || rec.ended_at.is_some_and(|t| t != 0) {
                     let mut e = Entry { key, record: rec };
                     e.record.session_id = Some(l.id.clone());
                     e.record.ended_at = None;
@@ -529,6 +529,8 @@ mod tests {
         assert_eq!(state_of(&rec(Some("a b"), None, &wt), &l), State::NoId);
         assert_eq!(state_of(&rec(Some("s2"), Some(9), &wt), &l), State::Ended);
         assert_eq!(state_of(&rec(Some("s2"), None, &wt), &l), State::Ready);
+        // Python took 0 as false: not ended.
+        assert_eq!(state_of(&rec(Some("s2"), Some(0), &wt), &l), State::Ready);
     }
 
     fn start(id: &str, cwd: &Path) -> HookEvent {
