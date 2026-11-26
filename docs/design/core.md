@@ -175,6 +175,7 @@ A Cargo workspace:
 | `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the ACP runner, the relay |
 | `yo-tui` | lib | `yo tui` |
 | `yo-testkit` | lib, dev | sandboxes, fakes and the parity harness |
+| `xtask` | bin, dev | the gates, run the same way locally and in CI (`cargo xtask ci`); see [how it's built](#how-its-built) |
 | `web/` | not Rust | the web UI |
 
 Inside `yo-core`:
@@ -848,18 +849,45 @@ yo will be built and maintained mostly by coding agents. The compiler is the
 first gate, but not the only one: every PR clears the same bar, whoever or
 whatever wrote it. #11 sets this up before phase 1 writes any Rust.
 
-The rule for where a check lives: **the cheapest gate that can catch it.**
-Rules that can be checked mechanically become tests and lints, which are free
-and certain. Review agents cover what can't be, and the maintainer reviews
-last.
+Two rules shape it:
+
+- **A check lives in the cheapest gate that can catch it.** Rules that can be
+  checked mechanically become tests and lints, which are free and certain.
+  Review agents cover what can't be, and the maintainer reviews last.
+- **Everything CI runs can run locally.** CI is just another place to launch
+  the same commands a developer or an agent runs on their machine. It holds
+  no logic of its own.
+
+### CI is a launcher
+
+- **One entry point: `cargo xtask`.** It's the usual Rust pattern: a small
+  binary crate in the workspace, run with `cargo`, so it needs no extra tool.
+  `cargo xtask ci` runs every gate CI runs, in the same order, and each gate
+  also has its own subcommand (`cargo xtask lint`, `cargo xtask test`,
+  `cargo xtask deny`, `cargo xtask parity`, ...).
+- **Workflows are thin.** A GitHub Actions job checks out the code, installs
+  the toolchain, sets the environment, and calls `cargo xtask <gate>`. If a
+  step does more than that, it moves into `xtask`.
+- **Configuration through the environment.** Anything that differs between a
+  laptop and CI (a token, a cache directory, a flag to skip a slow check) is an
+  environment variable, documented in one list in `docs/dev/`. CI sets them
+  from its secrets; locally they come from your shell, or from a gitignored
+  `.env` that `xtask` loads if it's there. Nothing in `xtask` asks which of the
+  two it's running in.
+- **The default gates need no secrets.** Build, lint, tests, `cargo-deny` and
+  parity run offline, with fakes, so `cargo xtask ci` works on a fresh clone.
+  Anything that does need a secret or the network is its own subcommand, and
+  says which variables it needs when they're missing.
+- **The review skills already run locally,** and so does setting the
+  `yo-review` status. If they ever move into CI, CI calls the same skills.
 
 ### Gates, cheapest first
 
 | gate | what it catches | runs |
 | --- | --- | --- |
-| the compiler, `cargo fmt`, `cargo clippy -D warnings` | type errors, unhandled cases, lint rules | every PR, in CI |
-| tests: unit, parity, architecture, security | behavior, and the rules below | every PR, in CI |
-| `cargo-deny` | licenses, advisories, duplicate crates, new dependencies | every PR, in CI |
+| the compiler, `cargo fmt`, `cargo clippy -D warnings` | type errors, unhandled cases, lint rules | `cargo xtask lint`: locally, and every PR in CI |
+| tests: unit, parity, architecture, security | behavior, and the rules below | `cargo xtask test`, `cargo xtask parity`: locally, and every PR in CI |
+| `cargo-deny` | licenses, advisories, duplicate crates, new dependencies | `cargo xtask deny`: locally, and every PR in CI |
 | review skills (`review-pr`) | what can't be checked mechanically | by hand; sets the `yo-review` commit status |
 | the maintainer | everything else, and any loosened gate | before merging |
 
