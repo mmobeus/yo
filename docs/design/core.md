@@ -1078,7 +1078,7 @@ as a PR.
 - **Misses are issues** labeled `review-miss`, and each tuning is logged in
   `docs/dev/review-tuning.md`, where the next one starts.
 - **Only the maintainer can loosen a gate.** An edit that weakens a check,
-  removes a test case, or relaxes a lint or `cargo-deny` rule needs the
+  removes an example case (`cases/`), or relaxes a lint or `cargo-deny` rule needs the
   maintainer's explicit approval in that PR. Agents don't lower the bar
   they're measured against.
 
