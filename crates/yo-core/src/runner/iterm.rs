@@ -23,6 +23,7 @@ const FOCUS: &str = include_str!("iterm/focus.applescript");
 const TITLE: &str = include_str!("iterm/title.applescript");
 const OWN_TITLE: &str = include_str!("iterm/own_title.applescript");
 const RESYNC: &str = include_str!("iterm/resync.applescript");
+const CLOSE: &str = include_str!("iterm/close.applescript");
 
 /// `osascript -` with `script` on stdin and `args` after it.
 fn script(script: &str, args: &[&str]) -> CommandSpec {
@@ -256,6 +257,12 @@ impl Runner for Iterm {
         } else {
             Focused::NotFound
         })
+    }
+
+    /// Errors are ignored: closing the tab also kills osascript itself.
+    fn close_own_tab(&self, sys: &dyn Sys, session: &str) -> bool {
+        let _ = sys.cmd().run(&script(CLOSE, &[own_session(session)]));
+        true
     }
 }
 

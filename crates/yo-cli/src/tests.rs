@@ -222,12 +222,12 @@ fn sessions_lists_and_adopts() {
 #[test]
 fn commands_not_ported_yet_say_so() {
     let (t, sys) = sandbox(None);
-    let out = yo(&sys, t.path(), &["down", "--yes"]);
+    let out = yo(&sys, t.path(), &["agent", "cindy"]);
     assert_eq!(
         (out.code, out.err.as_str()),
         (
             1,
-            "yo: `yo down` isn't in the Rust yo yet; scripts/yo still has it\n"
+            "yo: `yo agent` isn't in the Rust yo yet; scripts/yo still has it\n"
         )
     );
     // Creating with no repo to work in refuses before anything is created.

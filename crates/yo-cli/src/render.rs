@@ -214,6 +214,30 @@ fn action(a: &Action) -> String {
         Action::WriteFile { path, .. } => format!("write the settings layer {}", path.display()),
         Action::Prepare(p) => prep(p).to_string(),
         Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
+        Action::DropRecord(k) => format!("forget the ledger record {}", k.0),
+        Action::RemoveWorktree { path, force, .. } => format!(
+            "remove worktree {}{}",
+            path.display(),
+            if *force {
+                " (forced: losing its changes)"
+            } else {
+                ""
+            }
+        ),
+        Action::PruneWorktrees { repo } => format!("prune {}'s worktrees", repo.display()),
+        Action::SweepWorktree {
+            path,
+            delete_branch,
+            ..
+        } => format!(
+            "remove worktree {}{}",
+            path.display(),
+            delete_branch
+                .as_deref()
+                .map(|b| format!(" and branch {b}"))
+                .unwrap_or_default()
+        ),
+        Action::CloseOwnTab { .. } => "close this tab".to_string(),
         Action::Focus {
             pid, tty, message, ..
         } => format!(
@@ -311,7 +335,13 @@ impl Report for Progress<'_> {
                 line("brief:", &r.brief);
                 s
             }
-            Action::Launch(_) | Action::Focus { .. } => String::new(),
+            Action::Launch(_)
+            | Action::Focus { .. }
+            | Action::DropRecord(_)
+            | Action::RemoveWorktree { .. }
+            | Action::PruneWorktrees { .. }
+            | Action::SweepWorktree { .. }
+            | Action::CloseOwnTab { .. } => String::new(),
         };
         self.put(&s);
     }

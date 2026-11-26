@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::harness::Prep;
-use crate::ledger::Entry;
+use crate::ledger::{Entry, Key};
 use crate::runner::{Focused, LaunchSpec, Launched, Runner};
 use crate::{Ctx, Error, Result, git};
 
@@ -68,6 +68,31 @@ pub enum Action {
     /// A harness's own setup.
     Prepare(Prep),
     PutRecord(Box<Entry>),
+    DropRecord(Key),
+    /// `git worktree remove`; `force` only when losing uncommitted work was
+    /// asked for.
+    RemoveWorktree {
+        repo: PathBuf,
+        path: PathBuf,
+        force: bool,
+    },
+    PruneWorktrees {
+        repo: PathBuf,
+    },
+    /// Sweep's removal of one worktree: never forced, so git keeps one that
+    /// turned dirty since it was classified; then its record goes, and its
+    /// branch with `delete_branch`.
+    SweepWorktree {
+        repo: PathBuf,
+        path: PathBuf,
+        key: Key,
+        delete_branch: Option<String>,
+    },
+    /// Closes the tab yo runs in (iTerm's `session` id), which ends the
+    /// session in it. `None`: not in one.
+    CloseOwnTab {
+        session: Option<String>,
+    },
     Launch(LaunchSpec),
     /// A running session (process `pid`, on terminal `tty` if it has one):
     /// its tab brought forward, and `message` typed in.
@@ -185,6 +210,59 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     )));
                 }
             }
+            Action::DropRecord(k) => {
+                let _ = ctx.ledger().drop(k);
+            }
+            Action::RemoveWorktree { repo, path, force } => {
+                let p = path.to_string_lossy();
+                let mut args = vec!["worktree", "remove"];
+                if *force {
+                    args.push("--force");
+                }
+                args.push(&p);
+                git::git_do(sys, repo, &args)?;
+            }
+            Action::PruneWorktrees { repo } => {
+                let _ = git::git(sys, repo, &["worktree", "prune"]);
+            }
+            Action::SweepWorktree {
+                repo,
+                path,
+                key,
+                delete_branch,
+            } => {
+                let name = path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let p = path.to_string_lossy();
+                if let Err(e) = git::git_do(sys, repo, &["worktree", "remove", &p])
+                    && path.is_dir()
+                {
+                    out.note(&Note::Warn(format!("kept {name}: {e}")));
+                    continue;
+                }
+                let _ = ctx.ledger().drop(key);
+                out.note(&Note::Info(format!("removed {name}")));
+                if let Some(b) = delete_branch {
+                    // -D, not -d: a squash-merged branch isn't an ancestor of
+                    // base, so -d refuses it. The reflog still has its tip.
+                    if git::git(sys, repo, &["branch", "-D", b]).is_some() {
+                        out.note(&Note::Detail(format!("deleted branch {b}")));
+                    }
+                }
+            }
+            Action::CloseOwnTab { session } => match session {
+                None => out.note(&Note::Warn(
+                    "not running inside an iTerm2 session; leaving windows alone (exit claude yourself)"
+                        .into(),
+                )),
+                Some(s) => {
+                    if !runner.close_own_tab(sys, s) {
+                        out.note(&Note::Info(format!("dry close: the tab of {s}")));
+                    }
+                }
+            },
             Action::Launch(spec) => {
                 let l = runner.launch(sys, spec)?;
                 out.launched(spec, &l);

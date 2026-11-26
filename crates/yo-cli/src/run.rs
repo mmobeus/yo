@@ -19,7 +19,7 @@ use yo_core::runner::{DryLaunch, Runner, WindowChoice};
 use yo_core::sys::Sys;
 
 use crate::cli::{Cli, Command, ConfigCmd, Up, Window};
-use crate::{ledger_cmds, render};
+use crate::{ledger_cmds, render, teardown};
 
 /// Runs `cli`, writing to `out` and `err`, and returns the exit status.
 pub fn run(
@@ -59,6 +59,10 @@ fn go(
         }
         Some(Command::Title { title }) => {
             return ledger_cmds::title(&Ctx::load(sys, cwd)?, title.as_deref(), cwd, out);
+        }
+        Some(Command::Down(d)) => return teardown::down(&Ctx::load(sys, cwd)?, d, cwd, out),
+        Some(Command::Sweep(s)) => {
+            return teardown::sweep(&Ctx::load(sys, cwd)?, s, cwd, out, err);
         }
         Some(_) => {}
     }

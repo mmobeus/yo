@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`; PR #28). The ledger commands: `resume` (by name, id, prefix, directory, or an id only the harness's transcripts know), `resume-all`, `adopt`, `forget`, `title`. Next: down and sweep |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`; PR #28). The ledger commands: `resume` (by name, id, prefix, directory, or an id only the harness's transcripts know), `resume-all`, `adopt`, `forget`, `title` (PR #29). `down` and `sweep`, with every refusal tested on the plan and sweep's verdicts tested against real git repos. Next: config writes and agents |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -942,6 +942,11 @@ scaffolding for that one day. Instead:
   - `yo NAME` takes `--dry-run` too (it doesn't count as a flag, so the
     lookup still runs); a resumed session is passed `--name` like a new one
   - `yo AGENT` says `yo agent` isn't ported yet, until area 4
+  - `down --yes` with uncommitted work refuses with the changes in the
+    error, rather than after printing the whole summary; under
+    `YO_DRY_LAUNCH`, `down` doesn't close the tab it runs in (bash closed it)
+  - sweep keeps a worktree whose `git status` can't be read (bash read it
+    as clean), and warns about PR listings on stderr
   - a settings layer that can't be written stops the create, before the
     record and the launch, rather than launching without it
 
