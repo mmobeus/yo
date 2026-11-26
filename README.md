@@ -216,6 +216,7 @@ yo agent                  # the agents registered in the config
 yo cindy 'how is the queue today?'   # a registered agent's home
 yo cindy-home 'status?'              # a live session by its Claude name (statusline, ListAgents)
 yo my-fix 'rebase on main'           # a session in yo's ledger: yo name, session id or id prefix
+yo mmobeus 'how is the yo work going?'   # the session in a repo called mmobeus-home
 ```
 
 With no flags, `yo NAME ['message']` looks for a registered agent, then a live
@@ -223,7 +224,16 @@ session whose Claude name is NAME (a Remote Control name like `cindy-home`
 counts), then a session in yo's ledger. A running one has its iTerm tab
 brought forward and the message typed in and submitted (its pane is found by
 the tty of its `claude` process); a stopped one is resumed with the message as
-its first prompt. A name that matches nothing creates a session as before. A
+its first prompt.
+
+Failing all of those, a repo called `NAME-home` (by its key, or its clone's
+directory name) is NAME's home: an agent-free version of an agent's home. Its
+session in place is reached the same way. With several, the running one wins,
+else the most recently used; one quit with `/exit` is left alone. With none, a
+new session starts in place there, seeded with the message. If an agent
+called NAME is registered later, it wins.
+
+A name that matches nothing creates a session as before. A
 repo or profile name keeps its own meaning (`yo <repo>`), and any flag makes it
 an ordinary new session (`yo --repo=backend cindy`).
 

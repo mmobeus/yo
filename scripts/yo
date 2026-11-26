@@ -174,9 +174,15 @@
 #                             id or id prefix: brought forward and typed into
 #                             if running, else resumed with the message as its
 #                             first prompt;
-#                          4. otherwise a new session named NAME, as always.
+#                          4. a repo named NAME-home (its key, or its clone's
+#                             directory name): the home's session — brought
+#                             forward and typed into if one is running, else
+#                             the most recently used one resumed with the
+#                             message, else a new one started in place there,
+#                             seeded with it;
+#                          5. otherwise a new session named NAME, as always.
 #                        A repo or profile NAME keeps its own meaning (`yo
-#                        <repo>`), any flag skips 1-3 (`yo --repo=R NAME`), and
+#                        <repo>`), any flag skips 1-4 (`yo --repo=R NAME`), and
 #                        an existing branch is still named by its full name
 #                        (`yo <prefix>/NAME`).
 #   yo sessions          List the sessions yo knows about and whether each is
@@ -1744,6 +1750,7 @@ mirror_repo_files() {
 #   list                         TSV, one row per record (see row())
 #   sweep [flags]                classify and (with --apply) remove landed
 #                                worktrees; repos in YO_SWEEP_REPOS (cmd_sweep)
+#   home DIR                     the session `yo NAME` reaches in home repo DIR
 #   reach QUERY                  what `yo QUERY` reaches: a live session by its
 #                                Claude name, else a ledger row (see cmd_reach)
 #   get QUERY                    the same TSV row for one session, matched by
@@ -2049,6 +2056,32 @@ elif op == "get":
     row(hits[0], live)
     if hits[0].get("transcriptOnly"):
         print("transcript-only", file=sys.stderr)
+
+elif op == "home":
+    # home DIR: the session to reach in a home repo's clone. One running there
+    # (from the ledger, else any live claude whose cwd is DIR), else the most
+    # recently used ready one. A session quit with /exit is left alone, so the
+    # next `yo NAME` starts fresh. Same output as reach; exit 1: none.
+    d = os.path.realpath(args[0])
+    live = live_sessions()
+    recs = [r for r in load_all() if os.path.realpath(r["worktree"]) == d]
+    recs.sort(key=lambda r: r.get("updatedAt") or r.get("createdAt") or 0, reverse=True)
+    running = [r for r in recs if status_of(r, live)[0] == "running"]
+    if running:
+        sys.stdout.write("ledger\t")
+        row(running[0], live)
+        sys.exit(0)
+    here = [x for x in live if os.path.realpath(x.get("cwd") or "/") == d]
+    if here:
+        x = max(here, key=lambda x: x.get("updatedAt", 0))
+        print("\t".join(["live", str(x["pid"]), x.get("sessionId", "-"), x.get("name") or "-"]))
+        sys.exit(0)
+    ready = [r for r in recs if status_of(r, live)[0] == "ready"]
+    if ready:
+        sys.stdout.write("ledger\t")
+        row(ready[0], live)
+        sys.exit(0)
+    sys.exit(1)
 
 elif op == "reach":
     # reach Q: what `yo Q` should reach. A live session by its Claude name
@@ -3281,6 +3314,38 @@ cmd_reach() {
   _yo_reach_row "$message" -1 "" "$R_NAME"
 }
 
+# The repo that is NAME's home: one keyed NAME-home, else one whose clone's
+# directory is named NAME-home.
+_yo_home_repo_for() {
+  local want="$1-home" k
+  _yo_field "$want" 1 >/dev/null 2>&1 && { printf '%s' "$want"; return 0; }
+  for k in $(_yo_repo_keys); do
+    [ "$(basename "$(repo_path_for "$k")")" = "$want" ] && { printf '%s' "$k"; return 0; }
+  done
+  return 1
+}
+
+# `yo NAME ['message']` for a NAME whose home is a repo called NAME-home: reach
+# its session (see `_yo_state home`), or start one in place there, seeded with
+# the message. Returns 1 when there's no such repo.
+cmd_home_reach() {
+  local name="$1" message="${2:-}" key dir out kind rest
+  key=$(_yo_home_repo_for "$name") || return 1
+  dir=$(repo_path_for "$key")
+  [ -d "$dir" ] || die "$name's home, repo '$key', has no clone at $dir"
+  if out=$(_yo_state home "$dir"); then
+    kind="${out%%"$_YO_TAB"*}"; rest="${out#*"$_YO_TAB"}"
+    if [ "$kind" = "live" ]; then
+      _yo_reach_live "${rest%%"$_YO_TAB"*}" "$message" "$name's home"
+      return 0
+    fi
+    _yo_read_row "$rest"
+    _yo_reach_row "$message" -1 "" "$name's home ($R_NAME)" && return 0
+  fi
+  echo "==> starting a session in $name's home ($dir)"
+  cmd_up --repo="$key" --here - ${message:+"$message"}
+}
+
 # True if any argument is a flag (--x).
 _yo_has_flag() {
   local a
@@ -3857,15 +3922,16 @@ main() {
     config)              shift; cmd_config "$@" ;;
     *)
       # `yo NAME ['message']` with no flags reaches what NAME names: a registered
-      # agent's home, a live session by its Claude name, or a ledger session.
-      # A repo or profile name keeps its positional meaning (`yo <repo>`), and
-      # anything else, or any flag, creates a session as before.
+      # agent's home, a live session by its Claude name, a ledger session, or
+      # the session in a repo called NAME-home. A repo or profile name keeps
+      # its positional meaning (`yo <repo>`), and anything else, or any flag,
+      # creates a session as before.
       if [ "$#" -ge 1 ] && [ "$#" -le 2 ] && ! _yo_has_flag "$@" \
           && ! _yo_field "$1" 1 >/dev/null 2>&1 \
           && ! _yo_pfield "$1" 1 >/dev/null 2>&1; then
         if _yo_agent_field "$1" 1 >/dev/null 2>&1; then
           cmd_agent "$@"
-        elif ! cmd_reach "$@"; then
+        elif ! cmd_reach "$@" && ! cmd_home_reach "$@"; then
           cmd_up "$@"
         fi
       else
