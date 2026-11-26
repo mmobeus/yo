@@ -43,9 +43,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Where cargo puts the binary. CARGO_TARGET_DIR is pinned for the build, so it
 # lands here whatever the environment says.
 YO_BIN="$REPO/target/release/yo"
-# What an install from before the Rust yo linked as yo; replaced without
-# --force.
-OLD_YO="$REPO/scripts/yo"
+# An install from before the Rust yo linked yo to some checkout's bash
+# script (this one, or another, such as the main checkout when this runs in
+# a worktree). That link is replaced without --force.
+is_old_yo() { case "$1" in */scripts/yo) return 0 ;; *) return 1 ;; esac; }
 TS="$(date +%Y%m%d-%H%M%S)"
 
 DRY=0; COPY=0; UNINSTALL=0; FORCE=0; MERGE_SETTINGS=0; NO_ITERM=0
@@ -171,7 +172,7 @@ install_link() {
       return 0
     fi
     if [ "$FORCE" -eq 0 ] && [ "$cur" != "$src" ] \
-      && ! { [ "$src" = "$YO_BIN" ] && [ "$cur" = "$OLD_YO" ]; }; then
+      && ! { [ "$src" = "$YO_BIN" ] && is_old_yo "$cur"; }; then
       warn "$dest is a symlink to $cur — leaving it alone (use --force to replace)"
       return 0
     fi
@@ -244,7 +245,7 @@ uninstall_link() {
   local src="$1" dest="$2" cur=""
   [ -L "$dest" ] && cur="$(readlink "$dest")"
   if [ -n "$cur" ] && { [ "$cur" = "$src" ] \
-    || { [ "$src" = "$YO_BIN" ] && [ "$cur" = "$OLD_YO" ]; }; }; then
+    || { [ "$src" = "$YO_BIN" ] && is_old_yo "$cur"; }; }; then
     note "  ${GRN}rm${RST}      $dest"
     [ "$DRY" -eq 1 ] || rm "$dest"
   elif [ -e "$dest" ]; then
