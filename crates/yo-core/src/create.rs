@@ -1,0 +1,707 @@
+//! Creating a session: which repo, worktree or in place, the branch, the
+//! title, codename and first message, the ledger record and the launch.
+//! bash's `cmd_up` and `create_session_worktree`.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::github::{self, GhKind, GhRef};
+use crate::harness::{Harness, SessionSpec};
+use crate::ledger::{Entry, Key, Record};
+use crate::plan::{Action, BranchSpec, Note, Plan};
+use crate::registry::{Mode, Repo};
+use crate::runner::{LaunchSpec, RunnerKind, WindowChoice};
+use crate::{Ctx, Error, Result, git, naming};
+
+/// `yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]`, as parsed.
+#[derive(Clone, Debug, Default)]
+pub struct CreateRequest {
+    pub cwd: PathBuf,
+    pub repo: Option<String>,
+    pub profile: Option<String>,
+    /// `--here` or `--worktree`.
+    pub mode: Option<Mode>,
+    pub window: WindowChoice,
+    pub add_to: Option<String>,
+    pub title: Option<String>,
+    pub from: Option<String>,
+    pub model: Option<String>,
+    pub agent: Option<String>,
+    /// The positional arguments.
+    pub args: Vec<String>,
+}
+
+/// What INPUT asks for.
+enum Input {
+    /// Nothing, or `-`.
+    Unnamed,
+    Url(GhRef),
+    /// A session name, or an existing branch.
+    Name(String),
+}
+
+pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
+    let reg = &ctx.registry;
+    let sys = &*ctx.sys;
+    let harness: &dyn Harness = ctx
+        .harnesses
+        .first()
+        .map(|h| &**h)
+        .ok_or_else(|| Error::Refused("no harness".into()))?;
+    let caps = harness.capabilities();
+    if req.model.is_some() && !caps.models {
+        return Err(Error::Refused(format!(
+            "--model: the {} harness can't pick a model",
+            harness.name()
+        )));
+    }
+    if req.agent.is_some() && !caps.personas {
+        return Err(Error::Refused(format!(
+            "--agent: the {} harness has no agents",
+            harness.name()
+        )));
+    }
+
+    let repo_list = || {
+        reg.repos()
+            .iter()
+            .map(|r| r.key.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let mut repo_override = req.repo.clone();
+    if let Some(r) = &repo_override
+        && reg.repo(r).is_none()
+    {
+        return Err(Error::Refused(format!(
+            "--repo must be one of: {} (got: '{r}')",
+            repo_list()
+        )));
+    }
+    let mut picked = req.profile.clone();
+    if let Some(p) = &picked
+        && reg.profile(p).is_none()
+    {
+        let names: Vec<&str> = reg.profiles().iter().map(|p| p.name.as_str()).collect();
+        return Err(Error::Refused(format!(
+            "--profile must be one of: {} (got: '{p}')",
+            names.join(" | ")
+        )));
+    }
+
+    // `yo <repo> ...` and `yo <profile> ...`: a repo of that name wins.
+    let mut args: &[String] = &req.args;
+    if let Some(first) = args.first() {
+        if reg.repo(first).is_some() {
+            repo_override = Some(first.clone());
+            args = &args[1..];
+        } else if picked.is_none() && repo_override.is_none() && reg.profile(first).is_some() {
+            picked = Some(first.clone());
+            args = &args[1..];
+        }
+    }
+    if args.len() > 2 {
+        return Err(Error::Refused(
+            "usage: yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]".into(),
+        ));
+    }
+    let input = match args.first().map(String::as_str) {
+        None | Some("" | "-") => Input::Unnamed,
+        Some(s) => match github::parse_ref(s) {
+            Some(r) => Input::Url(r),
+            None => Input::Name(s.to_string()),
+        },
+    };
+    let extra = args.get(1).filter(|s| !s.is_empty()).cloned();
+
+    let agent = req.agent.as_deref();
+    let agent_cfg = agent.and_then(|a| reg.agent(a));
+    let agent_display =
+        agent.map(|a| naming::agent_display(a, agent_cfg.and_then(|c| c.title.as_deref())));
+    let agent_repo = agent_cfg.map(|c| c.repo.clone());
+    let here_flag = req.mode == Some(Mode::Here);
+
+    // Which repo. One that was named (--repo, positionally, by a URL, or the
+    // default repo standing in for a cwd yo doesn't know) is also where an
+    // in-place session runs; one inferred from the cwd isn't.
+    let mut repo_key: Option<String> = None;
+    let mut repo_named = false;
+    let mut profile_dir: Option<PathBuf> = None;
+    let mut gh: Option<GhRef> = None;
+    let mut url_repo: Option<String> = None;
+    let mut unnamed = false;
+    let mut msg = String::new();
+    let mut name;
+    match input {
+        Input::Url(r) => {
+            url_repo = reg.repo_for_url(sys, &r.url).map(|x| x.key.clone());
+            let issue_repo = (r.kind == GhKind::Issue)
+                .then(|| agent_repo.clone())
+                .flatten();
+            if url_repo.is_none() && repo_override.is_none() && issue_repo.is_none() && !here_flag {
+                return Err(unknown_url_repo(ctx, &r.owner_repo, req.add_to.is_some()));
+            }
+            repo_key = repo_override.clone().or(issue_repo).or(url_repo.clone());
+            repo_named = repo_key.is_some();
+            match r.kind {
+                GhKind::Pr => {
+                    name = format!("review_pr_{}", r.number);
+                    msg = if agent.is_some() {
+                        format!(
+                            "Review the pull request {} as your instructions describe.",
+                            r.url
+                        )
+                    } else {
+                        format!("{} {}", reg.defaults.review_cmd, r.url)
+                    };
+                }
+                GhKind::Issue => {
+                    name = format!("issue_{}", r.number);
+                    msg = if agent.is_some() {
+                        format!(
+                            "Take the issue {}: read it, its comments and any parent issue, then work it as your instructions describe.",
+                            r.url
+                        )
+                    } else {
+                        format!(
+                            "take a look at the following issue, and work with me to address it: {} review the issue, its comments, any parent issue context you may need. then give me your take on it before doing any work. Issues may need to be broken down first, or we may only focus on a part of it.",
+                            r.url
+                        )
+                    };
+                }
+            }
+            gh = Some(r);
+        }
+        other => {
+            match other {
+                Input::Name(n) => name = n,
+                _ => {
+                    name = naming::unnamed(sys);
+                    unnamed = true;
+                }
+            }
+            if let Some(r) = &repo_override {
+                repo_key = Some(r.clone());
+                repo_named = true;
+            } else if let Some(r) = agent_repo.clone().filter(|_| !here_flag) {
+                repo_key = Some(r);
+                repo_named = true;
+            } else if let Some(p) = picked.as_deref().filter(|_| !here_flag) {
+                match profile_target(ctx, p, &req.cwd)? {
+                    Target::Repo(k, named) => {
+                        repo_key = Some(k);
+                        repo_named = named;
+                    }
+                    Target::Dir(d) => profile_dir = Some(d),
+                }
+            } else {
+                repo_key = reg.detect_repo(sys, &req.cwd).map(|r| r.key.clone());
+                if repo_key.is_none() && unnamed && !here_flag {
+                    repo_key = reg.default_repo().map(|r| r.key.clone());
+                    repo_named = repo_key.is_some();
+                }
+            }
+        }
+    }
+    let repo: Option<&Repo> = repo_key.as_deref().and_then(|k| reg.repo(k));
+    let pr_review = gh.as_ref().is_some_and(|r| r.kind == GhKind::Pr);
+
+    // Worktree or in place. A profile home that is no registered clone has
+    // nothing to take a worktree from.
+    let mode = if let Some(d) = &profile_dir {
+        if req.mode == Some(Mode::Worktree) {
+            return Err(Error::Refused(format!(
+                "--worktree: {} isn't a registered clone, so there is nothing to take a worktree from",
+                d.display()
+            )));
+        }
+        Mode::Here
+    } else {
+        reg.mode(req.mode, repo, picked.as_deref())
+    };
+
+    if mode == Mode::Worktree {
+        if let Some(r) = &gh {
+            if pr_review {
+                let Some(u) = &url_repo else {
+                    return Err(unknown_url_repo(ctx, &r.owner_repo, false));
+                };
+                if repo_key.as_ref() != Some(u) {
+                    return Err(Error::Refused(format!(
+                        "--repo={} conflicts with PR URL repo ({u}): the worktree must come from the PR's repo",
+                        repo_key.as_deref().unwrap_or("")
+                    )));
+                }
+            } else if repo_key.is_none() {
+                return Err(unknown_url_repo(ctx, &r.owner_repo, false));
+            }
+        }
+        if repo.is_none() {
+            return Err(Error::Refused(format!(
+                "no repo given and couldn't infer one from {}\n        run inside a known clone, or: yo --repo=<repo> <INPUT>\n        (or --here, to work in this directory as it is)\n        known repos: {}",
+                req.cwd.display(),
+                repo_list()
+            )));
+        }
+    }
+    if let Some(r) = &gh {
+        if r.kind == GhKind::Issue && repo_key.is_some() && repo_key != url_repo {
+            msg.push_str(&format!(
+                " NOTE: the issue lives in {}, but this session works in the {} repo — that's where the work is expected to land.",
+                r.owner_repo,
+                repo_key.as_deref().unwrap_or("")
+            ));
+        }
+        if mode == Mode::Here && pr_review {
+            msg.push_str(" NOTE: this session runs in place — the PR's head was NOT checked out, so the local tree may not be the code under review.");
+        }
+    }
+
+    // The brief: the input's message, then EXTRA, then --from's report-back.
+    let mut brief = msg;
+    let mut add = |s: &str| {
+        if !brief.is_empty() {
+            brief.push(' ');
+        }
+        brief.push_str(s);
+    };
+    if let Some(e) = &extra {
+        add(e);
+    }
+    if let Some(f) = &req.from {
+        add(&format!(
+            "When you finish, or get blocked on something only a person can decide, report back to the Claude session named \"{f}\" with SendMessage: a few lines on the outcome and where the work is (branch, PR, files). Do the work in this session; don't hand it back."
+        ));
+    }
+    let mut codename = naming::codename(sys);
+    if let Some(d) = &agent_display {
+        codename = format!("{d} · {codename}");
+    }
+
+    check_name(&name)?;
+
+    let mut plan = Plan::default();
+    let wt: PathBuf;
+    if mode == Mode::Here {
+        let dir = if let Some(d) = &profile_dir {
+            if !d.is_dir() {
+                return Err(Error::Refused(format!(
+                    "profile '{}': no directory at {}\n        fix its dir in {}",
+                    picked.as_deref().unwrap_or(""),
+                    d.display(),
+                    ctx.paths.config.display()
+                )));
+            }
+            d.clone()
+        } else if let (true, Some(r)) = (repo_named, repo) {
+            if !r.path.is_dir() {
+                return Err(no_clone(ctx, r));
+            }
+            r.path.clone()
+        } else {
+            req.cwd.clone()
+        };
+        // The physical path: it's what Claude keys its per-folder records on.
+        wt = fs::canonicalize(&dir).map_err(|e| Error::io(&dir, e))?;
+        plan.notes
+            .push(Note::Info(format!("session in place: {}", wt.display())));
+        if let Some(b) = git::current_branch(sys, &wt) {
+            plan.notes.push(Note::Detail(format!("branch: {b}")));
+        }
+        plan.notes.push(Note::Detail(
+            "as checked out — nothing fetched, pulled or created".into(),
+        ));
+        if let Some(r) = &gh {
+            plan.notes.push(Note::Warn(if pr_review {
+                format!(
+                    "WARNING: PR #{} is NOT checked out — the review runs against the tree above",
+                    r.number
+                )
+            } else {
+                "WARNING: not starting from the latest base branch — pull first if that matters"
+                    .into()
+            }));
+        }
+        if let Some(a) = agent {
+            check_agent_on_disk(ctx, a, &wt)?;
+        }
+    } else {
+        let r = repo.ok_or_else(|| Error::Refused("no repo".into()))?;
+        let w = plan_worktree(
+            ctx,
+            &mut plan,
+            &WorktreeAsk {
+                repo: r,
+                picked: picked.as_deref(),
+                input: match (&gh, unnamed) {
+                    (None, false) => Some(name.as_str()),
+                    _ => None,
+                },
+                name: &name,
+                pr: gh.as_ref().filter(|_| pr_review).map(|g| g.number),
+                agent,
+            },
+        )?;
+        wt = w.path;
+        name = w.name;
+    }
+
+    // The title: the repo's prefix, then the PR's or issue's title, the
+    // codename for an unnamed session, else the name.
+    let profile_name = reg
+        .profile_of(repo, picked.as_deref())
+        .map(|p| p.name.clone());
+    let label = repo_key
+        .clone()
+        .or_else(|| profile_name.clone())
+        .unwrap_or_else(|| {
+            wt.file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+    let mut title = name.clone();
+    if let Some(r) = &gh {
+        if let Some(t) = github::title(sys, r) {
+            let what = match r.kind {
+                GhKind::Pr => "PR",
+                GhKind::Issue => "Issue",
+            };
+            title = naming::truncate_title(&format!("{what}#{}: {t}", r.number));
+        }
+    } else if unnamed {
+        title = codename.clone();
+    }
+    if let (Some(d), false) = (&agent_display, unnamed) {
+        title = format!("{d} · {title}");
+    }
+    let prefix = match repo {
+        Some(r) => reg.title_prefix(r),
+        None => format!("[{label}] "),
+    };
+    title = format!("{prefix}{title}");
+    if let Some(t) = &req.title {
+        title = t.clone();
+    }
+
+    // yo picks the id, so the ledger knows the session before it starts:
+    // that's what lets resume-all bring back one that crashed early.
+    let id = sys.new_session_id();
+    let key = match mode {
+        Mode::Here => Key::for_id(&id),
+        Mode::Worktree => Key::for_worktree(&sys.home(), &wt),
+    };
+    let brief = (!brief.is_empty()).then_some(brief);
+    let record = Record {
+        worktree: wt.clone(),
+        session_id: Some(id.clone()),
+        name: Some(name.clone()),
+        title: Some(title.clone()),
+        repo: repo_key.clone(),
+        profile: profile_name,
+        mode: Some(mode),
+        agent: agent.map(str::to_string),
+        codename: Some(codename.clone()),
+        brief: brief.clone(),
+        by_id: mode == Mode::Here,
+        harness: Some(harness.name().to_string()),
+        runner: Some(RunnerKind::Iterm),
+        created_at: Some(sys.unix_now()),
+        ..Record::default()
+    };
+    plan.actions.push(Action::PutRecord(Box::new(Entry {
+        key: key.clone(),
+        record,
+    })));
+
+    let spec = SessionSpec {
+        command: reg.claude_cmd(repo, picked.as_deref()),
+        dir: wt.clone(),
+        name: name.clone(),
+        id: Some(id.clone()),
+        model: req.model.clone(),
+        persona: agent.map(str::to_string),
+        codename: codename.clone(),
+        first_message: brief.clone(),
+    };
+    let mut argv = harness.tui_command(&spec);
+    argv.env.insert(0, ("YO_SESSION_KEY".into(), key.0.clone()));
+
+    let group = reg
+        .window_group(repo, picked.as_deref())
+        .replace("{repo}", &label);
+    plan.actions.push(Action::Launch(LaunchSpec {
+        dir: wt,
+        title,
+        argv,
+        window: req.window,
+        group,
+    }));
+    Ok(plan)
+}
+
+/// A session name: letters, digits, `.`, `_`, `/`, `-`. It becomes a path
+/// and a branch, so not one that climbs out or reads as a flag.
+fn check_name(name: &str) -> Result<()> {
+    let chars_ok = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'));
+    if !chars_ok || name.is_empty() {
+        return Err(Error::Refused(format!(
+            "name may only contain letters, digits, . _ / - (got: '{name}')"
+        )));
+    }
+    let bad_part = name
+        .split('/')
+        .any(|p| p.is_empty() || p.chars().all(|c| c == '.') || p.starts_with('-'));
+    if bad_part {
+        return Err(Error::Refused(format!(
+            "name can't have empty or dot-only parts, or start one with '-' (got: '{name}')"
+        )));
+    }
+    Ok(())
+}
+
+enum Target {
+    /// A repo, and whether it counts as named.
+    Repo(String, bool),
+    /// The profile's home, which is no registered clone.
+    Dir(PathBuf),
+}
+
+/// Where a session goes when a profile was picked and no repo named: its
+/// home directory (a clone, or a directory to run in place), else the
+/// cwd's repo when it's one of the profile's, else the profile's first.
+fn profile_target(ctx: &Ctx, picked: &str, cwd: &Path) -> Result<Target> {
+    let reg = &ctx.registry;
+    if let Some(dir) = reg.profile(picked).and_then(|p| p.dir.clone()) {
+        return Ok(match reg.repo_at(&dir) {
+            Some(r) => Target::Repo(r.key.clone(), true),
+            None => Target::Dir(dir),
+        });
+    }
+    if let Some(r) = reg.detect_repo(&*ctx.sys, cwd)
+        && r.profile.as_deref() == Some(picked)
+    {
+        return Ok(Target::Repo(r.key.clone(), false));
+    }
+    match reg.repos_of_profile(picked).next() {
+        Some(r) => Ok(Target::Repo(r.key.clone(), true)),
+        None => Err(Error::Refused(format!(
+            "profile '{picked}' has no dir and no repos\n        give it one in {}, or name a repo: yo --profile={picked} --repo=<repo>",
+            ctx.paths.config.display()
+        ))),
+    }
+}
+
+struct WorktreeAsk<'a> {
+    repo: &'a Repo,
+    picked: Option<&'a str>,
+    /// A plain INPUT, which may name an existing branch.
+    input: Option<&'a str>,
+    name: &'a str,
+    /// The PR under review.
+    pr: Option<u64>,
+    agent: Option<&'a str>,
+}
+
+struct Worktree {
+    path: PathBuf,
+    /// The name, as the branch made it.
+    name: String,
+}
+
+/// The worktree and its branch: an existing branch named verbatim, else
+/// `<prefix>/<name>` (reused locally, tracked from origin, or new from the
+/// base branch or the PR's head).
+fn plan_worktree(ctx: &Ctx, plan: &mut Plan, w: &WorktreeAsk<'_>) -> Result<Worktree> {
+    let reg = &ctx.registry;
+    let sys = &*ctx.sys;
+    let clone = &w.repo.path;
+    if !clone.join(".git").exists() {
+        return Err(no_clone(ctx, w.repo));
+    }
+    let base = reg.base_ref(sys, w.repo);
+    let upstream = git::remote_for(sys, clone, reg.github_for(sys, w.repo).as_deref());
+    if let Some(a) = w.agent {
+        let rev = format!("{upstream}/{base}");
+        if !git::has_agent_at(sys, clone, &rev, a) && !home_has_agent(ctx, a) {
+            return Err(no_agent(a, &format!("{rev}:"), clone));
+        }
+    }
+
+    let prefix = reg.branch_prefix(Some(w.repo), w.picked);
+    let explicit = w
+        .input
+        .filter(|i| git::has_local_branch(sys, clone, i) || git::has_origin_branch(sys, clone, i));
+    let (branch, name) = if let Some(b) = explicit {
+        let n = b
+            .strip_prefix(&format!("{prefix}/"))
+            .unwrap_or(b)
+            .replace('/', "-");
+        (b.to_string(), n)
+    } else {
+        let mut n = w.name.to_string();
+        if n.contains('/') {
+            let flat = n.replace('/', "-");
+            plan.notes.push(Note::Info(format!(
+                "note: '{n}' doesn't match any existing branch; treating it as a session name (flattened: {flat})"
+            )));
+            n = flat;
+        }
+        let b = if prefix.is_empty() {
+            n.clone()
+        } else {
+            format!("{prefix}/{n}")
+        };
+        (b, n)
+    };
+    check_name(&name)?;
+    let mut root = clone.as_os_str().to_owned();
+    root.push("-worktrees");
+    let path = PathBuf::from(root).join(&name);
+    if path.exists() {
+        return Err(Error::Refused(format!(
+            "worktree path already exists: {}",
+            path.display()
+        )));
+    }
+
+    let reuse = git::has_local_branch(sys, clone, &branch);
+    let remote_reuse = !reuse && w.pr.is_none() && git::has_origin_branch(sys, clone, &branch);
+    let fetch = |remote: &str, refspec: String, what: String| Action::Fetch {
+        repo: clone.clone(),
+        remote: remote.to_string(),
+        refspec,
+        what,
+    };
+    let spec = if reuse {
+        if let Some(m) = git::branch_merge(sys, clone, &branch) {
+            plan.notes.push(Note::Detail(format!(
+                "note: {branch} tracks {m} — 'git pull' in the worktree to refresh"
+            )));
+        }
+        BranchSpec::Existing(branch.clone())
+    } else if let Some(n) = w.pr {
+        plan.actions.push(fetch(
+            &upstream,
+            format!("pull/{n}/head"),
+            format!("PR #{n} head (from {upstream})"),
+        ));
+        BranchSpec::New {
+            branch: branch.clone(),
+            start: "FETCH_HEAD".into(),
+        }
+    } else if remote_reuse {
+        plan.actions.push(fetch(
+            "origin",
+            branch.clone(),
+            format!("origin/{branch} (existing remote branch)"),
+        ));
+        BranchSpec::Track {
+            branch: branch.clone(),
+            start: format!("origin/{branch}"),
+        }
+    } else {
+        plan.actions
+            .push(fetch(&upstream, base.clone(), format!("{upstream}/{base}")));
+        BranchSpec::New {
+            branch: branch.clone(),
+            start: format!("{upstream}/{base}"),
+        }
+    };
+    plan.actions.push(Action::AddWorktree {
+        repo: clone.clone(),
+        path: path.clone(),
+        branch: spec,
+    });
+    if let (Some(n), false) = (w.pr, reuse) {
+        // `git pull` in the worktree then pulls new PR commits.
+        plan.actions.push(Action::SetUpstream {
+            repo: clone.clone(),
+            branch,
+            remote: upstream,
+            merge: format!("refs/pull/{n}/head"),
+        });
+    }
+    Ok(Worktree { path, name })
+}
+
+fn no_clone(ctx: &Ctx, r: &Repo) -> Error {
+    Error::Refused(format!(
+        "no clone at: {}\n        clone '{}' there, or fix its path in {}",
+        r.path.display(),
+        r.key,
+        ctx.paths.config.display()
+    ))
+}
+
+fn unknown_url_repo(ctx: &Ctx, owner_repo: &str, add_to: bool) -> Error {
+    let known: Vec<&str> = ctx
+        .registry
+        .repos()
+        .iter()
+        .map(|r| r.key.as_str())
+        .collect();
+    let later = if add_to {
+        "\n        (--add-to isn't in the Rust yo yet; scripts/yo has it)"
+    } else {
+        ""
+    };
+    Error::Refused(format!(
+        "unrecognized repo in URL: {owner_repo}\n        known repos: {}\n        register it: yo config add-repo <clone|url>{later}",
+        known.join(" | ")
+    ))
+}
+
+fn no_agent(name: &str, at: &str, dir: &Path) -> Error {
+    Error::Refused(format!(
+        "no agent named '{name}' in {at}.claude/agents of {}, or in ~/.claude/agents\n        yo starts only agents that are merged (or installed in ~/.claude/agents)",
+        dir.display()
+    ))
+}
+
+/// For a session in place: the agent is in the directory's
+/// `.claude/agents`, or in `~/.claude/agents`.
+fn check_agent_on_disk(ctx: &Ctx, name: &str, dir: &Path) -> Result<()> {
+    if dir_has_agent(&dir.join(".claude/agents"), name) || home_has_agent(ctx, name) {
+        Ok(())
+    } else {
+        Err(no_agent(name, "", dir))
+    }
+}
+
+fn home_has_agent(ctx: &Ctx, name: &str) -> bool {
+    dir_has_agent(&ctx.sys.home().join(".claude/agents"), name)
+}
+
+/// Whether any file under `dir` defines agent `name` (a `name:` line).
+fn dir_has_agent(dir: &Path, name: &str) -> bool {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return false;
+    };
+    rd.filter_map(|e| e.ok()).any(|e| {
+        let p = e.path();
+        if p.is_dir() {
+            dir_has_agent(&p, name)
+        } else {
+            fs::read_to_string(&p).is_ok_and(|t| defines_agent(&t, name))
+        }
+    })
+}
+
+/// `name: NAME` on a line of its own, quoted or not: what
+/// [`git::agent_pattern`] matches.
+fn defines_agent(text: &str, name: &str) -> bool {
+    text.lines().any(|l| {
+        let Some(v) = l.strip_prefix("name:") else {
+            return false;
+        };
+        let v = v.trim();
+        let v = v.strip_prefix(['"', '\'']).unwrap_or(v);
+        let v = v.strip_suffix(['"', '\'']).unwrap_or(v);
+        v == name
+    })
+}
+
+#[cfg(test)]
+mod tests;

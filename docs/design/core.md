@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Next: the commands that change things (#20) |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`), launching only with `YO_DRY_LAUNCH` so far. Next: Claude's settings layer, trust, memory, `mirror` and `mcp`; then the iTerm runner and `--add-to` |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -254,8 +254,7 @@ yo-core/src/
   github.rs     the gh CLI: PR and issue titles, PR listings for sweep; URL parsing
   ledger.rs     session records: load, write, drop, liveness, sync, the hook; later put, adopt, retitle, get
   resolve.rs    `yo NAME`: the ordered lookup
-  input.rs      INPUT -> what to create: unnamed, PR, issue, existing branch, new branch
-  create.rs     plan a new session: worktree, branch, title, codename, brief, message
+  create.rs     plan a new session: INPUT (unnamed, PR, issue, existing or new branch), worktree, branch, title, codename, brief
   resume.rs     resume one, resume-all
   down.rs       tear down the current session
   sweep.rs      classify worktrees; remove
@@ -526,8 +525,8 @@ a Claude session, not in runners or sessions. All of that moves behind one
 trait.
 
 Like the rest of the core's API, the trait grows with the commands that use
-it: phase 1's foundations have `name`, `live`, `capabilities` and `hook_event`, and launching
-and resuming come with the commands that do them.
+it: phase 1's foundations have `name`, `live`, `capabilities` and `hook_event`, create added
+`tui_command`, and resuming comes with the commands that do it.
 
 ```rust
 pub trait Harness {
@@ -599,8 +598,11 @@ pub struct SessionSpec {
 A runner is how a session runs. A session is a record in yo; its runner and
 harness are fields on it.
 
-So far the trait has only `kind`, for ledger records; the rest, and the iTerm
-runner, come with the commands that launch and reach sessions.
+So far the trait has `kind`, for ledger records, and `launch`, with a dry
+runner (`YO_DRY_LAUNCH`) that says what it would run; the rest, and the iTerm
+runner, come with the commands that launch and reach sessions. A launch
+carries the harness's command already built (`Argv`), so a plan shows the exact
+command line.
 
 ```rust
 pub trait Runner {
@@ -912,6 +914,15 @@ scaffolding for that one day. Instead:
     given
   - a bad config's error is serde's: the key and where it is in the file
   - commands not ported yet say so and change nothing
+  - creating a session has `--dry-run`, which prints the plan and changes
+    nothing; `YO_DRY_LAUNCH` keeps its meaning (everything but opening the tab)
+  - create's progress reads a little differently: `==> fetching origin/main`
+    without the `[repo]`, git's own chatter isn't shown, and the codename, id
+    and brief are listed as `codename:`, `session:` and `brief:` (was
+    `persona:` and `seeding claude with:`, the whole first message)
+  - a session name with an empty or dot-only part, or a part starting with
+    `-`, is refused (bash let `..` climb out of the worktree root)
+  - every argument on the launch line is quoted only where it needs to be
 
   The reference is updated to match at the switch (#21).
 - **Fakes can't prove the AppleScript drives iTerm correctly.** A short manual

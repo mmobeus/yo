@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub mod config;
+pub mod create;
 pub mod error;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
@@ -20,7 +21,9 @@ pub mod github;
 pub mod harness;
 pub mod ledger;
 pub mod machine;
+pub mod naming;
 pub mod paths;
+pub mod plan;
 pub mod registry;
 pub mod runner;
 pub mod sys;

@@ -15,6 +15,11 @@ pub enum Error {
     Setting(String),
     /// A file couldn't be read or written.
     Io { path: PathBuf, err: io::Error },
+    /// A command can't do what was asked (an unknown repo, a path that's
+    /// taken, a bad name), found before anything changed.
+    Refused(String),
+    /// Something yo ran failed partway (git, gh, a launch).
+    Failed(String),
 }
 
 impl Error {
@@ -32,6 +37,7 @@ impl fmt::Display for Error {
             Error::Config { path, msg } => write!(f, "{}: {msg}", path.display()),
             Error::Setting(msg) => f.write_str(msg),
             Error::Io { path, err } => write!(f, "{}: {err}", path.display()),
+            Error::Refused(msg) | Error::Failed(msg) => f.write_str(msg),
         }
     }
 }

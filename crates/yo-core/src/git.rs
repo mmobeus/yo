@@ -19,6 +19,89 @@ fn git_ok(sys: &dyn Sys, dir: &Path, args: &[&str]) -> bool {
     git(sys, dir, args).is_some()
 }
 
+/// `git -C dir args...` for its effect. A failure is an error carrying
+/// git's own message.
+pub fn git_do(sys: &dyn Sys, dir: &Path, args: &[&str]) -> crate::Result<()> {
+    let spec = CommandSpec::new("git")
+        .arg("-C")
+        .arg(dir.to_string_lossy())
+        .args(args.iter().copied());
+    let what = format!("git -C {} {}", dir.display(), args.join(" "));
+    let out = sys
+        .cmd()
+        .run(&spec)
+        .map_err(|e| crate::Error::Failed(format!("{what}: {e}")))?;
+    if out.success() {
+        Ok(())
+    } else {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(crate::Error::Failed(if msg.is_empty() {
+            format!("{what} failed")
+        } else {
+            format!("{what}: {msg}")
+        }))
+    }
+}
+
+/// Whether `branch` exists in the clone.
+pub fn has_local_branch(sys: &dyn Sys, dir: &Path, branch: &str) -> bool {
+    let r = format!("refs/heads/{branch}");
+    git_ok(sys, dir, &["show-ref", "--verify", "--quiet", &r])
+}
+
+/// Whether `branch` exists on origin (asks the remote).
+pub fn has_origin_branch(sys: &dyn Sys, dir: &Path, branch: &str) -> bool {
+    git_ok(
+        sys,
+        dir,
+        &["ls-remote", "--exit-code", "--heads", "origin", branch],
+    )
+}
+
+/// The branch checked out in `dir`, if any.
+pub fn current_branch(sys: &dyn Sys, dir: &Path) -> Option<String> {
+    git(sys, dir, &["branch", "--show-current"]).filter(|b| !b.is_empty())
+}
+
+/// The branch's configured upstream (`branch.<b>.merge`).
+pub fn branch_merge(sys: &dyn Sys, dir: &Path, branch: &str) -> Option<String> {
+    git(sys, dir, &["config", &format!("branch.{branch}.merge")]).filter(|m| !m.is_empty())
+}
+
+/// The remote whose URL is `owner_repo` on GitHub, else `origin`: where a
+/// repo's base branch and PR heads come from (a fork's `upstream`, say).
+pub fn remote_for(sys: &dyn Sys, dir: &Path, owner_repo: Option<&str>) -> String {
+    if let Some(want) = owner_repo {
+        for r in remotes(sys, dir) {
+            if remote_url(sys, dir, &r)
+                .and_then(|u| crate::github::owner_repo_from_url(&u))
+                .as_deref()
+                == Some(want)
+            {
+                return r;
+            }
+        }
+    }
+    "origin".to_string()
+}
+
+/// Whether `.claude/agents` at `rev` in the clone defines agent `name`.
+pub fn has_agent_at(sys: &dyn Sys, dir: &Path, rev: &str, name: &str) -> bool {
+    let pat = agent_pattern(name);
+    git_ok(
+        sys,
+        dir,
+        &["grep", "-q", "-E", &pat, rev, "--", ".claude/agents"],
+    )
+}
+
+/// The `name:` line of an agent definition, as an extended regex. Names are
+/// keys (letters, digits, `.`, `_`, `-`), so only `.` needs escaping.
+pub fn agent_pattern(name: &str) -> String {
+    let name = name.replace('.', "\\.");
+    format!("^name:[[:space:]]*[\"']?{name}[\"']?[[:space:]]*$")
+}
+
 /// The clone's remotes, in git's order.
 pub fn remotes(sys: &dyn Sys, dir: &Path) -> Vec<String> {
     git(sys, dir, &["remote"])
