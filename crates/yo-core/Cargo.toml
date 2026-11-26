@@ -1,0 +1,10 @@
+[package]
+name = "yo-core"
+description = "yo's logic: config, the ledger, sessions, harnesses and runners. Synchronous."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

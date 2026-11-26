@@ -1,0 +1,17 @@
+# yo-core reaches the outside only through `Sys` (src/sys.rs, which allows
+# these). See "Architecture rules" in docs/design/core.md.
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "run commands through Sys::cmd" },
+  { path = "std::time::SystemTime::now", reason = "use Sys::now" },
+  { path = "std::time::Instant::now", reason = "use Sys::now" },
+  { path = "std::env::var", reason = "use Sys::env" },
+  { path = "std::env::var_os", reason = "use Sys::env" },
+  { path = "std::env::vars", reason = "use Sys::env" },
+  { path = "std::env::vars_os", reason = "use Sys::env" },
+  { path = "std::env::home_dir", reason = "use Sys::home" },
+  { path = "uuid::Uuid::new_v4", reason = "use Sys::new_session_id", allow-invalid = true },
+  { path = "uuid::Uuid::now_v7", reason = "use Sys::new_session_id", allow-invalid = true },
+  { path = "rand::random", reason = "use Sys::pick", allow-invalid = true },
+  { path = "rand::rng", reason = "use Sys::pick", allow-invalid = true },
+  { path = "rand::thread_rng", reason = "use Sys::pick", allow-invalid = true },
+]

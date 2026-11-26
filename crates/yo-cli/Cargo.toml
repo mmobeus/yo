@@ -1,0 +1,17 @@
+[package]
+name = "yo-cli"
+description = "The yo command line, thin over yo-core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "yo"
+path = "src/main.rs"
+
+[dependencies]
+yo-core.workspace = true
+
+[lints]
+workspace = true

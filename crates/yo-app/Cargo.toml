@@ -1,0 +1,14 @@
+[package]
+name = "yo-app"
+description = "yo app: the Tauri shell. Talks to the daemon through yo-client; holds no yo logic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+yo-client.workspace = true
+yo-proto.workspace = true
+
+[lints]
+workspace = true

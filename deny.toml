@@ -1,0 +1,59 @@
+# cargo-deny: `cargo xtask deny` checks licenses, bans and sources offline;
+# `cargo xtask advisories` checks the RustSec database (needs the network).
+#
+# Loosening anything here (a license, a duplicate skipped, a source) needs
+# the maintainer's explicit approval in the PR. See "How it's built" in
+# docs/design/core.md.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "Apache-2.0",
+  "MIT",
+]
+
+[licenses.private]
+# yo's own crates are unpublished and unlicensed for now.
+ignore = true
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# Every crate yo may depend on, directly or not. A new dependency (and each
+# crate it brings in) is added here, so it shows up in review.
+allow = [
+  # yo's own
+  "xtask",
+  "yo-app",
+  "yo-cli",
+  "yo-client",
+  "yo-core",
+  "yo-daemon",
+  "yo-local",
+  "yo-proto",
+  "yo-testkit",
+  "yo-tui",
+
+  # serde_json, for xtask's `cargo metadata`
+  "itoa",
+  "memchr",
+  "serde_core",
+  "serde_json",
+  "zmij",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
