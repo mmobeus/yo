@@ -8,8 +8,6 @@
 #   itself is generic. yo reads, in order:
 #       $YO_CONFIG
 #       ${XDG_CONFIG_HOME:-~/.config}/yo/config.json
-#       ${XDG_CONFIG_HOME:-~/.config}/yo/config.sh  (the older format; `yo
-#                                                   config migrate` converts it)
 #   The file holds "defaults" (global settings), "profiles" (each with its own
 #   settings, and the repos and agents inside it) and repos and agents that
 #   belong to no profile. A profile's "owners" claim GitHub owners: every clone
@@ -215,12 +213,10 @@
 #                        are kept unless --delete-branches; removal never uses
 #                        --force.
 #   yo config [show | path | edit | add-repo <clone|url|owner/repo>
-#             [--profile=P] [--key=K] | migrate [--dry-run]]
+#             [--profile=P] [--key=K]]
 #                        Show the config and what it registers; open it in
-#                        $EDITOR (validated after); list a repo, cloning it
-#                        first unless it's a directory; or convert an older
-#                        config.sh to config.json (the old file is kept,
-#                        renamed).
+#                        $EDITOR (validated after); or list a repo, cloning it
+#                        first unless it's a directory.
 #   yo help              Show this help, plus the configured repos and profiles.
 #
 # Session ledger: yo records each session's id under
@@ -377,9 +373,9 @@ _yo_print_registry() {
 }
 
 # --- repo registry -----------------------------------------------------------
-# Repos are registered by calling yo_repo: the JSON config's loader (_yo_cfg
-# load) emits the calls, and an older config.sh makes them itself. Records live in one newline-separated string,
-# TAB-separated fields, because macOS ships bash 3.2 — no associative arrays.
+# Repos are registered by calling yo_repo: the config's loader (_yo_cfg load)
+# emits the calls. Records live in one newline-separated string, TAB-separated
+# fields, because macOS ships bash 3.2 — no associative arrays.
 #
 # fields: 1=key 2=path 3=base 4=github 5=mcp 6=mirror 7=title-prefix 8=memory
 #         9=branch-prefix 10=mode 11=profile
@@ -868,22 +864,10 @@ _yo_autoregister() {
   yo_repo "$_YO_AUTOREG" --path="$path"
 }
 
-# The config file: $YO_CONFIG, else config.json in yo's config directory, else
-# the older config.sh there (a script calling yo_repo / yo_profile / yo_agent,
-# which `yo config migrate` turns into config.json). With neither, config.json
-# is where one would go.
+# The config file: $YO_CONFIG, else config.json in yo's config directory.
 _yo_config_path() {
-  local dir="${XDG_CONFIG_HOME:-$HOME/.config}/yo"
-  if [ -n "${YO_CONFIG:-}" ]; then
-    printf '%s' "$YO_CONFIG"
-  elif [ ! -f "$dir/config.json" ] && [ -f "$dir/config.sh" ]; then
-    printf '%s' "$dir/config.sh"
-  else
-    printf '%s' "$dir/config.json"
-  fi
+  printf '%s' "${YO_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/yo/config.json}"
 }
-
-_yo_config_is_json() { case "$1" in *.json) return 0 ;; *) return 1 ;; esac; }
 
 # The JSON config, read and written by one python3 helper.
 #   load FILE                    bash that registers it all (eval'd by
@@ -892,8 +876,6 @@ _yo_config_is_json() { case "$1" in *.json) return 0 ;; *) return 1 ;; esac; }
 #                                list a repo (inside PROFILE, or at the top
 #                                level when PROFILE is empty)
 #   add-profile FILE NAME OWNER  a new profile that claims GitHub owner OWNER
-#   migrate FILE                 write FILE from the registry the old config.sh
-#                                built (handed over in the environment)
 #
 # The file:
 #   { "defaults": { ... },            global settings (see DEFAULTS below)
@@ -1100,65 +1082,6 @@ def add_profile(path, name, owner):
     profiles[name] = {"owners": [owner]}
     write(path, d)
 
-def migrate(path):
-    # The registry the old config.sh built, plus the settings it assigned.
-    env = os.environ
-    d = {}
-    defaults = {k: env[v] for k, v in DEFAULTS.items() if v in env}
-    for k in ("winWidth", "winHeight"):
-        if k in defaults and defaults[k].isdigit():
-            defaults[k] = int(defaults[k])
-    for k in ("settings", "cloneRoot", "memories"):
-        if defaults.get(k):
-            defaults[k] = tilde(defaults[k])
-    # The old default repo was the first one registered; nesting repos inside
-    # profiles reorders them, so name it.
-    first = next((l.split("\t")[0] for l in env.get("_YO_REPOS", "").splitlines() if l), "")
-    if first and "defaultRepo" not in defaults:
-        defaults["defaultRepo"] = first
-    if defaults:
-        d["defaults"] = defaults
-    profiles = {}
-    for line in env.get("_YO_PROFILES", "").splitlines():
-        f = (line.split("\t") + [""] * 10)[:10]
-        if not f[0]:
-            continue
-        pr = {}
-        for i, jk in ((1, "mode"), (2, "memory"), (3, "branchPrefix"), (4, "claude"),
-                      (5, "settings"), (6, "dir"), (7, "windowGroup")):
-            if f[i]:
-                pr[jk] = tilde(f[i]) if jk in ("settings", "dir") else f[i]
-        if f[8]:
-            pr["owners"] = f[8].split()
-        if f[9] == "0":
-            pr["trust"] = False
-        profiles[f[0]] = pr
-    for line in env.get("_YO_REPOS", "").splitlines():
-        f = (line.split("\t") + [""] * 11)[:11]
-        if not f[0]:
-            continue
-        r = {"path": tilde(f[1])}
-        for i, jk in ((2, "base"), (3, "github"), (4, "mcp"), (5, "mirror"),
-                      (6, "titlePrefix"), (7, "memory"), (8, "branchPrefix"), (9, "mode")):
-            v = f[i]
-            if not v or (jk == "titlePrefix" and v == "__auto__"):
-                continue
-            r[jk] = v.split() if jk in ("mcp", "mirror") else v
-        if f[10]:
-            profiles.setdefault(f[10], {}).setdefault("repos", {})[f[0]] = r
-        else:
-            d.setdefault("repos", {})[f[0]] = r
-    if profiles:
-        d["profiles"] = profiles
-    for line in env.get("_YO_AGENTS", "").splitlines():
-        f = (line.split("\t") + [""] * 3)[:3]
-        if f[0]:
-            ag = {"repo": f[1]}
-            if f[2]:
-                ag["title"] = f[2]
-            d.setdefault("agents", {})[f[0]] = ag
-    write(path, d)
-
 try:
     if op == "load":
         load(args[0])
@@ -1166,8 +1089,6 @@ try:
         add_repo(*args)
     elif op == "add-profile":
         add_profile(*args)
-    elif op == "migrate":
-        migrate(args[0])
     else:
         raise Bad("unknown op: " + op)
 except Bad as e:
@@ -1181,13 +1102,8 @@ _yo_load_config() {
   local soft="${1:-0}" cfg out
   cfg=$(_yo_config_path)
   if [ -f "$cfg" ]; then
-    if _yo_config_is_json "$cfg"; then
-      out=$(_yo_cfg load "$cfg") || die "failed to load config: $cfg"
-      eval "$out"
-    else
-      # shellcheck disable=SC1090
-      . "$cfg" || die "failed to load config: $cfg"
-    fi
+    out=$(_yo_cfg load "$cfg") || die "failed to load config: $cfg"
+    eval "$out"
     YO_CONFIG_PATH="$cfg"
   fi
   local k p
@@ -1320,14 +1236,11 @@ place_url_repo() {
   fi
   cfg=$(_yo_config_path)
   if [ -z "$add_to" ] && [ -t 0 ] && [ -t 1 ] && [ -z "${CLAUDECODE:-}" ] \
-      && _yo_config_is_json "$cfg" && [ -f "$cfg" ]; then
+      && [ -f "$cfg" ]; then
     add_to=$(_yo_ask_placement "$owner_repo") || add_to="guest"
   fi
   case "$add_to" in
     ""|guest)
-      if [ -z "$add_to" ] && [ -f "$cfg" ] && ! _yo_config_is_json "$cfg"; then
-        echo "==> (yo config migrate, and yo can offer to remember repos like this one)"
-      fi
       register_url_repo "$owner_repo" ;;
     +*)
       # A new profile named after the owner, claiming all of it.
@@ -1340,12 +1253,12 @@ place_url_repo() {
       _yo_pfield "$add_to" 1 >/dev/null 2>&1 \
         || die "--add-to must be a profile ($(_yo_profile_names | paste -sd' ' -)) or guest (got: '$add_to')"
       register_url_repo "$owner_repo" "$add_to"
-      if _yo_config_is_json "$cfg" && [ -f "$cfg" ]; then
+      if [ -f "$cfg" ]; then
         _yo_cfg add-repo "$cfg" "$add_to" "$YO_URL_REPO" "$(repo_path_for "$YO_URL_REPO")" "$owner_repo" \
           && echo "==> added $owner_repo to profile '$add_to' in $cfg" \
           || echo "yo: couldn't save $owner_repo to $cfg; it's in '$add_to' for this run only"
       else
-        echo "yo: $cfg isn't a JSON config, so $owner_repo is in '$add_to' for this run only"
+        echo "yo: no config at $cfg, so $owner_repo is in '$add_to' for this run only"
       fi ;;
   esac
 }
@@ -3841,20 +3754,18 @@ cmd_config() {
   case "$sub" in
     show)
       if [ -f "$cfg" ]; then
-        echo "config: $cfg$(_yo_config_is_json "$cfg" || echo '  (old format: yo config migrate)')"
+        echo "config: $cfg"
       else
         echo "config: none yet ($cfg)"
       fi
       _yo_print_registry ;;
     path) printf '%s\n' "$cfg" ;;
     edit)
-      _yo_config_is_json "$cfg" || die "$cfg is the old format; yo config migrate first"
       [ -f "$cfg" ] || printf '{}\n' > "$cfg"
       "${EDITOR:-vi}" "$cfg"
       _yo_cfg load "$cfg" >/dev/null && echo "==> $cfg is valid" ;;
     add-repo) _yo_config_add_repo "$@" ;;
-    migrate)  _yo_config_migrate "$@" ;;
-    *) die "usage: yo config [show | path | edit | add-repo <clone|url|owner/repo> [--profile=P] [--key=K] | migrate [--dry-run]]" ;;
+    *) die "usage: yo config [show | path | edit | add-repo <clone|url|owner/repo> [--profile=P] [--key=K]]" ;;
   esac
 }
 
@@ -3874,7 +3785,6 @@ _yo_config_add_repo() {
   done
   [ -n "$target" ] || die "usage: yo config add-repo <clone|url|owner/repo> [--profile=P] [--key=K]"
   cfg=$(_yo_config_path)
-  _yo_config_is_json "$cfg" || die "$cfg is the old format; yo config migrate first"
   [ -z "$profile" ] || _yo_pfield "$profile" 1 >/dev/null 2>&1 \
     || die "no profile '$profile' (profiles: $(_yo_profile_names | paste -sd' ' -))"
 
@@ -3912,49 +3822,6 @@ _yo_config_add_repo() {
   fi
   _yo_cfg add-repo "$cfg" "$profile" "$key" "$path" "$gh" || die "couldn't write $cfg"
   echo "==> added '$key' ($path)${profile:+ to profile '$profile'} in $cfg"
-}
-
-# Turns the old config.sh into config.json: the registry it built and the
-# settings it assigned, written as data. The old file is kept, renamed.
-_yo_config_migrate() {
-  local dry=0 a cfg dir out repos v
-  for a in "$@"; do
-    case "$a" in
-      --dry-run|-n) dry=1 ;;
-      *) die "usage: yo config migrate [--dry-run]" ;;
-    esac
-  done
-  cfg=$(_yo_config_path)
-  _yo_config_is_json "$cfg" && die "nothing to migrate: $cfg is already JSON"
-  [ -f "$cfg" ] || die "no config at $cfg"
-  dir=$(dirname "$cfg")
-  out="$dir/config.json"
-  [ ! -e "$out" ] || die "$out already exists"
-  # The clone yo registers when the config names no repos isn't the config's.
-  repos="$_YO_REPOS"
-  [ -z "$_YO_AUTOREG" ] || repos=$(printf '%s\n' "$_YO_REPOS" | awk -F'\t' -v k="$_YO_AUTOREG" '$1 != k')
-  for v in YO_BRANCH_PREFIX YO_MODE YO_CLAUDE_CMD YO_MEMORIES YO_MEMORY_STORE \
-      YO_CLAUDE_SETTINGS YO_LAYOUT YO_WINDOW_MODE YO_WINDOW_GROUP YO_WIN_WIDTH \
-      YO_WIN_HEIGHT YO_ITERM_PROFILE YO_REVIEW_CMD YO_DEFAULT_REPO YO_CLONE_ROOT \
-      YO_CLONE_PROTOCOL YO_ADHOC_PROFILE; do
-    # shellcheck disable=SC2163
-    eval "[ -z \"\${$v+x}\" ] || export $v"
-  done
-  if [ "$dry" -eq 1 ]; then
-    local tmp
-    tmp=$(mktemp -d)
-    _YO_REPOS="$repos" _YO_PROFILES="$_YO_PROFILES" _YO_AGENTS="$_YO_AGENTS" \
-      _yo_cfg migrate "$tmp/config.json" && cat "$tmp/config.json"
-    rm -rf "$tmp"
-    echo "dry run: would write $out and rename $cfg to $cfg.migrated"
-    return 0
-  fi
-  _YO_REPOS="$repos" _YO_PROFILES="$_YO_PROFILES" _YO_AGENTS="$_YO_AGENTS" \
-    _yo_cfg migrate "$out" || die "couldn't write $out"
-  _yo_cfg load "$out" >/dev/null || die "$out was written but doesn't load; $cfg is untouched"
-  mv "$cfg" "$cfg.migrated"
-  echo "==> wrote $out (the old $(basename "$cfg") is now $(basename "$cfg").migrated)"
-  [ -z "${YO_CONFIG:-}" ] || echo "yo: YO_CONFIG still points at $cfg; point it at $out"
 }
 
 # --- dispatch -----------------------------------------------------------------

@@ -6,8 +6,7 @@
 # here takes effect immediately and `git status` is the source of truth for what
 # has drifted. The one exception is yo's config, which names YOUR repos: it is
 # created once, as a plain config.json listing this checkout, and never touched
-# again — not by a re-install, not by --uninstall. (An older config.sh counts:
-# none is created next to it. `yo config migrate` converts it.)
+# again — not by a re-install, not by --uninstall.
 #
 # Claude Code's own ~/.claude/settings.json is left alone by default: yo stacks
 # claude/settings.json on top of it per session (`claude --settings`), so only
@@ -74,8 +73,8 @@ done
 # --- the manifest -------------------------------------------------------------
 # One record per line: <kind> <TAB> <source> <TAB> <destination>
 #   link   symlink dest -> source (or copy, under --copy)
-#   seed   create yo's config at dest ONCE (source unused); an existing one —
-#          or an older config.sh beside it — is the user's and stays
+#   seed   create yo's config at dest ONCE (source unused); an existing one is
+#          the user's and stays
 #   merge  jq-merge source into dest, source's keys winning
 #   peer   make sure iTerm2's Claude Code workgroup has a terminal peer named
 #          <source> (there is no destination; it lives in iTerm's preferences)
@@ -162,17 +161,12 @@ install_link() {
 # The config is the user's own file. A symlink that points nowhere is what an
 # older install left behind (it used to link the config into the repo).
 install_seed() {
-  local dest="$2" legacy
-  legacy="$(dirname "$dest")/config.sh"
+  local dest="$2"
   if [ -L "$dest" ] && [ ! -e "$dest" ]; then
     note "  ${YEL}unlink${RST}  $dest ${DIM}(dangling, was -> $(readlink "$dest"))${RST}"
     [ "$DRY" -eq 1 ] || rm "$dest"
   elif [ -e "$dest" ]; then
     note "  ${GRN}ok${RST}      $dest ${DIM}(yours — left alone)${RST}"
-    return 0
-  fi
-  if [ -e "$legacy" ]; then
-    note "  ${GRN}ok${RST}      $legacy ${DIM}(yours — left alone; \`yo config migrate\` makes it config.json)${RST}"
     return 0
   fi
   note "  ${GRN}create${RST}  $dest ${DIM}(lists this checkout; add yours with \`yo config add-repo\`)${RST}"

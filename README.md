@@ -256,7 +256,6 @@ yo config                 # the file, and every repo, profile and agent it regis
 yo config add-repo ~/src/github.com/acme/frontend --profile=acme
 yo config add-repo acme/frontend --profile=acme    # clones it first, if need be
 yo config edit            # $EDITOR, then validated
-yo config migrate         # an older config.sh -> config.json (the old file is kept)
 ```
 
 Precedence is the same for everything: command-line flag, then the repo, then
