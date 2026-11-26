@@ -2,18 +2,23 @@
 
 Phase 0 of moving yo from a bash script to a core with a CLI, a TUI, an app and
 pluggable runners. This doc settles the language, sketches the core and its API,
-and lays out how the port is proven to behave like today's `yo`. No code comes
-with it; phase 1 builds against it.
+says how yo stays open to coding agents other than Claude Code, and lays out how
+the port is proven to behave like today's `yo`. No code comes with it; phase 1
+builds against it.
 
 - [Decisions](#decisions)
+- [Principles](#principles)
 - [Language: Rust](#language-rust)
 - [Shape](#shape)
 - [Crates](#crates)
 - [The core's API](#the-cores-api)
+- [Harnesses](#harnesses)
+- [Runners](#runners)
+- [Messages](#messages)
 - [Machine ids](#machine-ids)
 - [Events and status](#events-and-status)
-- [Runners](#runners)
 - [The daemon](#the-daemon)
+- [Phases](#phases)
 - [Parity test plan](#parity-test-plan)
 - [Open questions](#open-questions)
 
@@ -22,13 +27,36 @@ with it; phase 1 builds against it.
 | question | decision |
 | --- | --- |
 | language | Rust, for the core, CLI, daemon and TUI |
-| app shell | none at first: the daemon serves the web UI to a browser (and later a phone). A thin Tauri shell over the same UI if a real window is wanted. Not Wails |
-| compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the one change planned is a `machine` field in ledger records |
+| coding agents | more than Claude Code. yo calls them **harnesses** (`claude`, `codex`, ...), because "agent" already means a persona like `--agent=cindy`. Claude is the first; Codex is the second, right after the port |
+| background sessions | run over [ACP](https://agentclientprotocol.com) (the Agent Client Protocol), which works for many harnesses, not by driving one harness's own stream format |
+| messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
+| app shell | none at first: the daemon serves the web UI to a browser. A thin Tauri shell over the same UI if a real window is wanted. Not Wails |
+| compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
 | parity | the port must have today's *effects* exactly (ledger, config, git, files written, commands launched). Output text is compared too, but may change deliberately: every difference is recorded |
-| daemon | optional for the CLI; started on demand by `yo tui` and `yo app`. A launchd agent can come later |
+| daemon | optional for the CLI; started on demand by what needs it (`yo tui`, `yo app`, background sessions, the relay). A launchd agent can come later |
 | "latest focus" | raw: the last prompt and the last tool used. A summary can come later |
+| phone | Claude's Remote Control for Claude sessions, for now; a path that works for every harness later, over the daemon |
 | iTerm automation | keep shelling out to `osascript` |
 | git, gh | keep shelling out to the `git` and `gh` CLIs, not a git library: same behavior as today, same auth, same config |
+
+## Principles
+
+- **yo coordinates; harnesses do the work.** yo starts, finds, reaches, resumes
+  and cleans up sessions. It doesn't show conversations, edit prompts or answer
+  tool calls: each harness's own UI does that. Where yo runs a session with no
+  UI (over ACP), the way to take over is opening it in the harness's own TUI.
+- **Build on what harnesses ship.** Claude Code now has background sessions
+  and a status board (`claude agents`), Remote Control and cross-session
+  messaging; others will grow similar things. yo uses those through an adapter
+  rather than rebuilding them. Each phase starts by checking what's shipped
+  since the last one.
+- **Claude-specific is fine; Claude-assumed isn't.** A harness may have extras
+  (a settings layer, memory, personas, Remote Control). The core never
+  requires them: anything a harness lacks shows up as "unknown" or "not
+  available", not as a failure.
+- **Two of everything that's meant to be general.** An interface with one
+  implementation is a guess. Each harness-facing interface gets a second
+  implementation in the phase that introduces it, or soon after.
 
 ## Language: Rust
 
@@ -43,15 +71,16 @@ events and glue. Rust wins here for reasons specific to how yo is built:
   those into build errors that must be fixed before anything runs. Go
   compiles them.
 - **Types as the contract between phases.** Config, ledger records, events,
-  the daemon's API and `claude`'s stream-json messages are all serde types.
-  Later phases, often built by separate sessions, build against those types
-  rather than against prose.
+  the daemon's API and ACP's messages are all serde types. Later phases,
+  often built by separate sessions, build against those types rather than
+  against prose.
 - **Ceremony is cheap when an agent writes it.** Rust's extra code (error
   enums, ownership plumbing) mostly costs typing, and the typing isn't done by
   hand.
 - **Few human readers**, even once public, which takes away Go's main
   remaining advantage: that newcomers can read and contribute easily.
-- **Tauri** is native, if the app ever gets a window of its own.
+- **ACP's official Rust crate** (`agent-client-protocol`) is at 1.0, and Zed
+  uses it. **Tauri** is native, if the app ever gets a window of its own.
 
 ### What Tauri's security does and doesn't buy
 
@@ -65,38 +94,41 @@ adds defense in depth on top of that; it doesn't replace it.
 ### Keeping Rust's costs down
 
 - **A synchronous core.** Config, the ledger, name resolution, sweep's rules,
-  git calls and the iTerm runner don't need async. Only the daemon and the
-  headless runner use tokio. The CLI stays plain and starts fast, which
-  matters for the ledger hook that runs at every `claude` start and exit.
+  git calls, harnesses and the iTerm runner don't need async. Only the daemon
+  (the ACP runner, the relay, the API) uses tokio. The CLI stays plain and
+  starts fast, which matters for the ledger hook that runs at every `claude`
+  start and exit.
 - **Simple ownership.** Owned data, `Arc` where something is shared, and one
   task that owns the daemon's session table and takes messages. No
   long-lived borrowed references in the API.
 - **Fast incremental builds:** a workspace of several crates, with the heavy
-  dependencies (tokio, axum, ratatui) kept out of `yo-core`.
+  dependencies (tokio, axum, ratatui, the ACP crate) kept out of `yo-core`.
 - **One bar to clear:** `cargo fmt --check`, `cargo clippy -- -D warnings` and
   the tests (`cargo nextest`), in CI and in every session's loop.
 
 ## Shape
 
 ```
-     yo (CLI)       yo tui        yo app / phone browser     [MCP server?]
+     yo (CLI)       yo tui        yo app / browser         [MCP server?]
          \             |                  |                       /
           \            +---- yo-client ---+-----------------------+
-           \                    |  (HTTP + WebSocket, local or remote)
+           \                    |  (HTTP + SSE, local or remote)
             \             yo serve (daemon, async)
-             \                  |
+             \            ACP runner · relay · API · event tailer
+              \                 |
               +------------ yo-core (sync) ---------------------------+
               | config · registry (repos, profiles, agents, homes)    |
               | ledger · resolve (`yo NAME`) · create · resume · down |
-              | sweep · settings composition · events · status        |
-              | runners: iterm (now) · headless · remote control · remote |
+              | sweep · events · status                               |
+              | harnesses: claude · codex · ...                        |
+              | runners: iterm · acp (via the daemon) · ...            |
               | sys: clock, ids, processes, fs roots (fakeable)       |
               +-------------------------------------------------------+
 ```
 
 - The CLI calls `yo-core` directly and works with no daemon running, as
-  today. When a daemon is running, the CLI can also ask it for things only it
-  knows (headless sessions, live status).
+  today. For what only a daemon has (ACP sessions, the relay), it starts one
+  or asks the running one.
 - The TUI and app talk only to a daemon, through `yo-client`, and never
   assume it's local.
 - There is one binary, `yo`, with `yo serve` and `yo tui` among its
@@ -108,14 +140,14 @@ A Cargo workspace:
 
 | crate | kind | what it holds |
 | --- | --- | --- |
-| `yo-core` | lib, sync | everything that's site logic today; see [the core's API](#the-cores-api) |
+| `yo-core` | lib, sync | everything that's site logic today, plus harnesses and the iTerm runner; see [the core's API](#the-cores-api) |
 | `yo-cli` | bin `yo` | clap commands, flags, output rendering, prompts. Thin over `yo-core` |
-| `yo-proto` | lib | the daemon's API types (requests, responses, the event stream), shared by daemon and clients |
+| `yo-proto` | lib | the daemon's API types (requests, responses, the event stream), shared by daemon and clients; an OpenAPI spec is generated from them |
 | `yo-client` | lib | a client for a daemon, local (Unix socket) or remote (HTTPS), used by the TUI, app and CLI |
-| `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the headless runner's processes |
-| `yo-tui` | lib | `yo tui` (phase 3) |
+| `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the ACP runner, the relay |
+| `yo-tui` | lib | `yo tui` |
 | `yo-testkit` | lib, dev | sandboxes, fakes and the parity harness |
-| `web/` | not Rust | the web UI (phase 5) |
+| `web/` | not Rust | the web UI |
 
 Inside `yo-core`:
 
@@ -128,19 +160,19 @@ yo-core/src/
   git.rs        the git CLI: worktrees, branches, remotes, status, default branch
   github.rs     the gh CLI: PR and issue titles, PR listings for sweep; URL parsing
   ledger/       session records: load, put, adopt, drop, retitle, sync, the hook
-  live.rs       live claude processes, from ~/.claude/sessions and the process table
   resolve.rs    `yo NAME`: the ordered lookup
   input.rs      INPUT -> what to create: unnamed, PR, issue, existing branch, new branch
-  create.rs     plan a new session: worktree, branch, title, codename, brief, message, settings
+  create.rs     plan a new session: worktree, branch, title, codename, brief, message
   resume.rs     resume one, resume-all
   down.rs       tear down the current session
   sweep.rs      classify worktrees; remove
-  settings.rs   compose the per-session settings layer; trust seeding; mirroring; the iTerm profile
   naming.rs     codenames, titles, truncation
   plan.rs       Plan and Action: what a command will do, before it does it
   events.rs     event types, append, read, tail
   status.rs     the status model: a fold over records, liveness and events
-  runner/       the Runner trait; iterm.rs (now), headless, remote control and remote come later
+  harness/      the Harness trait; claude/ (settings layer, trust, memory, hooks, agents), codex/
+  runner/       the Runner trait; iterm.rs. The ACP runner's client side lives here; its processes live in the daemon
+  message.rs    delivering a message: choosing a method, and the result
 ```
 
 ## The core's API
@@ -160,7 +192,7 @@ pub trait Sys: Send + Sync {
     fn pick(&self, n: usize) -> usize;               // codenames; today: $RANDOM
     fn env(&self, key: &str) -> Option<String>;
     fn home(&self) -> PathBuf;
-    fn cmd(&self) -> &dyn CommandRunner;             // git, gh, osascript, ps
+    fn cmd(&self) -> &dyn CommandRunner;             // git, gh, osascript, ps, claude, codex
     fn procs(&self) -> &dyn ProcessTable;            // is pid alive, its comm, its tty
     fn hostname(&self) -> String;
 }
@@ -180,7 +212,7 @@ pub struct Ctx {
     pub sys: Arc<dyn Sys>,
     pub paths: Paths,           // config path, state dir, settings dir, ...
     pub machine: MachineId,
-    pub registry: Registry,     // config resolved: repos, profiles, agents
+    pub registry: Registry,     // config resolved: repos, profiles, agents, harnesses
 }
 
 impl Ctx {
@@ -188,12 +220,13 @@ impl Ctx {
     pub fn load(sys: Arc<dyn Sys>, cwd: &Path) -> Result<Ctx>;
 }
 
-pub struct Config {            // the JSON file, unchanged
+pub struct Config {            // the JSON file, as today, plus harness settings
     pub defaults: Defaults,
     pub profiles: BTreeMap<String, ProfileCfg>,
     pub repos: BTreeMap<String, RepoCfg>,
     pub repos_in: Vec<PathBuf>,
     pub agents: BTreeMap<String, AgentCfg>,
+    pub harnesses: BTreeMap<String, HarnessCfg>,   // new, optional: command, extra args per harness
 }
 
 impl Registry {
@@ -204,6 +237,7 @@ impl Registry {
     pub fn profile_for(&self, repo: &Repo) -> Option<&Profile>;
     pub fn agent(&self, name: &str) -> Option<&Agent>;
     pub fn home_repo(&self, name: &str) -> Option<&Repo>;      // NAME-home
+    pub fn harness(&self, name: &str) -> Option<&dyn Harness>;
     pub fn setting<T>(&self, s: Setting<T>, repo: Option<&Repo>, flag: Option<T>) -> T;
 }
 ```
@@ -212,18 +246,23 @@ impl Registry {
 profile, then `defaults`, with a setting's environment variable beating the
 file. Today that's spread over `*_for` functions.
 
+A new setting, `harness` (default `claude`), sits at every level like `mode`
+does, with a `--harness=H` flag. Today's `claude` setting stays, as the
+command for the `claude` harness; `harnesses.<name>.command` is the same for
+any harness.
+
 ### The ledger
 
-The record keeps today's fields and adds `machine`. The file layout stays: one
-JSON file per session in `$XDG_STATE_HOME/yo/sessions/`, keyed by the worktree
-path.
+The record keeps today's fields and adds `machine` and `harness`. The file
+layout stays: one JSON file per session in `$XDG_STATE_HOME/yo/sessions/`,
+keyed by the worktree path.
 
 ```rust
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Record {
     pub worktree: PathBuf,
-    pub session_id: Option<Uuid>,
+    pub session_id: Option<String>,       // the harness's id; not always a UUID, not always known at launch
     pub name: Option<String>,
     pub title: Option<String>,
     pub repo: Option<String>,
@@ -236,6 +275,7 @@ pub struct Record {
     pub codename: Option<String>,
     pub brief: Option<String>,
     pub by_id: bool,
+    pub harness: Option<String>,          // new; absent = claude
     pub machine: Option<MachineId>,       // new; absent = this machine
     pub runner: Option<RunnerKind>,       // new; absent = iterm
     pub created_at: i64,
@@ -254,19 +294,28 @@ impl Ledger {
     pub fn drop(&self, key: &Key) -> Result<()>;
     pub fn drop_dir(&self, worktree: &Path) -> Result<()>;
     pub fn retitle(&self, by: RetitleBy, title: &str) -> Result<Option<Key>>;
-    pub fn sync(&self, repos: &[&Repo], live: &Live) -> Result<Vec<Key>>;
+    pub fn learn_id(&self, key: &Key, session_id: &str) -> Result<()>;  // a harness that names its own ids
+    pub fn sync(&self, repos: &[&Repo], live: &[LiveSession]) -> Result<Vec<Key>>;
     pub fn hook(&self, payload: &HookPayload) -> Result<()>;  // never fails the caller
-    pub fn get(&self, q: &str, live: &Live) -> Result<Found>; // id, 8+ prefix, dir, name; transcript fallback
+    pub fn get(&self, q: &str, live: &[LiveSession]) -> Result<Found>; // id, 8+ prefix, dir, name; transcript fallback
 }
 
-pub enum State { Running { pid: u32 }, Ready, Ended, Gone, NoId }
+pub enum State { Running { pid: Option<u32> }, Ready, Ended, Gone, NoId }
 
-pub fn state_of(rec: &Record, live: &Live) -> State;          // today's status_of
+pub fn state_of(rec: &Record, live: &[LiveSession]) -> State;   // today's status_of
 ```
 
 Writes go to a temporary file followed by a rename, as today. A record goes
 back to the file it came from, even when its session id has changed (after a
 `/clear`).
+
+**Session ids known late.** yo picks a Claude session's id before launching it
+(`--session-id`), which is how the ledger knows a session before it has
+started, and how `resume-all` brings back one that crashed early. Other
+harnesses may only report an id once they're running. For those, the record is
+written with no id, and `learn_id` fills it in when the harness reports one: by
+its hook, by its list of live sessions, or from ACP's `session/new`. Until then
+the record is `no-id`, as a record without an id is today.
 
 ### Commands as plans
 
@@ -285,13 +334,11 @@ pub enum Action {
     RemoveWorktree { repo: PathBuf, path: PathBuf },
     DeleteBranch { repo: PathBuf, branch: String },
     MirrorFiles { from: PathBuf, to: PathBuf, files: Vec<PathBuf> },
-    WriteLocalSettings { worktree: PathBuf, mcp: Vec<String> },
-    SeedTrust { dirs: Vec<PathBuf> },                 // ~/.claude.json
-    ComposeSettings { out: PathBuf, layers: Vec<PathBuf>, memory: Option<PathBuf> },
+    Prepare(HarnessPrep),            // a harness's setup: Claude's settings layer, trust, local settings, memory
     PutRecord(Record),
     DropRecord(Key),
     Launch(LaunchSpec),
-    Reach { target: LiveRef, message: Option<String> },
+    Deliver(Delivery),               // a message; see [messages](#messages)
     CloseOwnTab,
 }
 
@@ -302,7 +349,7 @@ pub fn plan_resume_all(ctx: &Ctx, opts: ResumeOpts) -> Result<Plan>;
 pub fn plan_down(ctx: &Ctx, here: &Path, opts: DownOpts) -> Result<Plan>;
 pub fn plan_sweep(ctx: &Ctx, opts: SweepOpts) -> Result<(Vec<Verdict>, Plan)>;
 
-pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report) -> Result<()>;
+pub fn execute(ctx: &Ctx, plan: &Plan, runners: &Runners, out: &mut dyn Report) -> Result<()>;
 ```
 
 `Report` is where output goes: the CLI renders it as today's text; the daemon
@@ -311,28 +358,211 @@ turns it into events. The core never prints.
 ### `yo NAME`
 
 Resolution is a pure function over the registry, the ledger and the live
-processes. It returns what NAME means; the caller acts on it.
+sessions. It returns what NAME means; the caller acts on it.
 
 ```rust
 pub enum Resolved {
     RepoOrProfile,                          // step 1: create, positionally
     Agent(String),                          // step 2
-    Live(LiveSession),                      // step 3: by Claude name
+    Live(LiveSession),                      // step 3: by the harness's own name for it
     Ledger(Entry, State),                   // step 4: by yo name, id, 8+ prefix
     Home { repo: String, target: HomeTarget }, // step 5: running, else latest ready, else new in place
     New,                                    // step 6
 }
 
-pub fn resolve(ctx: &Ctx, name: &str, has_flags: bool, live: &Live) -> Result<Resolved, Ambiguous>;
+pub fn resolve(ctx: &Ctx, name: &str, has_flags: bool, live: &[LiveSession]) -> Result<Resolved, Ambiguous>;
 ```
 
 Today this order is spread over `main`, `cmd_reach` and `cmd_home_reach`.
 Having it in one function, tested case by case, is one of the main things the
 port buys.
 
+## Harnesses
+
+A harness is a coding agent's CLI: `claude`, `codex`, and later others. Most of
+what's Claude-specific in yo today is in how it prepares, launches and watches
+a Claude session, not in runners or sessions. All of that moves behind one
+trait.
+
+```rust
+pub trait Harness {
+    fn name(&self) -> &str;                                       // "claude", "codex"
+
+    // required
+    fn tui_command(&self, s: &SessionSpec) -> Argv;              // start its TUI in s.dir, with s.name and s.first_message
+    fn resume_command(&self, id: &str, s: &SessionSpec) -> Argv; // reopen a session in its TUI
+    fn ids(&self) -> IdPolicy;                                    // yo picks the id | the harness reports it
+    fn live(&self, sys: &dyn Sys) -> Vec<LiveSession>;            // what's running now: id, pid, cwd, name
+    fn acp(&self) -> Option<Argv>;                                // how to run it over ACP, if it can be
+
+    // optional: what a harness has, it says here
+    fn capabilities(&self) -> Capabilities;
+    fn prepare(&self, ctx: &Ctx, s: &SessionSpec) -> Result<Vec<HarnessPrep>> { Ok(vec![]) }
+    fn status(&self, sys: &dyn Sys) -> Vec<(SessionId, HarnessStatus)> { vec![] }
+    fn relay(&self) -> Option<&dyn Relay> { None }
+}
+
+pub struct Capabilities {
+    pub settings_layer: bool,     // Claude: --settings, composed per session
+    pub memory: bool,             // Claude: autoMemoryDirectory
+    pub personas: bool,           // Claude: --agent; yo's `agents`
+    pub ledger_hooks: bool,       // Claude: SessionStart / SessionEnd call `yo _hook`
+    pub remote_control: bool,
+    pub models: bool,             // --model
+}
+
+pub struct SessionSpec {
+    pub dir: PathBuf,
+    pub name: String,             // yo's name; passed to the harness so others can address it
+    pub id: Option<String>,       // when the harness lets yo pick it
+    pub model: Option<String>,
+    pub persona: Option<String>,
+    pub first_message: Option<String>,
+    pub permission_mode: Option<String>,
+}
+```
+
+- **The Claude harness** owns what's Claude-specific in yo today:
+  `--session-id`, `--settings` and the composed settings layer, the trust
+  seeding in `~/.claude.json`, each worktree's `.claude/settings.local.json`
+  (MCP pre-approval), shared memory, `--agent` and agents' homes, the ledger
+  hooks, Remote Control names, live sessions from `~/.claude/sessions`, status
+  from `claude agents --json`. It also starts passing `--name <yo name>`, so
+  other sessions (and the relay) can address it by yo's name.
+- **The Codex harness** (phase 2) is the second implementation: launch, resume,
+  live sessions, a ledger record with an id learned after launch, messages
+  typed into its tab, and ACP through `codex-acp`. Everything else is "not
+  available" until Codex offers it. Its details (how it names sessions, what
+  it reports while running, whether it has hooks) are checked when that phase
+  starts, against what Codex ships then.
+- **Flags that don't apply** to a session's harness (`--agent` on Codex, say)
+  are an error that names the harness, not silently ignored.
+- **Status** comes from whatever the harness offers. For Claude that's
+  `claude agents --json` (a research preview; the docs say to use it rather
+  than read `~/.claude/jobs`, so yo reads it through one adapter and tolerates
+  fields changing). A harness with nothing reports `unknown`, which the status
+  model treats as normal.
+
+## Runners
+
+A runner is how a session runs. A session is a record in yo; its runner and
+harness are fields on it.
+
+```rust
+pub trait Runner {
+    fn kind(&self) -> RunnerKind;                                  // iterm | acp | ...
+    fn launch(&self, h: &dyn Harness, spec: &LaunchSpec) -> Result<Launched>;
+    fn locate(&self, live: &LiveSession) -> Option<Location>;      // where it is, if this runner can tell
+    fn deliver(&self, at: &Location, message: &str) -> Result<Delivered>;
+    fn focus(&self, at: &Location) -> Result<()>;
+    fn close(&self, at: &Location) -> Result<()>;
+    fn retitle(&self, at: &Location, title: &str) -> Result<()>;
+}
+
+pub struct LaunchSpec {
+    pub session: SessionSpec,
+    pub title: String,
+    pub window: WindowChoice,        // tab | window | config
+    pub group: String,
+}
+```
+
+- **Liveness isn't a runner's business.** Each harness says what's running;
+  a runner only answers where a live session is and how to reach it.
+- **iTerm:** today's runner. It runs the harness's TUI command in a tab
+  (argv, turned into a single-quoted command line as today), with today's
+  AppleScript kept as `.applescript` files embedded with `include_str!` and
+  run through `CommandRunner`, so tests see them. A session is located by its
+  tty. Works for any harness with a TUI.
+- **ACP** (phase 5): for sessions nobody is watching. The daemon runs the
+  harness's ACP command (`claude-agent-acp`, `codex-acp`, ...) as a child
+  process and talks JSON-RPC to it over stdin and stdout, through the
+  `agent-client-protocol` crate:
+  - `session/new` in the worktree starts it, and its `sessionId` goes into
+    the ledger.
+  - `session/prompt` sends messages.
+  - `session/update` notifications become events. ACP v2's `state_update`
+    (running, idle, requires_action) gives "needs me" for every harness.
+  - `session/request_permission` becomes a "needs me" with the question in
+    it. Answering it from the TUI or app is possible, but yo's first answer
+    is the principle above: open the session in the harness's TUI
+    (`resume_command`) and answer it there.
+  - After a daemon restart, `session/resume` reattaches, where the harness
+    supports it.
+
+  ACP replaces two earlier ideas: driving `claude --print` over its own
+  stream-json format (one harness only), and Claude's `claude --bg` (one
+  harness only, and its process isn't yo's to manage). It's built and tested
+  against two harnesses at once: Claude and Codex.
+- **Moving between runners** is the harness's `resume_command` in a tab: a
+  session started over ACP is opened in its TUI when you want to take over.
+  Whether a harness lets its TUI and an ACP client share a live session isn't
+  defined by ACP; until a harness supports it, taking over means the daemon
+  closes its side first.
+- **Remote workers** (phase 7) are another machine's daemon, reached through a
+  hub. The trait makes no assumption of a tab, a tty or a local process.
+
+## Messages
+
+`yo NAME 'message'` reaches a session and gives it the message. There are three
+ways to deliver one, and they aren't the same thing:
+
+| method | the session sees | reaches | harnesses |
+| --- | --- | --- | --- |
+| type into the tab | **you**: your input, with your authority | a session in an iTerm tab yo can find | any with a TUI |
+| ACP `session/prompt` | **you** | sessions on yo's ACP runner | any ACP harness |
+| the relay | **another session**: a peer's message | any Claude session the relay can address: on this machine, on others over Remote Control, in the cloud | Claude |
+
+### The relay
+
+The relay is a Claude session the daemon keeps running, on the ACP runner,
+whose only tools are Claude Code's `ListAgents` and `SendMessage`. To send, yo
+prompts it to send exact text to a named session. yo doesn't trust the model's
+summary of what it did: it reads the relay's tool calls from the
+`session/update` stream and checks that `SendMessage` went to the right session
+with exactly the right text. Anything else is a failed delivery, and is
+reported as one.
+
+- **It runs on a cheap model** (Haiku), and costs one short turn per message.
+- **Replies come back.** A session answers a peer with `SendMessage` to the
+  sender's address, so replies arrive at the relay. The daemon turns them into
+  events: yo gets an inbox, which today doesn't exist ("messages are
+  invisible", in #9).
+- **Addresses are names.** That's why the Claude harness passes
+  `--name <yo name>` at launch.
+
+### Why typing stays
+
+A peer's message isn't the user speaking. Claude Code says cross-session
+messages never count as user consent, and depending on the receiving
+session's settings (`crossSessionInbound`) they can be held for approval or
+refused. "Go ahead and push", sent through the relay, is a teammate's request,
+not your go-ahead. That's right for coordination: yo's own notices, or passing
+on another session's report. It's wrong when you mean "this is me".
+
+So `yo NAME 'message'` delivers in your voice where it can:
+
+1. ACP `session/prompt`, for a session on the ACP runner.
+2. Typing into the tab, for a session in iTerm.
+3. Otherwise, the relay, for a Claude session neither can reach: in the
+   background, on another machine, or with no tab yo can find. Today that case
+   prints "your message was not delivered". yo says when it used the relay.
+
+`--via=tab|acp|relay` picks one explicitly, and a `messages` setting can make
+the relay the default. Typing keeps today's type, pause, then Enter sequence.
+
+### What's not used
+
+- **The inbox socket** each Claude session opens
+  (`CLAUDE_CODE_MESSAGING_SOCKET`) is documented only for a session's own
+  hooks and scripts. yo could post to it, but its format isn't specified and
+  may change. Revisit if it's documented.
+- **Channels** (an MCP server pushing into a session) need a flag at launch,
+  plus a development flag for custom ones, and are a research preview.
+
 ## Machine ids
 
-Design for several machines now, build it in phase 6.
+Design for several machines now, build it in phase 7.
 
 - **`MachineId`**: a UUID created once and stored at
   `$XDG_STATE_HOME/yo/machine-id`, with the hostname as its display name.
@@ -345,21 +575,22 @@ Design for several machines now, build it in phase 6.
   - the daemon's own identity (`GET /v1/info`)
 - **A session's global identity** is `(machine, key)`. The ledger key is
   derived from the worktree path, so two machines can have the same key; the
-  session id alone is unique, but not every record has one (`no-id`).
+  session id alone isn't always known (`no-id`, and ids learned late).
 - **What doesn't need it:** config. Each machine has its own config file;
-  the hub will learn which machine can run which repo from each daemon's
-  registry.
+  the hub will learn which machine can run which repo and harness from each
+  daemon's registry.
 
 ## Events and status
 
-Phase 2 builds this, but the types live in `yo-core` from phase 1 so the
-ledger hook already writes through them.
+The types live in `yo-core` from phase 1 so the ledger hook already writes
+through them.
 
 ### The event log
 
 JSON lines in `$XDG_STATE_HOME/yo/events/YYYY-MM-DD.jsonl`, one file per day,
-so old days can be pruned. Hooks append with `O_APPEND` under an advisory lock
-(`flock`), one line per event, kept small.
+so old days can be pruned. Writers append with `O_APPEND` under an advisory
+lock (`flock`), one line per event, kept small. Hooks, the daemon (ACP
+sessions, the relay) and the CLI all write here.
 
 ```rust
 #[derive(Serialize, Deserialize)]
@@ -367,7 +598,8 @@ pub struct Event {
     pub v: u32,                      // schema version
     pub ts: i64,                     // unix ms
     pub machine: MachineId,
-    pub session: Option<Uuid>,       // claude's session id
+    pub harness: Option<String>,
+    pub session: Option<String>,     // the harness's session id
     pub key: Option<Key>,            // ledger key, when known (YO_SESSION_KEY)
     #[serde(flatten)]
     pub kind: EventKind,
@@ -377,25 +609,27 @@ pub struct Event {
 pub enum EventKind {
     SessionStart { cwd: PathBuf, source: String },
     SessionEnd { reason: String },
-    Prompt { text: String },                     // UserPromptSubmit, truncated
-    ToolUsed { tool: String, summary: String },  // PostToolUse
-    Notification { message: String },            // permission or input wanted
-    Stop,                                        // turn done, waiting
-    Usage { cost_usd: f64, context_pct: f32 },   // from the statusline
+    Prompt { text: String },                     // UserPromptSubmit, or an ACP prompt; truncated
+    ToolUsed { tool: String, summary: String },  // PostToolUse, or an ACP tool_call
+    NeedsInput { why: String },                  // Notification, ACP requires_action or request_permission
+    Idle,                                        // Stop, or ACP idle
+    Usage { cost_usd: f64, context_pct: f32 },   // from the statusline, or ACP usage_update
+    Message { from: String, to: String, text: String, via: Via },  // sent, or a reply to the relay
     Yo { action: String, detail: Value },        // created, resumed, reached, down, swept
 }
 ```
 
 The hook entry point becomes `yo _hook`, reading the event name from the
 payload. Phase 1 handles `SessionStart` and `SessionEnd` (today's ledger
-updates). Phase 2 adds `UserPromptSubmit`, `PostToolUse`, `Notification` and
-`Stop` to yo's settings layer. The statusline script already sees cost and
-context; it can append a `Usage` event every so often.
+updates). Phase 3 adds Claude's `UserPromptSubmit`, `PostToolUse`,
+`Notification` and `Stop` to yo's settings layer. Events from ACP sessions use
+the same kinds, so nothing downstream cares which harness or runner a session
+is on.
 
 ### Status
 
-Status is derived, never stored: a fold over ledger records, liveness and
-events.
+Status is derived, never stored: a fold over ledger records, the harness's
+live sessions and status, and events.
 
 ```rust
 pub struct SessionStatus {
@@ -407,6 +641,7 @@ pub struct SessionStatus {
     pub activity: Activity,              // working | idle | waiting | unknown
     pub needs_me: Option<NeedsMe>,       // permission | input | turn done; since when
     pub focus: Option<Focus>,            // last prompt, last tool
+    pub harness: String,
     pub runner: RunnerKind,
     pub repo: Option<String>, pub profile: Option<String>, pub agent: Option<String>,
     pub branch: Option<String>, pub pr: Option<u64>,
@@ -415,70 +650,28 @@ pub struct SessionStatus {
 }
 
 impl SessionStatus {
-    pub fn apply(&mut self, ev: &Event);   // pure; the TUI, app and `yo status` all use it
+    pub fn apply(&mut self, ev: &Event);              // pure; the TUI, app and `yo status` all use it
+    pub fn observe(&mut self, s: &HarnessStatus);     // the harness's own report, e.g. claude agents --json
 }
 ```
 
-`needs_me` is set by `Notification` and `Stop`, and cleared by the next
-`Prompt` or `ToolUsed`.
-
-## Runners
-
-A session is a record in yo; a runner is how it runs. Every runner implements
-the same synchronous trait:
-
-```rust
-pub trait Runner {
-    fn kind(&self) -> RunnerKind;
-    fn launch(&self, spec: &LaunchSpec) -> Result<Launched>;
-    fn locate(&self, live: &LiveSession) -> Option<Location>;  // where it is, if this runner can tell
-    fn send(&self, at: &Location, message: &str) -> Result<Delivery>;
-    fn focus(&self, at: &Location) -> Result<()>;
-    fn close(&self, at: &Location) -> Result<()>;
-    fn retitle(&self, at: &Location, title: &str) -> Result<()>;
-}
-
-pub struct LaunchSpec {
-    pub dir: PathBuf,
-    pub title: String,
-    pub claude: ClaudeCmd,           // argv, not a shell string: program, args, env, session id, model, agent, settings, first message
-    pub window: WindowChoice,        // tab | window | config
-    pub group: String,
-}
-
-pub enum Delivery { Delivered, NotFound { hint: String } }
-```
-
-- **Liveness isn't a runner's business.** Claude's own registry
-  (`~/.claude/sessions/*.json`) and the process table say what's running, for
-  every runner. A runner only answers where a live session is and how to reach
-  it.
-- **`ClaudeCmd` is argv, not a shell string.** The iTerm runner turns it into
-  the single-quoted command line it types today. The headless runner execs it
-  directly.
-- **iTerm (phase 1):** today's AppleScript, kept as `.applescript` files
-  embedded with `include_str!` and run through `CommandRunner` (so tests see
-  them). Locating a session is by its tty. Sending a message keeps the
-  type-pause-Enter sequence.
-- **Headless (phase 4)** lives in `yo-daemon`, because something has to own
-  the child process. It runs `claude --print --input-format stream-json
-  --output-format stream-json`, sends messages as JSON on stdin, and turns
-  the output stream into events. The CLI reaches it through a `DaemonRunner`
-  that implements the same trait over `yo-client`.
-- **Moving between runners** is `claude --resume <id>` under the other
-  runner. The transcript doesn't care which runner it's under.
-- **Remote Control and remote workers** are open questions (below). The trait
-  makes no assumption of a tab or a tty, so neither is ruled out.
+`needs_me` is set by `NeedsInput` and `Idle`, and cleared by the next
+`Prompt` or `ToolUsed`. A harness's own report, when it has one, wins over
+what's inferred from events: Claude's `waitingFor` (a permission prompt, input
+needed, a dialog) says more than a hook can.
 
 ## The daemon
 
-`yo serve`, phase 5, sketched here so the core doesn't paint it into a corner.
+`yo serve`. It's needed earlier than first planned, because the ACP runner and
+the relay live in it, but it stays small.
 
-- **Started on demand** by `yo tui` and `yo app`, and left running. One per
+- **Started on demand** by whatever needs it, and left running. One per
   machine: a pid file and a lock in the state directory.
-- **API:** versioned JSON over HTTP (`/v1/...`), with a WebSocket for the
-  event stream. Mostly the core's plan and execute functions, made remote.
-  The request and response types live in `yo-proto`.
+- **What it holds:** ACP child processes and their sessions, the relay, the
+  event tailer, and the API.
+- **API:** versioned JSON over HTTP (`/v1/...`), with server-sent events for
+  the event stream, and an OpenAPI spec generated from `yo-proto`. Mostly the
+  core's plan and execute functions, made remote.
 - **Security,** the boundary that matters in this design:
   - a Unix socket (mode `0600`) by default; TCP only when asked, and then
     bound to localhost or a tailnet address
@@ -486,9 +679,31 @@ pub enum Delivery { Delivered, NotFound { hint: String } }
     every request
   - the `Origin` and `Host` headers checked on every browser request, so a
     web page can't call a localhost daemon from your browser
-  - the phone and the hub need real authentication on top (phase 6)
-- **The web UI** is static files the daemon serves. A browser, an installed
-  web app or a phone use it as is; a Tauri shell is optional.
+  - remote access (a phone, the hub) needs real authentication on top
+- **The web UI** is static files the daemon serves. A browser or an installed
+  web app use it as is; a Tauri shell is optional.
+
+## Phases
+
+This replaces the phase list in #9. Each phase is useful on its own.
+
+0. **Design:** this doc.
+1. **Core with CLI parity:** port yo behind the same commands and effects, with
+   tests ([below](#parity-test-plan)). One harness (Claude) and one runner
+   (iTerm), but both already behind their traits. `--name` is passed at launch.
+2. **A second harness:** Codex, in iTerm tabs. Launch, resume, the ledger
+   with ids learned late, `--harness`, messages by typing. This is what proves
+   the `Harness` trait.
+3. **Status and events:** the event log, Claude's extra hooks, Claude's status
+   from `claude agents --json`, `yo status`, `yo watch`.
+4. **`yo tui`:** session list with live status, a "needs me" filter, focus,
+   send, start (with an editor for the brief), resume, sweep with checkboxes.
+5. **The daemon, the ACP runner and the relay:** background sessions for
+   Claude and Codex, opening them in a tab to take over, the relay and its
+   inbox.
+6. **`yo app`:** the web UI over the daemon's API. Maybe the MCP server.
+7. **Reach:** a phone (Remote Control for Claude sessions; the daemon's UI
+   for any), then the hub and remote workers.
 
 ## Parity test plan
 
@@ -499,7 +714,8 @@ exactly; output the same or deliberately different.
 
 `yo-testkit` runs each scenario twice, in two sandboxes that start
 identical: once with `scripts/yo` (the reference), once with the new binary.
-Then it compares the results.
+Then it compares the results. ("Harness" here means the test harness, not a
+coding agent.)
 
 A sandbox is a temporary directory with:
 
@@ -540,13 +756,13 @@ the comparison normalizes timestamps (below).
 | what | how |
 | --- | --- |
 | exit code | exactly |
-| ledger | every record, as JSON, with `createdAt`, `updatedAt` and `endedAt` replaced by `<ts>` (and the new `machine` field ignored) |
+| ledger | every record, as JSON, with `createdAt`, `updatedAt` and `endedAt` replaced by `<ts>`, and the new `machine` and `harness` fields ignored |
 | config | the file, byte for byte (`yo config add-repo` writes it) |
 | composed settings | `$XDG_STATE_HOME/yo/settings/*.json`, as JSON |
 | Claude's files | `~/.claude.json` (trust), each worktree's `.claude/settings.local.json`, mirrored files |
 | iTerm | the dynamic profile JSON, and the AppleScript sent to `osascript`, normalized for whitespace |
 | git | `git worktree list --porcelain` and every branch with its commit, for each fixture repo |
-| launched commands | the `claude` command line typed into the tab (from the `osascript` log), with the session id normalized |
+| launched commands | the `claude` command line typed into the tab (from the `osascript` log), with the session id normalized, and `--name` (new) accepted as a difference |
 | stdout, stderr | after normalizing ids, timestamps and sandbox paths |
 
 The dates in session names (`sesh_<date>_<time>`) are fixed by the `date`
@@ -559,7 +775,8 @@ difference in an `accepted.diff` file beside it. The test fails on any
 difference that isn't recorded, and on any recorded one that no longer
 happens. Every change to yo's output is then a choice someone made, in a
 diff someone reviewed. Effects (everything in the table but stdout and stderr)
-have no accepted differences: they must match.
+have no accepted differences, beyond the new fields and `--name` noted above:
+they must match.
 
 ### Scenarios
 
@@ -586,6 +803,11 @@ from then on the Rust version runs against those. The same scenarios stay
 the regression suite, and `yo-core` has its own unit tests for resolution,
 precedence, sweep's rules and status.
 
+Later phases extend the same suite rather than starting new ones: a fake
+`codex` (phase 2), and a fake ACP agent that plays scripted `session/update`
+streams (phase 5), so the ACP runner and the relay's delivery check can be
+tested without a model.
+
 Fakes can't prove the AppleScript drives iTerm correctly. A short manual
 checklist covers that, run once before the switch: start, start in a new
 window, reach with a message, title, down, resume-all.
@@ -594,13 +816,19 @@ window, reach with a message, title, down, resume-all.
 
 These stay open. Nothing in the design depends on how they're answered.
 
-- **Remote Control:** what Claude Code exposes for driving a Remote Control
-  session programmatically. To find out before phase 4 designs a runner for
-  it.
-- **Approvals in the UI:** for headless sessions they come through the stream.
-  Forwarding an iTerm session's permission prompt (from `Notification`)
-  could show it, but answering it still means the tab, or typing into it.
-- **The hub:** self-hosted, on a home machine, or hosted. Phase 6.
+- **ACP v1 or v2.** v2 has `state_update`, `session/status` and resume with
+  history replay, but is a preview. Decide in phase 5, against what
+  `claude-agent-acp` and `codex-acp` support then.
+- **Sharing a live session** between an ACP client and the harness's own TUI.
+  ACP leaves it to each harness, and a proposal for clients joining a session
+  another client started isn't settled.
+- **Approvals in yo's UI:** for ACP sessions, showing and answering
+  `session/request_permission` is possible. Whether yo should, or always send
+  you to the harness's TUI, is for phase 4 or 5.
+- **The relay's reach:** whether cross-machine messages to sessions that
+  aren't connected over Remote Control are useful enough to need anything
+  more, and how replies with no reply address show up.
+- **The hub:** self-hosted, on a home machine, or hosted. Phase 7.
 - **Distribution:** stay "clone and `install.sh`" (which would then run
   `cargo build`), release binaries, or a Homebrew tap.
 - **An MCP server:** coordinating sessions calling yo as tools rather than
