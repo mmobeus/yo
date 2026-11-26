@@ -36,6 +36,7 @@ builds against it.
 - [Decisions](#decisions)
 - [Principles](#principles)
 - [Language: Rust](#language-rust)
+- [The app: Tauri](#the-app-tauri)
 - [Shape](#shape)
 - [Crates](#crates)
 - [The core's API](#the-cores-api)
@@ -58,12 +59,12 @@ builds against it.
 | coding agents | more than Claude Code. yo calls them **harnesses** (`claude`, `codex`, ...), because "agent" already means a persona like `--agent=cindy`. Claude is the first; Codex is the second, right after the port |
 | background sessions | run over [ACP](https://agentclientprotocol.com) (the Agent Client Protocol), which works for many harnesses, not by driving one harness's own stream format |
 | messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
-| app shell | none at first: the daemon serves the web UI to a browser. A thin Tauri shell over the same UI if a real window is wanted. Not Wails |
+| app | a Tauri app (`yo app`): one web UI, wrapped by Tauri, talking to the daemon over its Unix socket. The app holds no yo logic. The same UI can be served over the daemon's opt-in HTTP, for a phone or for UI development. Not Wails |
 | compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
 | parity | the port must have today's *effects* exactly (ledger, config, git, files written, commands launched). Output text is compared too, but may change deliberately: every difference is recorded |
 | daemon | optional for the CLI; started on demand by what needs it (`yo tui`, `yo app`, background sessions, the relay). A launchd agent can come later |
 | "latest focus" | raw: the last prompt and the last tool used. A summary can come later |
-| phone | Claude's Remote Control for Claude sessions, for now; a path that works for every harness later, over the daemon |
+| phone | Claude's Remote Control for Claude sessions, for now; for every harness later, the same web UI over the daemon's opt-in HTTP, on a tailnet |
 | iTerm automation | keep shelling out to `osascript` |
 | git, gh | keep shelling out to the `git` and `gh` CLIs, not a git library: same behavior as today, same auth, same config |
 
@@ -108,16 +109,54 @@ events and glue. Rust wins here for reasons specific to how yo is built:
 - **Few human readers**, even once public, which takes away Go's main
   remaining advantage: that newcomers can read and contribute easily.
 - **ACP's official Rust crate** (`agent-client-protocol`) is at 1.0, and Zed
-  uses it. **Tauri** is native, if the app ever gets a window of its own.
+  uses it. **Tauri**, for the app, is Rust too: the same workspace, the same
+  `yo-proto` types, the same gates.
 
-### What Tauri's security does and doesn't buy
+## The app: Tauri
 
-Tauri's security model guards the boundary between the web UI and native code:
-which native commands a page may call, and what each may touch. In this design
-the UI does almost nothing natively. It talks to the daemon over HTTP, and the
-daemon does the work. So the boundary that needs securing is **the daemon's
-API**, whatever wraps the UI (see [the daemon](#the-daemon)). A Tauri shell
-adds defense in depth on top of that; it doesn't replace it.
+`yo app` is a Tauri app around one web UI (`web/`). Serving that UI from the
+daemon to a browser was the alternative. Tauri is the main path because:
+
+- **The daemon needs no open port.** A browser can't talk to a Unix socket, so
+  a browser UI means the daemon listens on localhost, where every page in every
+  browser on the machine can try to reach it. That needs `Origin` and `Host`
+  checks, and a way to hand the browser a token. In the app, the UI calls the
+  app's Rust side, which talks to the daemon over its socket (mode `0600`). No
+  port is open at all, which removes that class of attack rather than
+  defending against it.
+- **Tauri's own security model** adds defense in depth: the UI can call only
+  the native commands the app grants it.
+- **Native features that suit yo:** a menu bar icon with how many sessions
+  need you, native notifications for "needs me", a global shortcut to bring yo
+  forward, the daemon's token kept in the Keychain, and `yo://` links.
+
+Rules for the app:
+
+- **It holds no yo logic.** Its Rust side forwards requests to the daemon and
+  provides the native features above, nothing more. Logic in the app would
+  duplicate the daemon, and the CLI, TUI and phone would not have it.
+- **Least privilege.** The UI is granted only the Tauri commands it uses.
+- **One UI, one transport layer.** The UI reaches the daemon through a small
+  adapter: Tauri's bridge to the socket inside the app, HTTP everywhere else.
+  Nothing else in the UI knows which it's using.
+
+Where the browser path is still used:
+
+- **A phone, and other machines.** These need the daemon reachable over the
+  network (a tailnet) anyway, so the daemon serves the same UI there, over its
+  opt-in HTTP. Claude sessions can also use Remote Control.
+- **UI development:** a dev server in a browser, against the daemon's HTTP on
+  localhost, turned on for that.
+
+Costs, accepted:
+
+- **Signing.** Builds for yourself can be signed ad hoc. Shipping to others
+  needs an Apple Developer ID and notarization on each release; that comes
+  with the distribution question (see [open questions](#open-questions)).
+- **One engine.** On macOS Tauri uses the system's WebKit, so the UI is tested
+  against WebKit, not Chrome.
+
+Wails was considered and rejected.
 
 ### Keeping Rust's costs down
 
@@ -137,10 +176,10 @@ adds defense in depth on top of that; it doesn't replace it.
 ## Shape
 
 ```
-     yo (CLI)       yo tui        yo app / browser         [MCP server?]
-         \             |                  |                       /
-          \            +---- yo-client ---+-----------------------+
-           \                    |  (HTTP + SSE, local or remote)
+     yo (CLI)       yo tui     yo app (Tauri)   phone browser   [MCP server?]
+         \             |             |              |              /
+          \            +--------- yo-client --------+-------------+
+           \                    |  Unix socket locally; opt-in HTTP for remote
             \             yo serve (daemon, async)
              \            ACP runner · relay · API · event tailer
               \                 |
@@ -174,9 +213,10 @@ A Cargo workspace:
 | `yo-client` | lib | a client for a daemon, local (Unix socket) or remote (HTTPS), used by the TUI, app and CLI |
 | `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the ACP runner, the relay |
 | `yo-tui` | lib | `yo tui` |
+| `yo-app` | bin, Tauri | `yo app`: the Tauri shell around `web/`. Forwards to the daemon through `yo-client`; tray, notifications, shortcut, Keychain. No yo logic |
 | `yo-testkit` | lib, dev | sandboxes, fakes and the parity harness |
 | `xtask` | bin, dev | the gates, run the same way locally and in CI (`cargo xtask ci`); see [how it's built](#how-its-built) |
-| `web/` | not Rust | the web UI |
+| `web/` | not Rust | the web UI: inside `yo-app`, and served by the daemon's opt-in HTTP |
 
 Inside `yo-core`:
 
@@ -698,19 +738,21 @@ the relay live in it, but it stays small.
   machine: a pid file and a lock in the state directory.
 - **What it holds:** ACP child processes and their sessions, the relay, the
   event tailer, and the API.
-- **API:** versioned JSON over HTTP (`/v1/...`), with server-sent events for
-  the event stream, and an OpenAPI spec generated from `yo-proto`. Mostly the
-  core's plan and execute functions, made remote.
-- **Security,** the boundary that matters in this design:
-  - a Unix socket (mode `0600`) by default; TCP only when asked, and then
-    bound to localhost or a tailnet address
+- **API:** versioned JSON over HTTP semantics (`/v1/...`), with server-sent
+  events for the event stream, and an OpenAPI spec generated from `yo-proto`.
+  Mostly the core's plan and execute functions, made remote.
+- **Listening:** on a Unix socket (mode `0600`) only, by default. The CLI, the
+  TUI and the app all use it. TCP is opt-in, for a phone, the hub or UI
+  development, and bound to localhost or a tailnet address, never all
+  interfaces.
+- **Security:**
   - a bearer token in `$XDG_STATE_HOME/yo/daemon-token` (mode `0600`) on
-    every request
-  - the `Origin` and `Host` headers checked on every browser request, so a
-    web page can't call a localhost daemon from your browser
+    every request, even on the socket
+  - over TCP, additionally: the `Origin` and `Host` headers checked on every
+    request, so a web page can't call the daemon from your browser
   - remote access (a phone, the hub) needs real authentication on top
-- **The web UI** is static files the daemon serves. A browser or an installed
-  web app use it as is; a Tauri shell is optional.
+- **The web UI** is the same files the app wraps. Over opt-in TCP the daemon
+  serves them too, for a phone or a browser.
 
 ## Phases
 
@@ -732,9 +774,11 @@ This replaces the phase list in #9. Each phase is useful on its own.
 5. **The daemon, the ACP runner and the relay:** background sessions for
    Claude and Codex, opening them in a tab to take over, the relay and its
    inbox.
-6. **`yo app`:** the web UI over the daemon's API. Maybe the MCP server.
-7. **Reach:** a phone (Remote Control for Claude sessions; the daemon's UI
-   for any), then the hub and remote workers.
+6. **`yo app`:** the Tauri app: the web UI, the menu bar icon, notifications.
+   Maybe the MCP server.
+7. **Reach:** a phone (Remote Control for Claude sessions; for any harness,
+   the same UI over the daemon's opt-in HTTP on a tailnet), then the hub and
+   remote workers.
 
 ## Parity test plan
 
@@ -900,6 +944,7 @@ it.
 | rule | check |
 | --- | --- |
 | `yo-core` stays synchronous and light | a test over `cargo metadata` fails if `yo-core` depends on tokio, axum or the ACP crate |
+| the app holds no yo logic | the same test fails if `yo-app` depends on `yo-core` or `yo-daemon`; it may use only `yo-client` and `yo-proto` |
 | the core never prints | `clippy::print_stdout` and `clippy::print_stderr` denied in `yo-core` |
 | every outside effect goes through `Sys` | `clippy::disallowed-methods` bans `std::process::Command::new`, the system clock and randomness in `yo-core` outside `sys.rs` |
 | a dry run changes nothing | every parity scenario also runs with `--dry-run`, and the sandbox must be byte-identical afterwards |
@@ -915,9 +960,12 @@ it.
 - **Destructive operations:** over randomized repo states, sweep and `down`
   never remove a dirty worktree, the primary clone, the current directory, an
   agent's home, or a worktree a session still holds.
-- **The daemon:** requests with no token, a wrong token, or a bad `Origin` or
-  `Host` are refused. The socket and token file are `0600`. It listens only
-  locally unless asked otherwise.
+- **The daemon:** requests with no token or a wrong one are refused, on the
+  socket and over TCP; over TCP, so are requests with a bad `Origin` or
+  `Host`. The socket and token file are `0600`. With default settings it opens
+  no TCP port at all, and when TCP is turned on it never binds all interfaces.
+- **The app:** it's granted only the Tauri commands the UI uses, and a test
+  fails if that list grows without the test being updated.
 - **The relay:** a fake ACP stream with a changed recipient or changed text is
   a failed delivery. A relayed message is never reported as your voice.
 - **The hook:** random and malformed payloads never make it fail or hang.
