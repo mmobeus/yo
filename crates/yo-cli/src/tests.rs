@@ -280,7 +280,11 @@ fn create_dry_run_shows_the_plan_and_changes_nothing() {
         ),
         "  - record the session in the ledger as src__api-worktrees__feat\n".to_string(),
         format!("  - open [feat] in {}\n", wt.display()),
-        "      YO_SESSION_KEY='src__api-worktrees__feat' claude --permission-mode auto --name feat --session-id 11111111-2222-4333-8444-555555555555 'do it (FYI, your codename for this session is \"Plucky Gary\"".to_string(),
+        "  - pre-trust the worktree in ~/.claude.json\n".to_string(),
+        format!(
+            "      YO_SESSION_KEY='src__api-worktrees__feat' claude --permission-mode auto --settings {} --name feat --session-id 11111111-2222-4333-8444-555555555555 'do it (FYI, your codename for this session is \"Plucky Gary\"",
+            t.path().join(".local/state/yo/settings/api.json").display()
+        ),
         "dry run: nothing changed.\n".to_string(),
     ] {
         assert!(out.out.contains(&want), "missing {want:?} in:\n{}", out.out);
@@ -326,4 +330,47 @@ fn create_with_a_dry_launch() {
         wt.display()
     )));
     assert!(out.out.ends_with("==> ready.\n"));
+}
+
+#[test]
+fn the_session_hook_updates_its_record_and_never_fails() {
+    let (t, sys, api) = with_clone();
+    sys.set_env("YO_DRY_LAUNCH", "1");
+    let a = api.display().to_string();
+    let wt = api.with_file_name("api-worktrees").join("feat");
+    sys.answer_ok("git", &["-C", &a, "fetch", "origin", "main"], "");
+    sys.answer_ok(
+        "git",
+        &[
+            "-C",
+            &a,
+            "worktree",
+            "add",
+            "-b",
+            "feat",
+            &wt.to_string_lossy(),
+            "origin/main",
+        ],
+        "",
+    );
+    assert_eq!(yo(&sys, &api, &["feat"]).code, 0);
+    // The worktree is the fake's: make it real for the record's checks.
+    fs::create_dir_all(&wt).unwrap();
+    sys.set_env("YO_SESSION_KEY", "src__api-worktrees__feat");
+    let cwd = wt.display();
+    crate::run::session_hook(
+        sys.clone(),
+        &format!(
+            r#"{{"hook_event_name": "SessionStart", "session_id": "new-id", "cwd": "{cwd}"}}"#
+        ),
+    );
+    let rec = fs::read_to_string(
+        t.path()
+            .join(".local/state/yo/sessions/src__api-worktrees__feat.json"),
+    )
+    .unwrap();
+    assert!(rec.contains(r#""sessionId": "new-id""#), "{rec}");
+    for junk in ["", "{", "null", r#"{"session_id": "a b"}"#] {
+        crate::run::session_hook(sys.clone(), junk);
+    }
 }

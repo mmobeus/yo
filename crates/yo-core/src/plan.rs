@@ -3,8 +3,9 @@
 //! it, and [`execute`] carries it out.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use crate::harness::Prep;
 use crate::ledger::Entry;
 use crate::runner::{LaunchSpec, Launched, Runner};
 use crate::{Ctx, Error, Result, git};
@@ -46,6 +47,26 @@ pub enum Action {
         remote: String,
         merge: String,
     },
+    /// Gitignored files from the main clone that a worktree needs (`mirror`):
+    /// each copied only if it's there, not in the worktree yet, and ignored
+    /// by the worktree's git, so it can't be committed.
+    MirrorFiles {
+        from: PathBuf,
+        to: PathBuf,
+        files: Vec<String>,
+    },
+    /// A directory a session uses (its memory). `what` says which.
+    MakeDir {
+        path: PathBuf,
+        what: String,
+    },
+    /// A file yo composes for a session (its settings layer).
+    WriteFile {
+        path: PathBuf,
+        contents: String,
+    },
+    /// A harness's own setup.
+    Prepare(Prep),
     PutRecord(Box<Entry>),
     Launch(LaunchSpec),
 }
@@ -130,6 +151,22 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     &["config", &format!("branch.{branch}.merge"), merge],
                 )?;
             }
+            Action::MirrorFiles { from, to, files } => {
+                for n in mirror(sys, from, to, files) {
+                    out.note(&n);
+                }
+            }
+            Action::MakeDir { path, .. } => {
+                fs::create_dir_all(path).map_err(|e| Error::io(path, e))?;
+            }
+            Action::WriteFile { path, contents } => {
+                crate::write_atomic(path, contents.as_bytes())?;
+            }
+            Action::Prepare(p) => {
+                if let Err(err) = p.run(sys) {
+                    out.note(&Note::Warn(format!("{} ({err})", p.failed())));
+                }
+            }
             Action::PutRecord(e) => {
                 if let Err(err) = ctx.ledger().write(&mut e.clone()) {
                     out.note(&Note::Warn(format!(
@@ -144,4 +181,39 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
         }
     }
     Ok(())
+}
+
+/// Copies each of `files` from the main clone into the worktree, saying
+/// what it did with each.
+fn mirror(sys: &dyn crate::sys::Sys, from: &Path, to: &Path, files: &[String]) -> Vec<Note> {
+    let mut notes = Vec::new();
+    for rel in files {
+        let src = from.join(rel);
+        let dst = to.join(rel);
+        if !src.is_file() {
+            notes.push(Note::Warn(format!(
+                "no {rel} in {} -- skipped (servers that read it won't start)",
+                from.display()
+            )));
+        } else if dst.exists() {
+            notes.push(Note::Info(format!(
+                "{rel} already in the worktree; left alone"
+            )));
+        } else if git::git(sys, to, &["check-ignore", "-q", rel]).is_none() {
+            // These hold credentials: never where `git add -A` could stage one.
+            notes.push(Note::Warn(format!(
+                "{rel} is NOT gitignored in the worktree -- not copying (it could be committed)"
+            )));
+        } else if dst.parent().is_some_and(|d| fs::create_dir_all(d).is_err())
+            || fs::copy(&src, &dst).is_err()
+        {
+            notes.push(Note::Warn(format!("couldn't copy {rel} into the worktree")));
+        } else {
+            // fs::copy keeps the mode, as `cp -p` did.
+            notes.push(Note::Info(format!(
+                "{rel} copied from the main clone (gitignored; goes away with the worktree)"
+            )));
+        }
+    }
+    notes
 }

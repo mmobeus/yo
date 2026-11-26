@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use yo_core::Ctx;
 use yo_core::create::{CreateRequest, plan_create};
+use yo_core::ledger::Ledger;
+use yo_core::paths::Paths;
 use yo_core::plan::execute;
 use yo_core::registry::Mode;
 use yo_core::runner::{DryLaunch, WindowChoice};
@@ -70,6 +72,20 @@ fn go(
     };
     out.write_all(text.as_bytes())?;
     Ok(0)
+}
+
+/// `yo _session-hook`: a harness's ledger hook, with its payload. Loads no
+/// config, so it's fast and a config problem can't break it.
+pub fn session_hook(sys: Arc<dyn Sys>, payload: &str) {
+    let ledger = Ledger::new(sys.clone(), Paths::new(&*sys));
+    for h in yo_core::harness::all() {
+        if h.capabilities().ledger_hooks
+            && let Some(ev) = h.hook_event(payload)
+        {
+            ledger.hook(&ev);
+            return;
+        }
+    }
 }
 
 /// `yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]`. Reaching a session by

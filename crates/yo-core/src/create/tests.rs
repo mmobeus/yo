@@ -183,8 +183,9 @@ fn a_new_branch_from_the_base() {
         [("YO_SESSION_KEY".into(), "src__api-worktrees__feat".into())]
     );
     assert_eq!(l.argv.command, "claude --permission-mode auto");
-    assert_eq!(l.argv.args[..4], ["--name", "feat", "--session-id", ID]);
-    assert!(l.argv.args[4].starts_with("do it (FYI, your codename"));
+    // After the settings layer (`--settings FILE`).
+    assert_eq!(l.argv.args[2..6], ["--name", "feat", "--session-id", ID]);
+    assert!(l.argv.args[6].starts_with("do it (FYI, your codename"));
 }
 
 #[test]
@@ -266,7 +267,7 @@ fn a_pr_checks_out_its_head_and_follows_it() {
     );
     // A slash command keeps its arguments: the codename goes elsewhere.
     let a = &launch(&p).argv.args;
-    assert_eq!(a[0], "--append-system-prompt");
+    assert_eq!(a[2], "--append-system-prompt");
     assert_eq!(
         a.last().unwrap(),
         "/code-review https://github.com/acme/api/pull/3"
@@ -428,7 +429,7 @@ fn agents() {
     assert_eq!(r.agent.as_deref(), Some("cindy"));
     assert_eq!(r.codename.as_deref(), Some("Cindy! · Plucky Gary"));
     assert_eq!(r.title.as_deref(), Some("[web] Cindy! · x"));
-    assert_eq!(launch(&p).argv.args[..2], ["--agent", "cindy"]);
+    assert_eq!(launch(&p).argv.args[2..4], ["--agent", "cindy"]);
 
     // In place, from ~/.claude/agents.
     let agents = t.home.join(".claude/agents");
@@ -587,6 +588,11 @@ fn a_harness_without_extras() {
     };
     let p = plan_create(&ctx, &req(|_| {})).unwrap();
     assert_eq!(record(&p).record.harness.as_deref(), Some("bare"));
+    // No settings layer, memory or trust: those are Claude's.
+    assert!(!p.actions.iter().any(|a| matches!(
+        a,
+        Action::MakeDir { .. } | Action::WriteFile { .. } | Action::Prepare(_)
+    )));
     assert_eq!(launch(&p).argv.args, ["Plucky Gary"]);
     for (f, want) in [
         (
@@ -636,4 +642,183 @@ fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     }
     out.sort();
     out
+}
+
+fn has_trust(p: &Plan) -> bool {
+    p.actions.iter().any(|a| {
+        matches!(
+            a,
+            Action::Prepare(crate::harness::Prep::Claude(
+                crate::harness::claude::Prep::Trust { .. }
+            ))
+        )
+    })
+}
+
+fn settings_file(p: &Plan) -> (&PathBuf, &str) {
+    p.actions
+        .iter()
+        .find_map(|a| match a {
+            Action::WriteFile { path, contents } => Some((path, contents.as_str())),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn claude_setup_for_a_trusted_worktree() {
+    let t = T::new("");
+    let ctx = t.ctx();
+    let p = t.plan(|r| r.args = args(&["feat"])).unwrap();
+    assert!(has_trust(&p));
+    let memory = t.home.join(".claude/memories/yo");
+    assert!(p.actions.iter().any(|a| matches!(a,
+        Action::MakeDir { path, .. } if *path == memory)));
+    let (path, contents) = settings_file(&p);
+    assert_eq!(path, &ctx.paths.settings().join("api.json"));
+    assert!(contents.contains("\"'/opt/yo/bin/yo' _session-hook\""));
+    assert!(contents.contains(&format!(
+        "\"autoMemoryDirectory\": \"{}\"",
+        memory.display()
+    )));
+    let a = &launch(&p).argv.args;
+    assert_eq!(
+        a[..2],
+        ["--settings".to_string(), path.display().to_string()]
+    );
+
+    // In place: yo didn't make the directory, so no trust.
+    t.sys.push_ids([ID]);
+    let p = t.plan(|r| r.mode = Some(Mode::Here)).unwrap();
+    assert!(!has_trust(&p));
+}
+
+#[test]
+fn mirror_and_mcp_come_from_the_repo() {
+    let t = T::new("");
+    let h = t.home.display();
+    fs::write(
+        t.home.join("config.json"),
+        format!(r#"{{"repos": {{"api": {{"path": "{h}/src/api", "mcp": ["srv"], "mirror": [".env"]}}}}}}"#),
+    )
+    .unwrap();
+    let p = t.plan(|r| r.args = args(&["feat"])).unwrap();
+    assert!(p.actions.iter().any(|a| matches!(a,
+        Action::Prepare(crate::harness::Prep::Claude(
+            crate::harness::claude::Prep::LocalSettings { mcp, .. })) if mcp == &["srv"])));
+    assert!(p.actions.iter().any(|a| matches!(a,
+        Action::MirrorFiles { files, .. } if files == &[".env"])));
+}
+
+#[test]
+fn an_untrusted_profile_gets_no_trust_or_mirror() {
+    let t = T::new("");
+    let h = t.home.display();
+    fs::write(
+        t.home.join("config.json"),
+        format!(
+            r#"{{"profiles": {{"u": {{"trust": false,
+            "repos": {{"api": {{"path": "{h}/src/api", "mirror": [".env"]}}}}}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let p = t.plan(|r| r.args = args(&["feat"])).unwrap();
+    assert!(!has_trust(&p));
+    assert!(
+        !p.actions
+            .iter()
+            .any(|a| matches!(a, Action::MirrorFiles { .. }))
+    );
+    assert!(p.notes.iter().any(|n| matches!(n,
+        Note::Info(s) if s.starts_with("not pre-trusting the worktree (api"))));
+    // The profile's own layer is named for it and the repo.
+    assert!(settings_file(&p).0.ends_with("settings/u.api.json"));
+}
+
+#[test]
+fn a_profile_settings_file_must_exist() {
+    let t = T::new(r#", "profiles": {"p": {"settings": "~/nope.json", "repos": {}}}"#);
+    let m = refused(t.plan(|r| {
+        r.profile = Some("p".into());
+        r.repo = Some("api".into());
+    }));
+    assert!(m.starts_with("profile 'p': no settings file at"), "{m}");
+
+    // Given, it's merged into the layer.
+    fs::write(t.home.join("nope.json"), r#"{"model": "opus"}"#).unwrap();
+    fs::write(
+        t.home.join("claude-settings.json"),
+        r#"{"model": "x", "a": 1}"#,
+    )
+    .unwrap();
+    t.sys.push_ids([ID]);
+    let p = t
+        .plan(|r| {
+            r.profile = Some("p".into());
+            r.repo = Some("api".into());
+        })
+        .unwrap();
+    let (path, contents) = settings_file(&p);
+    assert!(path.ends_with("settings/p.api.json"));
+    let v: serde_json::Value = serde_json::from_str(contents).unwrap();
+    assert_eq!(
+        (v["model"].as_str(), v["a"].as_i64()),
+        (Some("opus"), Some(1))
+    );
+}
+
+#[test]
+fn memory_off() {
+    let t = T::new("");
+    t.sys.set_env("YO_MEMORIES", "");
+    let p = t.plan(|r| r.args = args(&["feat"])).unwrap();
+    assert!(
+        !p.actions
+            .iter()
+            .any(|a| matches!(a, Action::MakeDir { .. }))
+    );
+    assert!(!settings_file(&p).1.contains("autoMemoryDirectory"));
+}
+
+#[test]
+fn mirroring_copies_only_ignored_files() {
+    let t = T::new("");
+    let (c, w) = (t.clone("api"), t.home.join("wt"));
+    fs::create_dir_all(&w).unwrap();
+    for f in [".env", ".tracked", ".there"] {
+        fs::write(c.join(f), f).unwrap();
+    }
+    fs::write(w.join(".there"), "mine").unwrap();
+    let wd = w.display().to_string();
+    t.sys
+        .answer_ok("git", &["-C", &wd, "check-ignore", "-q", ".env"], "");
+    let plan = Plan {
+        notes: vec![],
+        actions: vec![Action::MirrorFiles {
+            from: c.clone(),
+            to: w.clone(),
+            files: args(&[".env", ".tracked", ".there", ".gone"]),
+        }],
+    };
+    let mut rep = Notes::default();
+    execute(&t.ctx(), &plan, &DryLaunch, &mut rep).unwrap();
+    assert_eq!(fs::read_to_string(w.join(".env")).unwrap(), ".env");
+    assert!(!w.join(".tracked").exists());
+    assert_eq!(fs::read_to_string(w.join(".there")).unwrap(), "mine");
+    let said = rep.0.join("\n");
+    assert!(said.contains(".tracked is NOT gitignored"), "{said}");
+    assert!(said.contains(".there already in the worktree"), "{said}");
+    assert!(said.contains("no .gone in"), "{said}");
+}
+
+#[derive(Default)]
+struct Notes(Vec<String>);
+
+impl Report for Notes {
+    fn note(&mut self, n: &Note) {
+        let (Note::Info(s) | Note::Detail(s) | Note::Warn(s)) = n;
+        self.0.push(s.clone());
+    }
+    fn doing(&mut self, _: &Action) {}
+    fn launched(&mut self, _: &LaunchSpec, _: &Launched) {}
 }

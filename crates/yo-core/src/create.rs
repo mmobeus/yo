@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::github::{self, GhKind, GhRef};
-use crate::harness::{Harness, SessionSpec};
+use crate::harness::{Harness, PrepareAsk, SessionSpec};
 use crate::ledger::{Entry, Key, Record};
 use crate::plan::{Action, BranchSpec, Note, Plan};
 use crate::registry::{Mode, Repo};
@@ -383,6 +383,41 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         title = t.clone();
     }
 
+    // A worktree yo just made from a trusted repo gets the clone's
+    // per-folder state. A guest repo, or a profile with `trust: false`, is
+    // code nobody here vetted: its trust dialog is left to appear. In place,
+    // yo didn't make the directory, so trusting it stays the harness's
+    // question.
+    if let Some(p) = &profile_name {
+        plan.notes.push(Note::Info(format!("profile: {p}")));
+    }
+    let trusted_clone = match (mode, repo) {
+        (Mode::Worktree, Some(r)) if trusted(ctx, r) => Some(r.path.as_path()),
+        _ => None,
+    };
+    let prepared = harness.prepare(
+        ctx,
+        &PrepareAsk {
+            repo,
+            picked: picked.as_deref(),
+            label: &label,
+            dir: &wt,
+            mode,
+            trusted_clone,
+        },
+    )?;
+    plan.notes.extend(prepared.notes);
+    plan.actions.extend(prepared.actions);
+    if let (Some(clone), Some(r)) = (trusted_clone, repo)
+        && !r.mirror.is_empty()
+    {
+        plan.actions.push(Action::MirrorFiles {
+            from: clone.to_path_buf(),
+            to: wt.clone(),
+            files: r.mirror.clone(),
+        });
+    }
+
     // yo picks the id, so the ledger knows the session before it starts:
     // that's what lets resume-all bring back one that crashed early.
     let id = sys.new_session_id();
@@ -422,6 +457,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         persona: agent.map(str::to_string),
         codename: codename.clone(),
         first_message: brief.clone(),
+        settings: prepared.settings,
     };
     let mut argv = harness.tui_command(&spec);
     argv.env.insert(0, ("YO_SESSION_KEY".into(), key.0.clone()));
@@ -437,6 +473,15 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         group,
     }));
     Ok(plan)
+}
+
+/// Whether yo pre-trusts `repo`'s worktrees: unless its own profile says
+/// `trust: false`.
+fn trusted(ctx: &Ctx, repo: &Repo) -> bool {
+    repo.profile
+        .as_deref()
+        .and_then(|p| ctx.registry.profile(p))
+        .is_none_or(|p| p.trust)
 }
 
 /// A session name: letters, digits, `.`, `_`, `/`, `-`. It becomes a path

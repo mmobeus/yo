@@ -6,10 +6,13 @@
 //! with create. Resuming, preparing a session and the rest of the design's
 //! trait arrive with the commands that use them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ledger::HookEvent;
+use crate::plan::{Action, Note};
+use crate::registry::Repo;
 use crate::sys::Sys;
+use crate::{Ctx, Result};
 
 pub mod claude;
 
@@ -21,6 +24,11 @@ pub trait Harness: Send + Sync {
     fn capabilities(&self) -> Capabilities;
     /// The command that starts its TUI for a new session.
     fn tui_command(&self, s: &SessionSpec) -> Argv;
+    /// Its own setup for a session, before launch: for Claude, the settings
+    /// layer, memory and trust. Nothing, for a harness with none.
+    fn prepare(&self, _ctx: &Ctx, _p: &PrepareAsk<'_>) -> Result<Prepared> {
+        Ok(Prepared::default())
+    }
     /// Its ledger hook's payload as a start or an end, for a harness with
     /// `ledger_hooks`. `None` for anything it doesn't recognize.
     fn hook_event(&self, _payload: &str) -> Option<HookEvent> {
@@ -63,6 +71,54 @@ pub struct SessionSpec {
     pub codename: String,
     /// What the session is asked to do, without the codename.
     pub first_message: Option<String>,
+    /// A settings layer [`Harness::prepare`] composed for it.
+    pub settings: Option<PathBuf>,
+}
+
+/// What a harness's setup is for.
+pub struct PrepareAsk<'a> {
+    pub repo: Option<&'a Repo>,
+    /// The profile picked (`--profile`, `yo <profile>`).
+    pub picked: Option<&'a str>,
+    /// What the session is filed under: its repo, profile or directory.
+    pub label: &'a str,
+    pub dir: &'a Path,
+    pub mode: crate::registry::Mode,
+    /// The main clone of a worktree yo just made from a trusted repo: its
+    /// per-folder state is copied over. `None` in place, or for a repo
+    /// yo doesn't pre-trust.
+    pub trusted_clone: Option<&'a Path>,
+}
+
+/// A harness's setup: steps to run, what to say, and a settings layer for
+/// the launch.
+#[derive(Debug, Default)]
+pub struct Prepared {
+    pub notes: Vec<Note>,
+    pub actions: Vec<Action>,
+    pub settings: Option<PathBuf>,
+}
+
+/// A step only one harness knows how to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Prep {
+    Claude(claude::Prep),
+}
+
+impl Prep {
+    pub fn run(&self, sys: &dyn Sys) -> Result<()> {
+        match self {
+            Prep::Claude(p) => p.run(sys),
+        }
+    }
+
+    /// What its failure means, for a warning: a failed step doesn't stop
+    /// the session, the harness just asks.
+    pub fn failed(&self) -> &'static str {
+        match self {
+            Prep::Claude(p) => p.failed(),
+        }
+    }
 }
 
 /// A command to run in a terminal: variables, the configured command (shell

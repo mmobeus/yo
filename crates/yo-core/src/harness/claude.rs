@@ -1,13 +1,19 @@
 //! The Claude Code harness.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
-use super::{Argv, Capabilities, Harness, LiveSession, SessionSpec, valid_session_id};
+use super::{
+    Argv, Capabilities, Harness, LiveSession, PrepareAsk, Prepared, SessionSpec, single_quote,
+    valid_session_id,
+};
 use crate::ledger::HookEvent;
+use crate::plan::{Action, Note};
+use crate::registry::Mode;
 use crate::sys::Sys;
+use crate::{Ctx, Error, Result};
 
 #[derive(Debug, Default)]
 pub struct Claude;
@@ -75,6 +81,12 @@ impl Harness for Claude {
                 args.push(v.clone());
             }
         };
+        flag(
+            "--settings",
+            &s.settings
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+        );
         flag("--model", &s.model);
         flag("--agent", &s.persona);
         flag("--append-system-prompt", &sysprompt);
@@ -86,6 +98,83 @@ impl Harness for Claude {
             command: s.command.clone(),
             args,
         }
+    }
+
+    /// The settings layer (yo's base layer, the profile's settings, the
+    /// ledger hooks, the memory directory), the memory directory itself, and
+    /// for a trusted worktree: trust in `~/.claude.json` and the clone's
+    /// `.claude/settings.local.json` with the repo's MCP servers.
+    fn prepare(&self, ctx: &Ctx, p: &PrepareAsk<'_>) -> Result<Prepared> {
+        let reg = &ctx.registry;
+        let mut out = Prepared::default();
+        if let Some(clone) = p.trusted_clone {
+            out.actions
+                .push(Action::Prepare(super::Prep::Claude(Prep::Trust {
+                    worktree: p.dir.to_path_buf(),
+                    clone: clone.to_path_buf(),
+                })));
+            out.actions
+                .push(Action::Prepare(super::Prep::Claude(Prep::LocalSettings {
+                    worktree: p.dir.to_path_buf(),
+                    clone: clone.to_path_buf(),
+                    mcp: p.repo.map(|r| r.mcp.clone()).unwrap_or_default(),
+                })));
+        } else if let (Some(r), Mode::Worktree) = (p.repo, p.mode) {
+            out.notes.push(Note::Info(format!(
+                "not pre-trusting the worktree ({} isn't a trusted repo) — Claude will ask",
+                r.key
+            )));
+        }
+
+        let memory = reg.memory_dir(p.repo, p.picked);
+        if let Some(m) = &memory {
+            out.actions.push(Action::MakeDir {
+                path: m.clone(),
+                what: "memory".into(),
+            });
+        }
+        let profile = reg.profile_of(p.repo, p.picked);
+        let extra = profile.and_then(|pr| pr.settings.clone());
+        if let (Some(f), Some(pr)) = (&extra, profile)
+            && !f.is_file()
+        {
+            return Err(Error::Refused(format!(
+                "profile '{}': no settings file at {}",
+                pr.name,
+                f.display()
+            )));
+        }
+        let base = reg
+            .defaults
+            .settings
+            .clone()
+            .or_else(|| {
+                ctx.paths
+                    .config
+                    .parent()
+                    .map(|d| d.join("claude-settings.json"))
+            })
+            .filter(|f| f.is_file());
+        let hook = format!(
+            "{} _session-hook",
+            single_quote(&ctx.sys.exe().to_string_lossy())
+        );
+        let contents = settings_layer(
+            &[base.as_deref(), extra.as_deref()],
+            &hook,
+            memory.as_deref(),
+        )?;
+        let name = match profile {
+            Some(pr) if pr.name != p.label => format!("{}.{}", pr.name, p.label),
+            _ => p.label.to_string(),
+        };
+        let path = ctx.paths.settings().join(format!("{name}.json"));
+        out.actions.push(Action::WriteFile {
+            path: path.clone(),
+            contents,
+        });
+        out.settings = Some(path);
+        Ok(out)
     }
 
     /// `SessionStart` and `SessionEnd` payloads (a missing event name is a
@@ -110,6 +199,190 @@ impl Harness for Claude {
 }
 
 /// One session file, if it's an interactive session with an id and a pid.
+/// A step of Claude's setup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Prep {
+    /// Marks a new worktree trusted in `~/.claude.json`, with the main
+    /// clone's approval of external `CLAUDE.md` includes, so it adds no
+    /// prompt of its own.
+    Trust { worktree: PathBuf, clone: PathBuf },
+    /// The clone's `.claude/settings.local.json` (gitignored, so not in a
+    /// fresh checkout), where MCP approvals live, with the repo's `mcp`
+    /// servers added to `enabledMcpjsonServers`.
+    LocalSettings {
+        worktree: PathBuf,
+        clone: PathBuf,
+        mcp: Vec<String>,
+    },
+}
+
+impl Prep {
+    pub fn run(&self, sys: &dyn Sys) -> Result<()> {
+        match self {
+            Prep::Trust { worktree, clone } => {
+                trust(&sys.home().join(".claude.json"), worktree, clone)
+            }
+            Prep::LocalSettings {
+                worktree,
+                clone,
+                mcp,
+            } => local_settings(worktree, clone, mcp),
+        }
+    }
+
+    pub fn failed(&self) -> &'static str {
+        match self {
+            Prep::Trust { .. } => {
+                "trust-seed skipped (couldn't update ~/.claude.json; Claude will prompt)"
+            }
+            Prep::LocalSettings { .. } => {
+                "couldn't write .claude/settings.local.json (Claude may prompt for MCP servers)"
+            }
+        }
+    }
+}
+
+fn read_json(path: &Path) -> Result<Option<Value>> {
+    match fs::read_to_string(path) {
+        Ok(t) => serde_json::from_str(&t)
+            .map(Some)
+            .map_err(|e| Error::Failed(format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::io(path, e)),
+    }
+}
+
+fn to_text(v: &Value) -> Result<String> {
+    serde_json::to_string_pretty(v).map_err(|e| Error::Failed(e.to_string()))
+}
+
+fn trust(claude_json: &Path, worktree: &Path, clone: &Path) -> Result<()> {
+    let mut d = read_json(claude_json)?.unwrap_or_else(|| json!({}));
+    let Some(top) = d.as_object_mut() else {
+        return Err(Error::Failed(format!(
+            "{}: not an object",
+            claude_json.display()
+        )));
+    };
+    let projects = top
+        .entry("projects")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| Error::Failed("projects isn't an object".into()))?;
+    let base = projects
+        .get(&*clone.to_string_lossy())
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let ent = projects
+        .entry(worktree.to_string_lossy().into_owned())
+        .or_insert_with(|| json!({}));
+    let ent = ent
+        .as_object_mut()
+        .ok_or_else(|| Error::Failed("a project entry isn't an object".into()))?;
+    for k in [
+        "hasClaudeMdExternalIncludesApproved",
+        "hasClaudeMdExternalIncludesWarningShown",
+    ] {
+        if let Some(v) = base.get(k)
+            && !ent.contains_key(k)
+        {
+            ent.insert(k.to_string(), v.clone());
+        }
+    }
+    ent.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+    crate::write_atomic(claude_json, to_text(&d)?.as_bytes())
+}
+
+fn local_settings(worktree: &Path, clone: &Path, mcp: &[String]) -> Result<()> {
+    let rel = ".claude/settings.local.json";
+    let (src, dst) = (clone.join(rel), worktree.join(rel));
+    let dir = worktree.join(".claude");
+    fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+    if src.is_file() {
+        fs::copy(&src, &dst).map_err(|e| Error::io(&dst, e))?;
+    }
+    // A file that isn't valid JSON is started over, as bash did.
+    let mut d = read_json(&dst)
+        .ok()
+        .flatten()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let have: Vec<Value> = d
+        .get("enabledMcpjsonServers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut merged = have.clone();
+    for m in mcp {
+        let v = Value::String(m.clone());
+        if !merged.contains(&v) {
+            merged.push(v);
+        }
+    }
+    if merged != have
+        && let Some(o) = d.as_object_mut()
+    {
+        o.insert("enabledMcpjsonServers".into(), Value::Array(merged));
+        let mut text = to_text(&d)?;
+        text.push('\n');
+        crate::write_atomic(&dst, text.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// A session's settings layer: each of `layers` that's given, merged in
+/// order (objects key by key, lists appended to without repeats, anything
+/// else replaced), then the ledger hooks running `hook`, then the memory
+/// directory.
+pub fn settings_layer(
+    layers: &[Option<&Path>],
+    hook: &str,
+    memory: Option<&Path>,
+) -> Result<String> {
+    let mut d = Value::Object(Map::new());
+    for path in layers.iter().flatten() {
+        let v = read_json(path)?
+            .ok_or_else(|| Error::Failed(format!("{}: missing", path.display())))?;
+        merge(&mut d, v);
+    }
+    let h = json!([{"hooks": [{"type": "command", "command": hook}]}]);
+    merge(
+        &mut d,
+        json!({"hooks": {"SessionStart": h.clone(), "SessionEnd": h}}),
+    );
+    if let (Some(m), Some(o)) = (memory, d.as_object_mut()) {
+        o.insert(
+            "autoMemoryDirectory".into(),
+            Value::String(m.to_string_lossy().into_owned()),
+        );
+    }
+    let mut text = to_text(&d)?;
+    text.push('\n');
+    Ok(text)
+}
+
+fn merge(a: &mut Value, b: Value) {
+    let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) else {
+        return;
+    };
+    for (k, v) in b {
+        match (a.get_mut(&k), v) {
+            (Some(x @ Value::Object(_)), v @ Value::Object(_)) => merge(x, v),
+            (Some(Value::Array(x)), Value::Array(v)) => {
+                for item in v {
+                    if !x.contains(&item) {
+                        x.push(item);
+                    }
+                }
+            }
+            (_, v) => {
+                a.insert(k, v);
+            }
+        }
+    }
+}
+
 /// The first message and the system-prompt addition that tell a session its
 /// codename.
 fn first_message(brief: Option<&str>, codename: &str) -> (Option<String>, Option<String>) {
@@ -291,7 +564,100 @@ mod tests {
             persona: None,
             codename: "Plucky Gary".into(),
             first_message: msg.map(str::to_string),
+            settings: None,
         }
+    }
+
+    #[test]
+    fn settings_layers_merge_in_order() {
+        let t = TempDir::new().unwrap();
+        let (a, b) = (t.path().join("a.json"), t.path().join("b.json"));
+        fs::write(&a, r#"{"permissions": {"allow": ["x"], "deny": ["d"]}, "model": "m", "hooks": {"Stop": [1]}}"#).unwrap();
+        fs::write(&b, r#"{"permissions": {"allow": ["x", "y"]}, "model": "n", "hooks": {"SessionStart": [0]}}"#).unwrap();
+        let text = settings_layer(
+            &[Some(&a), None, Some(&b)],
+            "'/opt/yo' _session-hook",
+            Some(Path::new("/m")),
+        )
+        .unwrap();
+        assert!(text.ends_with("}\n"));
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let hook = json!({"hooks": [{"type": "command", "command": "'/opt/yo' _session-hook"}]});
+        assert_eq!(
+            v,
+            json!({
+                "permissions": {"allow": ["x", "y"], "deny": ["d"]},
+                "model": "n",
+                "hooks": {"Stop": [1], "SessionStart": [0, hook.clone()], "SessionEnd": [hook]},
+                "autoMemoryDirectory": "/m",
+            })
+        );
+        // A layer that isn't JSON is an error, not silently dropped.
+        fs::write(&a, "nope").unwrap();
+        assert!(settings_layer(&[Some(&a)], "h", None).is_err());
+    }
+
+    #[test]
+    fn trust_seeds_the_worktree_and_keeps_the_rest() {
+        let t = TempDir::new().unwrap();
+        let cj = t.path().join(".claude.json");
+        // No file yet: one is made.
+        trust(&cj, Path::new("/w"), Path::new("/c")).unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&cj).unwrap()).unwrap();
+        assert_eq!(
+            v,
+            json!({"projects": {"/w": {"hasTrustDialogAccepted": true}}})
+        );
+
+        fs::write(
+            &cj,
+            r#"{"keep": [1], "projects": {"/c": {"hasClaudeMdExternalIncludesApproved": true, "other": 1},
+                                         "/w2": {"hasClaudeMdExternalIncludesApproved": false}}}"#,
+        )
+        .unwrap();
+        trust(&cj, Path::new("/w"), Path::new("/c")).unwrap();
+        trust(&cj, Path::new("/w2"), Path::new("/c")).unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&cj).unwrap()).unwrap();
+        assert_eq!(v["keep"], json!([1]));
+        assert_eq!(
+            v["projects"]["/w"],
+            json!({"hasClaudeMdExternalIncludesApproved": true, "hasTrustDialogAccepted": true})
+        );
+        // What the worktree already had stays.
+        assert_eq!(
+            v["projects"]["/w2"]["hasClaudeMdExternalIncludesApproved"],
+            json!(false)
+        );
+        // A broken file is left alone.
+        fs::write(&cj, "{broken").unwrap();
+        assert!(trust(&cj, Path::new("/w"), Path::new("/c")).is_err());
+        assert_eq!(fs::read_to_string(&cj).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn local_settings_copy_and_approve_mcp() {
+        let t = TempDir::new().unwrap();
+        let (c, w) = (t.path().join("c"), t.path().join("w"));
+        fs::create_dir_all(c.join(".claude")).unwrap();
+        fs::create_dir_all(&w).unwrap();
+        let read = || -> Value {
+            serde_json::from_str(
+                &fs::read_to_string(w.join(".claude/settings.local.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        fs::write(
+            c.join(".claude/settings.local.json"),
+            r#"{"enabledMcpjsonServers": ["a"], "x": 1}"#,
+        )
+        .unwrap();
+        local_settings(&w, &c, &["b".into(), "a".into()]).unwrap();
+        assert_eq!(read(), json!({"enabledMcpjsonServers": ["a", "b"], "x": 1}));
+        // Nothing in the clone, nothing to add: no file.
+        let w2 = t.path().join("w2");
+        local_settings(&w2, &t.path().join("none"), &[]).unwrap();
+        assert!(!w2.join(".claude/settings.local.json").exists());
+        assert!(w2.join(".claude").is_dir());
     }
 
     #[test]
@@ -312,7 +678,10 @@ mod tests {
         assert!(a.args[5].starts_with("Your codename for this session is \"Plucky Gary\"."));
         assert_eq!(a.args.last().unwrap(), "/code-review https://x");
 
-        let a = Claude.tui_command(&spec(None));
+        let mut s = spec(None);
+        s.settings = Some("/s/a b.json".into());
+        let a = Claude.tui_command(&s);
+        assert_eq!(a.args[..2], ["--settings", "/s/a b.json"]);
         assert!(
             a.args
                 .last()
