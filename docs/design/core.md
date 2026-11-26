@@ -509,7 +509,8 @@ pub struct SessionSpec {
     pub id: Option<String>,       // when the harness lets yo pick it
     pub model: Option<String>,
     pub persona: Option<String>,
-    pub first_message: Option<String>,
+    pub codename: String,         // "Plucky Gary": yo picks it; the harness decides how the session is told
+    pub first_message: Option<String>, // the brief, without the codename
     pub permission_mode: Option<String>,
 }
 ```
@@ -519,8 +520,12 @@ pub struct SessionSpec {
   seeding in `~/.claude.json`, each worktree's `.claude/settings.local.json`
   (MCP pre-approval), shared memory, `--agent` and agents' homes, the ledger
   hooks, Remote Control names, live sessions from `~/.claude/sessions`, status
-  from `claude agents --json`. It also starts passing `--name <yo name>`, so
-  other sessions (and the relay) can address it by yo's name.
+  from `claude agents --json`. It tells the session its codename at the end
+  of the first message, or with `--append-system-prompt` when the message is
+  a slash command, whose arguments it would otherwise join. It also starts
+  passing `--name <yo name>`, so other sessions (and the relay) can address
+  it by yo's name. Another harness tells the session its codename however it
+  can.
 - **The Codex harness** (phase 2) is the second implementation: launch, resume,
   live sessions, a ledger record with an id learned after launch, and
   messages typed into its tab. Its ACP command (`codex-acp`) is used from
