@@ -47,8 +47,12 @@ harness, follow
 `.claude/skills/review-pr/SKILL.md` by hand: it's plain markdown, and the
 reviewers' rules are in [`docs/dev/review.md`](docs/dev/review.md). It posts
 one comment with blocking and non-blocking findings, and sets the
-`yo-review` status on the commit it reviewed. A new push needs a new review.
-Deal with the blocking findings, or say in the PR why one is wrong. The
+`yo-review` status on the commit it reviewed, so a new push has no
+`yo-review` until it's reviewed again. Deal with the blocking findings, or
+say in the PR why one is wrong. Fixes that only address the review's
+findings don't need a new review: the maintainer may merge past the missing
+`yo-review` with an admin bypass. That's the maintainer's call, not the
+author's. The
 built-in `/code-review` covers general correctness, and is worth running too.
 
 If a bug turns up after merging that review should have caught, file an

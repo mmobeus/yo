@@ -2440,6 +2440,13 @@ PY_EOF
   printf '%s' "$out"
 }
 
+# " --append-system-prompt '...'" for a claude command line, or nothing: the
+# codename, for a session whose first message is a slash command.
+_yo_sysprompt_arg() {
+  [ -n "$1" ] || return 0
+  printf ' --append-system-prompt %s' "$(shell_single_quote "$1")"
+}
+
 # " --model 'M'" for a claude command line, or nothing. Session-scoped: the
 # flag never touches the default in settings.json, and a later plain
 # `claude --resume` keeps whatever model the session last ran on.
@@ -2455,6 +2462,9 @@ _yo_model_arg() {
 # COMPOSED_PERSONA, and the message without the codename into COMPOSED_BRIEF): the mode's own message, then [extra], then the report-back
 # instruction (--from), then the codename. One line — the command is written
 # into the pane as a single shell line, so no embedded newlines.
+# A message that starts with "/" is a slash command, and anything after it is
+# the command's arguments, so the codename can't go there: it goes into
+# COMPOSED_SYSPROMPT instead, for --append-system-prompt.
 _yo_compose_message() {
   local msg="$1" extra="$2" report_to="$3" agent_display="${4:-}" fixed_persona="${5:-}"
   if [ -n "$extra" ]; then
@@ -2468,10 +2478,14 @@ _yo_compose_message() {
   # An agent's sessions lead with its name ("Cindy · Plucky Gary"), so several
   # of them stay apart in ListAgents, tabs and the notes they sign.
   COMPOSED_BRIEF="$msg"
+  COMPOSED_SYSPROMPT=""
   COMPOSED_PERSONA="${fixed_persona:-$(fun_session_title)}"
   [ -n "$agent_display" ] && [ -z "$fixed_persona" ] \
     && COMPOSED_PERSONA="${agent_display} · ${COMPOSED_PERSONA}"
-  if [ -n "$msg" ]; then
+  if [ "${msg#/}" != "$msg" ]; then
+    COMPOSED_MSG="$msg"
+    COMPOSED_SYSPROMPT="Your codename for this session is \"${COMPOSED_PERSONA}\". Introduce yourself with it, and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages."
+  elif [ -n "$msg" ]; then
     COMPOSED_MSG="${msg} (FYI, your codename for this session is \"${COMPOSED_PERSONA}\" — introduce yourself with it and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.)"
   else
     COMPOSED_MSG="Your codename for this session is \"${COMPOSED_PERSONA}\". Briefly introduce yourself by codename, then wait for instructions."
@@ -2664,7 +2678,7 @@ cmd_up() {
   # local tree IS the code under review — see the fetch/create step below.
   local repo_key="" name initial_msg="" extra_msg="" base_ref pr_review=0
   local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
-  local explicit_branch="" unnamed=0 persona="" force_new_window=-1
+  local explicit_branch="" unnamed=0 persona="" sysprompt="" force_new_window=-1
   local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir="" add_to=""
   local title_override="" report_to="" model="" agent="" agent_repo="" agent_display="" brief=""
 
@@ -2815,7 +2829,7 @@ cmd_up() {
   fi
 
   _yo_compose_message "$initial_msg" "$extra_msg" "$report_to" "$agent_display"
-  initial_msg="$COMPOSED_MSG"; persona="$COMPOSED_PERSONA"; brief="$COMPOSED_BRIEF"
+  initial_msg="$COMPOSED_MSG"; persona="$COMPOSED_PERSONA"; brief="$COMPOSED_BRIEF"; sysprompt="$COMPOSED_SYSPROMPT"
 
   case "$name" in
     *[!A-Za-z0-9._/-]*) die "name may only contain letters, digits, . _ / - (got: '$name')" ;;
@@ -2905,7 +2919,7 @@ cmd_up() {
   # like what it is.
   prepare_claude_cmd "$repo_key" "$label" "$session_key"
   local claude_cmd
-  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "$agent") --session-id $session_id"
+  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "$agent")$(_yo_sysprompt_arg "$sysprompt") --session-id $session_id"
   if [ -n "$initial_msg" ]; then
     claude_cmd="$claude_cmd $(shell_single_quote "$initial_msg")"
   fi
@@ -3479,7 +3493,7 @@ cmd_agent() {
   mirror_repo_files "$wt_path" "$repo_path" "$repo_key"
 
   _yo_compose_message "" "$extra" "" "$display" "$title"
-  local initial_msg="$COMPOSED_MSG" session_id session_key label claude_cmd
+  local initial_msg="$COMPOSED_MSG" sysprompt="$COMPOSED_SYSPROMPT" session_id session_key label claude_cmd
   session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
   session_key=$(_yo_state put "$wt_path" "$session_id" "$title" "$repo_key" \
     "agent-${name}" "$(profile_for "$repo_key")" worktree "" "$name" 1 "$rc_name" \
@@ -3487,7 +3501,7 @@ cmd_agent() {
     || { session_key=""; echo "yo: couldn't record the session in $YO_STATE_DIR (resume-all won't know about it)"; }
   label=$(session_label "$repo_key" "$wt_path")
   prepare_claude_cmd "$repo_key" "$label" "$session_key"
-  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "$name")$(_yo_rc_arg "$rc_name") --session-id $session_id $(shell_single_quote "$initial_msg")"
+  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "$name")$(_yo_rc_arg "$rc_name")$(_yo_sysprompt_arg "$sysprompt") --session-id $session_id $(shell_single_quote "$initial_msg")"
 
   echo "        agent:   $name (Remote Control: $rc_name)"
   echo "        session: $session_id"
