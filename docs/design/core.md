@@ -11,7 +11,7 @@
 | phase | what | status |
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
-| before 1 | the gates: CI, lints, review skills, skill tuning | in progress (#11): workspace, `xtask`, CI, `AGENTS.md`, checklists and review skills done |
+| before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | not started |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
@@ -1067,9 +1067,16 @@ bugs found after merging that review missed, findings dismissed as wrong, and
 changes to this doc since the last tuning, and proposes edits to the skills
 as a PR.
 
-- **Test cases for the reviewers.** Each review skill has planted-bad diffs it
-  must flag and known-good diffs it must pass. Every miss adds a case, and an
-  edit lands only if every case still holds.
+- **Example cases for the reviewers.** Each review skill has planted-bad
+  diffs it must flag and known-good diffs it must pass, as plain files beside
+  the skill (`cases/`). They aren't a test suite: nothing runs them on every
+  PR. `tune-review-skills` runs them once, on the skills it edits, because a
+  reworded prompt can stop catching something without the diff showing it.
+  Its PR reports the result. Every miss adds a case, and an edit lands only
+  if every case still holds. When a case runs, the reviewer gets the rules
+  without the cases, so it can't read the answer.
+- **Misses are issues** labeled `review-miss`, and each tuning is logged in
+  `docs/dev/review-tuning.md`, where the next one starts.
 - **Only the maintainer can loosen a gate.** An edit that weakens a check,
   removes a test case, or relaxes a lint or `cargo-deny` rule needs the
   maintainer's explicit approval in that PR. Agents don't lower the bar

@@ -1,0 +1,19 @@
+diff --git a/crates/yo-core/src/lib.rs b/crates/yo-core/src/lib.rs
+index a1d6782..5819072 100644
+--- a/crates/yo-core/src/lib.rs
++++ b/crates/yo-core/src/lib.rs
+@@ -8,3 +8,14 @@
+ #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
+ 
+ pub mod sys;
++
++/// The current git branch of `dir`.
++#[allow(clippy::disallowed_methods)]
++pub fn current_branch(dir: &std::path::Path) -> Option<String> {
++    let out = std::process::Command::new("git")
++        .args(["rev-parse", "--abbrev-ref", "HEAD"])
++        .current_dir(dir)
++        .output()
++        .ok()?;
++    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
++}

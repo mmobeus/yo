@@ -51,6 +51,11 @@ one comment with blocking and non-blocking findings, and sets the
 Deal with the blocking findings, or say in the PR why one is wrong. The
 built-in `/code-review` covers general correctness, and is worth running too.
 
+If a bug turns up after merging that review should have caught, file an
+issue labeled `review-miss`. `tune-review-skills` (run at the end of a
+phase, or after a miss) turns misses into cases and better skills; see
+[`docs/dev/review-tuning.md`](docs/dev/review-tuning.md).
+
 The reviewers don't read the PR description. A reason they need to see
 (why an output changed, why a check is the way it is) goes in the code or
 beside the entry, not only in the PR.

@@ -1,0 +1,17 @@
+diff --git a/scripts/yo b/scripts/yo
+index a26037b..32c5a48 100755
+--- a/scripts/yo
++++ b/scripts/yo
+@@ -3247,10 +3247,10 @@ focus_running_session() {
+     printf 'dry focus: %s%s\n' "$tty" "${message:+, then type: $message}"
+     return 0
+   fi
+-  result=$(/usr/bin/osascript - "$tty" "$message" <<'APPLESCRIPT' 2>/dev/null || true
++  result=$(/usr/bin/osascript - "$tty" <<APPLESCRIPT 2>/dev/null || true
+ on run argv
+   set want to item 1 of argv
+-  set msg to item 2 of argv
++  set msg to "$message"
+   tell application "iTerm2"
+     repeat with ww in windows
+       repeat with tt in tabs of ww
