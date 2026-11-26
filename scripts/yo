@@ -4,17 +4,26 @@
 #
 # Configuration:
 #   Every site-specific thing (which repos exist, where their clones live, the
-#   branch prefix, window size) lives in a config file — this script itself is
-#   generic. yo reads, in order:
+#   branch prefix, window size) lives in a JSON config file — this script
+#   itself is generic. yo reads, in order:
 #       $YO_CONFIG
-#       ${XDG_CONFIG_HOME:-~/.config}/yo/config.sh
+#       ${XDG_CONFIG_HOME:-~/.config}/yo/config.json
+#       ${XDG_CONFIG_HOME:-~/.config}/yo/config.sh  (the older format; `yo
+#                                                   config migrate` converts it)
+#   The file holds "defaults" (global settings), "profiles" (each with its own
+#   settings, and the repos and agents inside it) and repos and agents that
+#   belong to no profile. A profile's "owners" claim GitHub owners: every clone
+#   at <cloneRoot>/<owner>/* joins it, and so does a PR/issue URL for one. See
+#   config/yo.config.example.json, `_yo_cfg` below for every key, and `yo
+#   config` for the commands that edit it. A setting already in the
+#   environment (YO_MODE=here yo ...) beats the file.
 #   With no config file, yo runs in single-repo mode: the clone you are standing
 #   in is the repo and its default branch is the base branch. `yo help` prints
 #   the repos yo can currently see.
 #
 # Usage:
 #   yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S]
-#      [--model=M] [--agent=NAME] [INPUT] [extra]
+#      [--model=M] [--agent=NAME] [--add-to=PROFILE|guest] [INPUT] [extra]
 #
 #   INPUT is resolved in order:
 #     PR / issue URL     github.com/.../pull/N or /issues/N (see below)
@@ -52,11 +61,17 @@
 #   come from origin.
 #
 #   A URL for a repo yo has never heard of works too: the repo is cloned to
-#   <YO_CLONE_ROOT>/<owner>/<repo> (or found there, if it already is) and the
-#   session gets a worktree off it as usual. Such a session is a guest: no
-#   shared memory (Claude keeps its own), and the worktree is NOT pre-trusted —
-#   Claude asks before running anything the repo configures. YO_ADHOC_PROFILE
-#   names a profile to run guests under instead.
+#   <cloneRoot>/<owner>/<repo> (or found there, if it already is) and the
+#   session gets a worktree off it as usual. Where it belongs:
+#     - a profile that claims its owner: it joins that profile, no questions;
+#     - --add-to=PROFILE: it joins PROFILE, and is saved there in the config;
+#     - otherwise, at a terminal, yo asks: one of your profiles (saved), a new
+#       profile claiming its owner (saved), or a guest just this once;
+#     - with nobody to ask (no terminal, or from inside claude), a guest.
+#   A guest gets no shared memory (Claude keeps its own), and its worktree is
+#   NOT pre-trusted — Claude asks before running anything the repo configures.
+#   (A profile with "trust": false does the same for its own repos.) The
+#   "guestProfile" default names a profile to run guests under instead.
 #
 #   Window titles: non-default repos get a "[<repo>] " prefix; PR/issue
 #   sessions show "PR#1234: <title>" / "Issue#1234: <title>" (fetched via gh,
@@ -86,7 +101,7 @@
 #   the session back as the same agent. The tab and the codename lead with the
 #   agent's name ("Cindy · Plucky Gary"), and an issue or PR URL is handed to the
 #   agent to work or review by its own instructions. An agent registered with
-#   yo_agent (see the config) defaults the repo to its own.
+#   in the config ("agents") defaults the repo to its own.
 #     yo --agent=cindy https://github.com/acme/service/issues/123
 #
 #   --new-window (--window) put this session in a NEW iTerm window instead of a
@@ -108,19 +123,19 @@
 #   but checks nothing out — yo says so, since the tree may be stale.
 #   Made for handing work from one session to the next in the same tree:
 #     yo --here - 'read HANDOFF.md, then ask the previous session what is open'
-#   In place can be the DEFAULT — per repo (yo_repo --mode=here) or everywhere
-#   (YO_MODE=here), or per profile; --worktree then asks for a worktree this
+#   In place can be the DEFAULT — per repo ("mode": "here"), per profile, or
+#   everywhere (defaults.mode); --worktree then asks for a worktree this
 #   once.
 #
 #   --profile=P (or `yo <profile>`) run the session under a profile: a named
 #   bundle of defaults for one of YOUR projects — mode, memory, branch prefix,
 #   the claude command, a settings layer (permissions, hooks, ...), a home
-#   directory. Repos join a profile with yo_repo --profile=P and then get it
-#   without asking. A profile also stands on its own: with no repo named,
-#     yo --profile=P      goes to the profile's --dir (which needn't be a git
+#   directory. Repos listed inside a profile (or under an owner it claims) get
+#   it without asking. A profile also stands on its own: with no repo named,
+#     yo --profile=P      goes to the profile's "dir" (which needn't be a git
 #                         clone), else to the cwd's repo if it belongs to P,
 #                         else to the first repo registered under P.
-#   Precedence, everywhere: flag > yo_repo option > profile > global setting.
+#   Precedence, everywhere: flag > repo > profile > defaults.
 #
 #   Layout (YO_LAYOUT): `split` puts a shell pane next to claude; `workgroup`
 #   opens claude alone and leaves the shell to the terminal peer ("CLI") of
@@ -150,7 +165,7 @@
 #                        it's already running, typed into its prompt after its
 #                        iTerm tab is brought forward.
 #   yo NAME ['message']  With no flags, reaches what NAME names, in order:
-#                          1. an agent registered with yo_agent: its home, as
+#                          1. an agent registered in the config: its home, as
 #                             `yo agent NAME`;
 #                          2. a live session by its Claude name (what the
 #                             statusline and ListAgents show, or a Remote
@@ -199,6 +214,13 @@
 #                        current directory, or a live claude session. Branches
 #                        are kept unless --delete-branches; removal never uses
 #                        --force.
+#   yo config [show | path | edit | add-repo <clone|url|owner/repo>
+#             [--profile=P] [--key=K] | migrate [--dry-run]]
+#                        Show the config and what it registers; open it in
+#                        $EDITOR (validated after); list a repo, cloning it
+#                        first unless it's a directory; or convert an older
+#                        config.sh to config.json (the old file is kept,
+#                        renamed).
 #   yo help              Show this help, plus the configured repos and profiles.
 #
 # Session ledger: yo records each session's id under
@@ -257,7 +279,8 @@ YO_CONFIG_PATH=""
 YO_MODE_RESOLVED=""
 YO_CLONE_ROOT_RESOLVED=""
 YO_CLONE_PROTOCOL_RESOLVED=""
-YO_GUEST_REPO=""     # key of the repo register_url_repo registered, if it did
+YO_GUEST_REPO=""     # key of the guest repo register_url_repo registered, if it did
+YO_URL_REPO=""       # key of any repo register_url_repo registered
 YO_PROFILE_SELECTED=""   # --profile / `yo <profile>`; beats a repo's own
 YO_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/yo/sessions"
 YO_CLAUDE_LINE=""        # set by prepare_claude_cmd
@@ -313,6 +336,10 @@ usage() {
   awk 'NR>=3 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print; next } else exit }' "$0"
 
   # Then the live registry, so `yo help` answers "what can I say for --repo?"
+  _yo_print_registry
+}
+
+_yo_print_registry() {
   echo "configured repos:"
   if [ -n "${YO_CONFIG_PATH:-}" ]; then
     echo "  (from $YO_CONFIG_PATH)"
@@ -332,11 +359,12 @@ usage() {
   echo "  (* = default)"
   if [ -n "$_YO_PROFILES" ]; then
     echo "profiles:"
-    local n d r
+    local n d o r
     for n in $(_yo_profile_names); do
       d=$(_yo_pfield "$n" 7)
+      o=$(_yo_pfield "$n" 9)
       r=$(_yo_repos_of_profile "$n" | paste -sd' ' -)
-      printf '    %-12s %s\n' "$n" "${d:+$d  }repos: ${r:-(none)}"
+      printf '    %-12s %s\n' "$n" "${d:+$d  }${o:+owners: $o  }repos: ${r:-(none)}"
     done
   fi
   if [ -n "$_YO_AGENTS" ]; then
@@ -349,8 +377,8 @@ usage() {
 }
 
 # --- repo registry -----------------------------------------------------------
-# Repos are declared by the config file calling yo_repo (see the example config
-# shipped alongside yo). Records live in one newline-separated string,
+# Repos are registered by calling yo_repo: the JSON config's loader (_yo_cfg
+# load) emits the calls, and an older config.sh makes them itself. Records live in one newline-separated string,
 # TAB-separated fields, because macOS ships bash 3.2 — no associative arrays.
 #
 # fields: 1=key 2=path 3=base 4=github 5=mcp 6=mirror 7=title-prefix 8=memory
@@ -411,7 +439,7 @@ yo_repos_in() {
 }
 
 # --- agents -------------------------------------------------------------------
-# Agents are declared by the config file calling yo_agent, the same way as repos.
+# Agents are registered by calling yo_agent, the same way as repos.
 # fields: 1=name 2=repo 3=title
 _YO_AGENTS=""
 
@@ -633,17 +661,20 @@ title_prefix_for() {
 }
 
 # --- profiles -----------------------------------------------------------------
-# A profile is a named bundle of defaults for one of your projects, declared by
-# the config file calling yo_profile. Repos join one with yo_repo --profile, and
-# it can be picked on its own with --profile. Same storage as the repos.
+# A profile is a named bundle of defaults for one of your projects. Repos join
+# one (in the config, by being listed inside it, or by belonging to a GitHub
+# owner it claims), and it can be picked on its own with --profile. Same
+# storage as the repos.
 #
 # fields: 1=name 2=mode 3=memory 4=branch-prefix 5=claude 6=settings 7=dir
-#         8=window-group
+#         8=window-group 9=owners (space-separated) 10=trust (0 = don't
+#         pre-trust its worktrees)
 _YO_PROFILES=""
 
 yo_profile() {
   local name="${1:-}"; shift || true
   local mode="" memory="" branch_prefix="" claude="" settings="" dir="" group="" a
+  local owners="" trust=1
   [ -n "$name" ] || die "yo_profile: missing profile name"
   case "$name" in
     *[!A-Za-z0-9._-]*) die "yo_profile: name may only contain letters, digits, . _ - (got: '$name')" ;;
@@ -661,12 +692,34 @@ yo_profile() {
       --settings=*)      settings=$(_yo_expand_home "${a#--settings=}") ;;
       --dir=*)           dir=$(_yo_expand_home "${a#--dir=}"); dir="${dir%/}" ;;
       --window-group=*)  group="${a#--window-group=}" ;;
+      --owners=*)        owners="${a#--owners=}" ;;
+      --trust=*)         case "${a#--trust=}" in
+                           yes|1|true) trust=1 ;;
+                           no|0|false) trust=0 ;;
+                           *) die "yo_profile $name: --trust must be yes or no (got: '${a#--trust=}')" ;;
+                         esac ;;
       *) die "yo_profile $name: unknown option '$a'" ;;
     esac
   done
   _yo_pfield "$name" 1 >/dev/null 2>&1 && die "yo_profile: '$name' is already defined"
-  _YO_PROFILES="${_YO_PROFILES}${name}${_YO_TAB}${mode}${_YO_TAB}${memory}${_YO_TAB}${branch_prefix}${_YO_TAB}${claude}${_YO_TAB}${settings}${_YO_TAB}${dir}${_YO_TAB}${group}
+  _YO_PROFILES="${_YO_PROFILES}${name}${_YO_TAB}${mode}${_YO_TAB}${memory}${_YO_TAB}${branch_prefix}${_YO_TAB}${claude}${_YO_TAB}${settings}${_YO_TAB}${dir}${_YO_TAB}${group}${_YO_TAB}${owners}${_YO_TAB}${trust}
 "
+}
+
+# The profile that claims GitHub owner <owner> (case-insensitive), if any.
+_yo_profile_for_owner() {
+  printf '%s\n' "$_YO_PROFILES" | awk -F'\t' -v o="$1" '
+    NF { n = split($9, a, " "); for (i = 1; i <= n; i++) if (tolower(a[i]) == tolower(o)) { print $1; f = 1; exit } }
+    END { exit f ? 0 : 1 }'
+}
+
+# Whether yo pre-trusts repo <key>'s worktrees: not a guest's, and not one in a
+# profile with trust off. Untrusted ones get Claude's trust prompt.
+repo_trusted() {
+  local p
+  [ "$1" = "$YO_GUEST_REPO" ] && return 1
+  p=$(_yo_field "$1" 11 2>/dev/null || true)
+  [ -z "$p" ] || [ "$(_yo_pfield "$p" 10 2>/dev/null)" != "0" ]
 }
 
 # A leading ~/ written inside quotes in the config never met the shell.
@@ -807,23 +860,334 @@ _yo_primary_clone() {
 }
 
 # No config file: register the clone we're standing in, so yo works unconfigured.
+_YO_AUTOREG=""
 _yo_autoregister() {
   local path
   path=$(_yo_primary_clone) || return 1
-  yo_repo "$(basename "$path")" --path="$path"
+  _YO_AUTOREG=$(basename "$path")
+  yo_repo "$_YO_AUTOREG" --path="$path"
 }
 
+# The config file: $YO_CONFIG, else config.json in yo's config directory, else
+# the older config.sh there (a script calling yo_repo / yo_profile / yo_agent,
+# which `yo config migrate` turns into config.json). With neither, config.json
+# is where one would go.
 _yo_config_path() {
-  printf '%s' "${YO_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/yo/config.sh}"
+  local dir="${XDG_CONFIG_HOME:-$HOME/.config}/yo"
+  if [ -n "${YO_CONFIG:-}" ]; then
+    printf '%s' "$YO_CONFIG"
+  elif [ ! -f "$dir/config.json" ] && [ -f "$dir/config.sh" ]; then
+    printf '%s' "$dir/config.sh"
+  else
+    printf '%s' "$dir/config.json"
+  fi
+}
+
+_yo_config_is_json() { case "$1" in *.json) return 0 ;; *) return 1 ;; esac; }
+
+# The JSON config, read and written by one python3 helper.
+#   load FILE                    bash that registers it all (eval'd by
+#                                _yo_load_config); errors name the bad key
+#   add-repo FILE PROFILE KEY PATH GITHUB
+#                                list a repo (inside PROFILE, or at the top
+#                                level when PROFILE is empty)
+#   add-profile FILE NAME OWNER  a new profile that claims GitHub owner OWNER
+#   migrate FILE                 write FILE from the registry the old config.sh
+#                                built (handed over in the environment)
+#
+# The file:
+#   { "defaults": { ... },            global settings (see DEFAULTS below)
+#     "profiles": { NAME: {
+#         mode, memory, branchPrefix, claude, settings, dir, windowGroup,
+#         owners: [github owner, ...]   every clone at <cloneRoot>/<owner>/*
+#                                       joins, and so does a URL for one
+#         trust: false                  don't pre-trust its worktrees
+#         repos: { KEY: REPO }, reposIn: [DIR, ...], agents: { NAME: AGENT } } },
+#     "repos": { KEY: REPO }, "reposIn": [DIR, ...], "agents": { NAME: AGENT } }
+#   REPO:  { path, base, github, mcp, mirror, titlePrefix, memory,
+#            branchPrefix, mode }       (path required; mcp/mirror: lists)
+#   AGENT: { repo, title }              (repo required)
+_yo_cfg() {
+  python3 - "$@" <<'PY'
+import json, os, shlex, sys
+
+home = os.path.expanduser("~")
+op, args = sys.argv[1], sys.argv[2:]
+
+# defaults key -> the variable yo reads it from. A variable already set in the
+# environment wins, so `YO_MODE=here yo ...` still works for one run.
+DEFAULTS = {
+    "branchPrefix": "YO_BRANCH_PREFIX", "mode": "YO_MODE",
+    "claude": "YO_CLAUDE_CMD", "memories": "YO_MEMORIES",
+    "memory": "YO_MEMORY_STORE", "settings": "YO_CLAUDE_SETTINGS",
+    "layout": "YO_LAYOUT", "windowMode": "YO_WINDOW_MODE",
+    "windowGroup": "YO_WINDOW_GROUP", "winWidth": "YO_WIN_WIDTH",
+    "winHeight": "YO_WIN_HEIGHT", "itermProfile": "YO_ITERM_PROFILE",
+    "reviewCmd": "YO_REVIEW_CMD", "defaultRepo": "YO_DEFAULT_REPO",
+    "cloneRoot": "YO_CLONE_ROOT", "cloneProtocol": "YO_CLONE_PROTOCOL",
+    "guestProfile": "YO_ADHOC_PROFILE",
+}
+PROFILE_OPTS = {"mode": "mode", "memory": "memory", "branchPrefix": "branch-prefix",
+                "claude": "claude", "settings": "settings", "dir": "dir",
+                "windowGroup": "window-group"}
+REPO_OPTS = {"base": "base", "github": "github", "mcp": "mcp", "mirror": "mirror",
+             "titlePrefix": "title-prefix", "memory": "memory",
+             "branchPrefix": "branch-prefix", "mode": "mode"}
+
+class Bad(Exception):
+    pass
+
+def expand(p):
+    p = str(p)
+    if p == "~" or p.startswith("~/"):
+        return home + p[1:]
+    return p
+
+def tilde(p):
+    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+
+def words(v):
+    return " ".join(v) if isinstance(v, list) else str(v)
+
+def check_keys(obj, allowed, where):
+    if not isinstance(obj, dict):
+        raise Bad("%s: expected an object" % where)
+    for k in obj:
+        if k not in allowed:
+            raise Bad("%s: unknown key '%s' (known: %s)" % (where, k, ", ".join(sorted(allowed))))
+
+def read(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        raise Bad("not valid JSON: %s" % e)
+
+def write(path, d):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+def load(path):
+    d = read(path)
+    check_keys(d, {"defaults", "profiles", "repos", "reposIn", "agents"}, "config")
+    out = []
+    call = lambda *a: out.append(" ".join(shlex.quote(str(x)) for x in a))
+
+    defaults = d.get("defaults", {})
+    check_keys(defaults, set(DEFAULTS), "defaults")
+    for k, var in DEFAULTS.items():
+        if k in defaults:
+            v = defaults[k]
+            if k in ("settings", "cloneRoot", "memories") and v:
+                v = expand(v)
+            out.append('[ -n "${%s+x}" ] || %s=%s' % (var, var, shlex.quote(str(v))))
+    clone_root = expand(os.environ.get("YO_CLONE_ROOT")
+                        or defaults.get("cloneRoot") or "~/dev/src/github.com")
+
+    profiles = d.get("profiles", {})
+    if not isinstance(profiles, dict):
+        raise Bad("profiles: expected an object")
+    keys, paths = set(), set()
+
+    def repo(key, r, profile, where):
+        check_keys(r, set(REPO_OPTS) | {"path"}, where)
+        if "path" not in r:
+            raise Bad("%s: 'path' is required" % where)
+        if key in keys:
+            raise Bad("%s: repo '%s' is listed twice" % (where, key))
+        keys.add(key)
+        p = expand(r["path"]).rstrip("/")
+        paths.add(os.path.realpath(p))
+        a = ["yo_repo", key, "--path=" + p]
+        for jk, opt in REPO_OPTS.items():
+            if jk in r:
+                a.append("--%s=%s" % (opt, words(r[jk])))
+        if profile:
+            a.append("--profile=" + profile)
+        call(*a)
+
+    def scan(dirpath, profile, owner=None):
+        # Clones directly under dirpath, keyed by directory name (owner-name
+        # when the name is taken). One already listed is left as listed.
+        try:
+            names = sorted(os.listdir(dirpath))
+        except OSError:
+            return
+        for n in names:
+            p = os.path.join(dirpath, n)
+            if not os.path.exists(os.path.join(p, ".git")):
+                continue
+            if os.path.realpath(p) in paths:
+                continue
+            key = n
+            if key in keys and owner:
+                key = "%s-%s" % (owner, n)
+            if key in keys or not all(c.isalnum() or c in "._-" for c in key):
+                continue
+            keys.add(key); paths.add(os.path.realpath(p))
+            a = ["yo_repo", key, "--path=" + p]
+            if owner:
+                a.append("--github=%s/%s" % (owner, n))
+            if profile:
+                a.append("--profile=" + profile)
+            call(*a)
+
+    for name, pr in profiles.items():
+        where = "profiles.%s" % name
+        check_keys(pr, set(PROFILE_OPTS) | {"owners", "trust", "repos", "reposIn", "agents"}, where)
+        a = ["yo_profile", name]
+        for jk, opt in PROFILE_OPTS.items():
+            if jk in pr:
+                v = pr[jk]
+                a.append("--%s=%s" % (opt, expand(v) if jk in ("settings", "dir") else v))
+        if pr.get("owners"):
+            a.append("--owners=" + words(pr["owners"]))
+        if pr.get("trust") is False:
+            a.append("--trust=no")
+        call(*a)
+
+    for k, r in d.get("repos", {}).items():
+        repo(k, r, "", "repos.%s" % k)
+    for name, pr in profiles.items():
+        for k, r in pr.get("repos", {}).items():
+            repo(k, r, name, "profiles.%s.repos.%s" % (name, k))
+    for dpath in d.get("reposIn", []):
+        scan(expand(dpath), "")
+    for name, pr in profiles.items():
+        for dpath in pr.get("reposIn", []):
+            scan(expand(dpath), name)
+        for owner in pr.get("owners", []):
+            scan(os.path.join(clone_root, owner), name, owner)
+
+    def agent(n, ag, where):
+        check_keys(ag, {"repo", "title"}, where)
+        if "repo" not in ag:
+            raise Bad("%s: 'repo' is required" % where)
+        a = ["yo_agent", n, "--repo=" + ag["repo"]]
+        if "title" in ag:
+            a.append("--title=" + ag["title"])
+        call(*a)
+    for n, ag in d.get("agents", {}).items():
+        agent(n, ag, "agents.%s" % n)
+    for name, pr in profiles.items():
+        for n, ag in pr.get("agents", {}).items():
+            agent(n, ag, "profiles.%s.agents.%s" % (name, n))
+    print("\n".join(out))
+
+def add_repo(path, profile, key, repo_path, github):
+    d = read(path)
+    if profile:
+        target = d.setdefault("profiles", {}).setdefault(profile, {}).setdefault("repos", {})
+    else:
+        target = d.setdefault("repos", {})
+    entry = {"path": tilde(repo_path)}
+    if github:
+        entry["github"] = github
+    target[key] = entry
+    write(path, d)
+
+def add_profile(path, name, owner):
+    d = read(path)
+    profiles = d.setdefault("profiles", {})
+    if name in profiles:
+        raise Bad("profile '%s' already exists" % name)
+    profiles[name] = {"owners": [owner]}
+    write(path, d)
+
+def migrate(path):
+    # The registry the old config.sh built, plus the settings it assigned.
+    env = os.environ
+    d = {}
+    defaults = {k: env[v] for k, v in DEFAULTS.items() if v in env}
+    for k in ("winWidth", "winHeight"):
+        if k in defaults and defaults[k].isdigit():
+            defaults[k] = int(defaults[k])
+    for k in ("settings", "cloneRoot", "memories"):
+        if defaults.get(k):
+            defaults[k] = tilde(defaults[k])
+    # The old default repo was the first one registered; nesting repos inside
+    # profiles reorders them, so name it.
+    first = next((l.split("\t")[0] for l in env.get("_YO_REPOS", "").splitlines() if l), "")
+    if first and "defaultRepo" not in defaults:
+        defaults["defaultRepo"] = first
+    if defaults:
+        d["defaults"] = defaults
+    profiles = {}
+    for line in env.get("_YO_PROFILES", "").splitlines():
+        f = (line.split("\t") + [""] * 10)[:10]
+        if not f[0]:
+            continue
+        pr = {}
+        for i, jk in ((1, "mode"), (2, "memory"), (3, "branchPrefix"), (4, "claude"),
+                      (5, "settings"), (6, "dir"), (7, "windowGroup")):
+            if f[i]:
+                pr[jk] = tilde(f[i]) if jk in ("settings", "dir") else f[i]
+        if f[8]:
+            pr["owners"] = f[8].split()
+        if f[9] == "0":
+            pr["trust"] = False
+        profiles[f[0]] = pr
+    for line in env.get("_YO_REPOS", "").splitlines():
+        f = (line.split("\t") + [""] * 11)[:11]
+        if not f[0]:
+            continue
+        r = {"path": tilde(f[1])}
+        for i, jk in ((2, "base"), (3, "github"), (4, "mcp"), (5, "mirror"),
+                      (6, "titlePrefix"), (7, "memory"), (8, "branchPrefix"), (9, "mode")):
+            v = f[i]
+            if not v or (jk == "titlePrefix" and v == "__auto__"):
+                continue
+            r[jk] = v.split() if jk in ("mcp", "mirror") else v
+        if f[10]:
+            profiles.setdefault(f[10], {}).setdefault("repos", {})[f[0]] = r
+        else:
+            d.setdefault("repos", {})[f[0]] = r
+    if profiles:
+        d["profiles"] = profiles
+    for line in env.get("_YO_AGENTS", "").splitlines():
+        f = (line.split("\t") + [""] * 3)[:3]
+        if f[0]:
+            ag = {"repo": f[1]}
+            if f[2]:
+                ag["title"] = f[2]
+            d.setdefault("agents", {})[f[0]] = ag
+    write(path, d)
+
+try:
+    if op == "load":
+        load(args[0])
+    elif op == "add-repo":
+        add_repo(*args)
+    elif op == "add-profile":
+        add_profile(*args)
+    elif op == "migrate":
+        migrate(args[0])
+    else:
+        raise Bad("unknown op: " + op)
+except Bad as e:
+    print("%s: %s" % (args[0] if args else "config", e), file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 # soft=1 tolerates having no repos at all (so `yo help` works anywhere).
 _yo_load_config() {
-  local soft="${1:-0}" cfg
+  local soft="${1:-0}" cfg out
   cfg=$(_yo_config_path)
   if [ -f "$cfg" ]; then
-    # shellcheck disable=SC1090
-    . "$cfg" || die "failed to load config: $cfg"
+    if _yo_config_is_json "$cfg"; then
+      out=$(_yo_cfg load "$cfg") || die "failed to load config: $cfg"
+      eval "$out"
+    else
+      # shellcheck disable=SC1090
+      . "$cfg" || die "failed to load config: $cfg"
+    fi
     YO_CONFIG_PATH="$cfg"
   fi
   local k p
@@ -836,7 +1200,7 @@ _yo_load_config() {
     _yo_autoregister || {
       [ "$soft" = "1" ] && return 0
       die "no repos configured, and $(pwd) isn't inside a git clone
-        write $cfg (see config/yo.config.example.sh in the yo repo), or cd into a clone"
+        add one with: yo config add-repo <clone|url>   (or cd into a clone)"
     }
   fi
 }
@@ -901,11 +1265,12 @@ parse_github_url() {
 }
 
 # A PR/issue URL for a repo that isn't registered: register it for this run,
-# cloning it first if it isn't already at <YO_CLONE_ROOT>/<owner>/<repo>. Sets
-# YO_GUEST_REPO to its key. Runs in the caller's shell, not a $(...), because
-# the registration has to outlive it.
+# cloning it first if it isn't already at <YO_CLONE_ROOT>/<owner>/<repo>. With a
+# profile it joins that profile; without, it's a guest (YO_GUEST_REPO). Sets
+# YO_URL_REPO to its key either way. Runs in the caller's shell, not a $(...),
+# because the registration has to outlive it.
 register_url_repo() {
-  local owner_repo="$1" owner repo path key url
+  local owner_repo="$1" profile="${2:-}" owner repo path key url
   owner="${owner_repo%%/*}"; repo="${owner_repo#*/}"
   # These become a path and a clone URL, so nothing but what GitHub allows.
   case "$owner$repo" in
@@ -914,19 +1279,24 @@ register_url_repo() {
   path="$YO_CLONE_ROOT_RESOLVED/$owner/$repo"
   if [ -e "$path" ]; then
     [ -e "$path/.git" ] || die "can't use $owner_repo: $path exists and isn't a git clone"
-    echo "==> $owner_repo isn't configured; using the clone at $path"
+    echo "==> using the clone of $owner_repo at $path"
   else
     case "$YO_CLONE_PROTOCOL_RESOLVED" in
       ssh)   url="git@github.com:${owner_repo}.git" ;;
       https) url="https://github.com/${owner_repo}.git" ;;
     esac
-    echo "==> $owner_repo isn't configured; cloning it to $path"
+    echo "==> cloning $owner_repo to $path"
     mkdir -p "$(dirname "$path")"
     git clone "$url" "$path" || die "couldn't clone $url
         (YO_CLONE_PROTOCOL picks ssh or https; YO_CLONE_ROOT picks where clones go)"
   fi
   key="$repo"
   _yo_field "$key" 1 >/dev/null 2>&1 && key="$owner-$repo"
+  YO_URL_REPO="$key"
+  if [ -n "$profile" ]; then
+    yo_repo "$key" --path="$path" --github="$owner_repo" --profile="$profile"
+    return 0
+  fi
   if [ -n "${YO_ADHOC_PROFILE:-}" ]; then
     yo_repo "$key" --path="$path" --github="$owner_repo" --mode=worktree \
       --profile="$YO_ADHOC_PROFILE"
@@ -934,6 +1304,84 @@ register_url_repo() {
     yo_repo "$key" --path="$path" --github="$owner_repo" --mode=worktree --memory=none
   fi
   YO_GUEST_REPO="$key"
+}
+
+# Where a URL's unregistered repo goes, then registers it there (see
+# register_url_repo): the profile that claims its owner; else what --add-to
+# said (a profile, or `guest`); else, at a terminal, whatever you pick; else a
+# guest. A pick of a profile is saved to the config, so it is asked only once.
+place_url_repo() {
+  local owner_repo="$1" add_to="${2:-}" owner profile cfg choice
+  owner="${owner_repo%%/*}"
+  if profile=$(_yo_profile_for_owner "$owner"); then
+    echo "==> $owner_repo belongs to profile '$profile' (it claims $owner)"
+    register_url_repo "$owner_repo" "$profile"
+    return 0
+  fi
+  cfg=$(_yo_config_path)
+  if [ -z "$add_to" ] && [ -t 0 ] && [ -t 1 ] && [ -z "${CLAUDECODE:-}" ] \
+      && _yo_config_is_json "$cfg" && [ -f "$cfg" ]; then
+    add_to=$(_yo_ask_placement "$owner_repo") || add_to="guest"
+  fi
+  case "$add_to" in
+    ""|guest)
+      if [ -z "$add_to" ] && [ -f "$cfg" ] && ! _yo_config_is_json "$cfg"; then
+        echo "==> (yo config migrate, and yo can offer to remember repos like this one)"
+      fi
+      register_url_repo "$owner_repo" ;;
+    +*)
+      # A new profile named after the owner, claiming all of it.
+      profile="${add_to#+}"
+      _yo_cfg add-profile "$cfg" "$profile" "$owner" || die "couldn't add profile '$profile' to $cfg"
+      yo_profile "$profile" --owners="$owner"
+      echo "==> new profile '$profile' (claims every $owner/* repo), saved to $cfg"
+      register_url_repo "$owner_repo" "$profile" ;;
+    *)
+      _yo_pfield "$add_to" 1 >/dev/null 2>&1 \
+        || die "--add-to must be a profile ($(_yo_profile_names | paste -sd' ' -)) or guest (got: '$add_to')"
+      register_url_repo "$owner_repo" "$add_to"
+      if _yo_config_is_json "$cfg" && [ -f "$cfg" ]; then
+        _yo_cfg add-repo "$cfg" "$add_to" "$YO_URL_REPO" "$(repo_path_for "$YO_URL_REPO")" "$owner_repo" \
+          && echo "==> added $owner_repo to profile '$add_to' in $cfg" \
+          || echo "yo: couldn't save $owner_repo to $cfg; it's in '$add_to' for this run only"
+      else
+        echo "yo: $cfg isn't a JSON config, so $owner_repo is in '$add_to' for this run only"
+      fi ;;
+  esac
+}
+
+# Asks where an unconfigured repo goes; echoes a profile name, "+<name>" for a
+# new profile, or "guest". The menu goes to the terminal, not to the caller.
+_yo_ask_placement() {
+  local owner_repo="$1" owner n i=0 names="" ans new=""
+  owner="${owner_repo%%/*}"
+  {
+    echo "$owner_repo isn't configured. Where does it go?"
+    for n in $(_yo_profile_names); do
+      i=$((i + 1)); names="$names $n"
+      printf '  [%d] add it to profile %s\n' "$i" "$n"
+    done
+    if ! _yo_pfield "$owner" 1 >/dev/null 2>&1 \
+        && ! _yo_field "$owner" 1 >/dev/null 2>&1 \
+        && case "$owner" in *[!A-Za-z0-9._-]*) false ;; *) true ;; esac; then
+      new="$owner"
+      printf '  [n] a new profile "%s" that claims every %s/* repo\n' "$owner" "$owner"
+    fi
+    echo "  [g] just this once, as a guest (no shared memory, not pre-trusted)"
+    printf 'choice [g]: '
+  } >/dev/tty
+  read -r ans </dev/tty || ans=""
+  case "$ans" in
+    ""|g|G) echo guest ;;
+    n|N)    if [ -n "$new" ]; then echo "+$new"; else echo guest; fi ;;
+    *[!0-9]*) echo guest ;;
+    *)      set -- $names
+            if [ "$ans" -ge 1 ] && [ "$ans" -le "$#" ]; then
+              eval "echo \${$ans}"
+            else
+              echo guest
+            fi ;;
+  esac
 }
 
 die_unknown_url_repo() {
@@ -944,7 +1392,7 @@ die_unknown_url_repo() {
         (clone missing? or give it an explicit --github=owner/repo)"
   die "unrecognized repo in URL: $1
         known repos: $(_yo_repo_list)${hint}
-        register it with yo_repo in $(_yo_config_path)"
+        register it: yo config add-repo <clone|url>"
 }
 
 # --- iTerm2 title lock (dynamic profile) --------------------------------------
@@ -2236,8 +2684,9 @@ create_session_worktree() {
 
   # A guest repo is somebody else's code that nobody here has vetted, and it
   # can configure hooks and MCP servers — so its trust dialog is left to appear.
-  if [ "$repo_key" = "$YO_GUEST_REPO" ]; then
-    echo "==> not pre-trusting the worktree ($repo_key isn't a configured repo) — Claude will ask"
+  # A profile can ask for the same (trust: false).
+  if ! repo_trusted "$repo_key"; then
+    echo "==> not pre-trusting the worktree ($repo_key isn't a trusted repo) — Claude will ask"
     return 0
   fi
 
@@ -2255,7 +2704,7 @@ cmd_up() {
   local repo_key="" name initial_msg="" extra_msg="" base_ref pr_review=0
   local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
   local explicit_branch="" unnamed=0 persona="" force_new_window=-1
-  local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir=""
+  local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir="" add_to=""
   local title_override="" report_to="" model="" agent="" agent_repo="" agent_display=""
 
   # Flags may appear anywhere; strip them out of the positional args.
@@ -2272,6 +2721,8 @@ cmd_up() {
                   || die "--profile must be one of: $(_yo_profile_names | paste -sd'|' - | sed 's/|/ | /g') (got: '$YO_PROFILE_SELECTED')" ;;
       --here|--in-place)     mode="here" ;;
       --worktree)            mode="worktree" ;;
+      --add-to=*)            add_to="${a#--add-to=}"
+                             [ -n "$add_to" ] || die "--add-to needs a profile, or guest" ;;
       --title=*)             title_override="${a#--title=}"
                              [ -n "$title_override" ] || die "--title needs a value" ;;
       --from=*)              report_to="${a#--from=}"
@@ -2320,8 +2771,8 @@ cmd_up() {
     [ "$GH_KIND" = "issue" ] && issue_repo="$agent_repo"
     if [ -z "$url_repo" ] && [ -z "$repo_override" ] && [ -z "$issue_repo" ] \
         && [ "$mode" != "here" ]; then
-      register_url_repo "$gh_owner_repo"
-      url_repo="$YO_GUEST_REPO"
+      place_url_repo "$gh_owner_repo" "$add_to"
+      url_repo="$YO_URL_REPO"
     fi
     # Issues are just context — the WORK may live in the other repo
     # (e.g. --repo=<other> for an issue tracked in a different repo).
@@ -2965,7 +3416,7 @@ cmd_agent() {
 
   if [ -z "$name" ]; then
     if [ -z "$_YO_AGENTS" ]; then
-      echo "no agents registered; add one with yo_agent in $(_yo_config_path)"
+      echo "no agents registered; add one under \"agents\" in $(_yo_config_path)"
       return 0
     fi
     local n r
@@ -2979,7 +3430,7 @@ cmd_agent() {
 
   local repo_key repo_path base_ref remote wt_path display title rc_name
   repo_key=$(_yo_agent_field "$name" 2) \
-    || die "unknown agent '$name': register it with yo_agent in $(_yo_config_path)"
+    || die "unknown agent '$name': register it under \"agents\" in $(_yo_config_path)"
   repo_path=$(repo_path_for "$repo_key") \
     || die "agent '$name' names unknown repo '$repo_key' (known: $(_yo_repo_list))"
   [ -d "$repo_path/.git" ] || die "no clone at: $repo_path"
@@ -3020,9 +3471,13 @@ cmd_agent() {
     git -C "$repo_path" worktree add --quiet --detach "$wt_path" "$remote/$base_ref"
   fi
 
-  echo "==> pre-trusting worktree in ~/.claude.json"
-  seed_trust "$wt_path" "$repo_path" \
-    || echo "yo: trust-seed skipped (couldn't update ~/.claude.json; Claude will prompt)"
+  if repo_trusted "$repo_key"; then
+    echo "==> pre-trusting worktree in ~/.claude.json"
+    seed_trust "$wt_path" "$repo_path" \
+      || echo "yo: trust-seed skipped (couldn't update ~/.claude.json; Claude will prompt)"
+  else
+    echo "==> not pre-trusting the worktree ($repo_key isn't a trusted repo) — Claude will ask"
+  fi
   mirror_local_settings "$wt_path" "$repo_path" "$repo_key"
   mirror_repo_files "$wt_path" "$repo_path" "$repo_key"
 
@@ -3378,6 +3833,130 @@ cmd_sweep() {
   YO_SWEEP_REPOS="$spec" _yo_state sweep "$@"
 }
 
+# --- config -------------------------------------------------------------------
+cmd_config() {
+  local sub="${1:-show}" cfg
+  [ "$#" -eq 0 ] || shift
+  cfg=$(_yo_config_path)
+  case "$sub" in
+    show)
+      if [ -f "$cfg" ]; then
+        echo "config: $cfg$(_yo_config_is_json "$cfg" || echo '  (old format: yo config migrate)')"
+      else
+        echo "config: none yet ($cfg)"
+      fi
+      _yo_print_registry ;;
+    path) printf '%s\n' "$cfg" ;;
+    edit)
+      _yo_config_is_json "$cfg" || die "$cfg is the old format; yo config migrate first"
+      [ -f "$cfg" ] || printf '{}\n' > "$cfg"
+      "${EDITOR:-vi}" "$cfg"
+      _yo_cfg load "$cfg" >/dev/null && echo "==> $cfg is valid" ;;
+    add-repo) _yo_config_add_repo "$@" ;;
+    migrate)  _yo_config_migrate "$@" ;;
+    *) die "usage: yo config [show | path | edit | add-repo <clone|url|owner/repo> [--profile=P] [--key=K] | migrate [--dry-run]]" ;;
+  esac
+}
+
+# yo config add-repo <clone dir | github URL | owner/repo> [--profile=P] [--key=K]
+# A directory is listed where it is; anything else is cloned to
+# <cloneRoot>/<owner>/<repo> first (or found there).
+_yo_config_add_repo() {
+  local target="" profile="" key="" a cfg path gh="" r url
+  for a in "$@"; do
+    case "$a" in
+      --profile=*) profile="${a#--profile=}" ;;
+      --key=*)     key="${a#--key=}" ;;
+      --*) die "unknown flag: $a" ;;
+      *)   [ -z "$target" ] || die "usage: yo config add-repo <clone|url|owner/repo> [--profile=P] [--key=K]"
+           target="$a" ;;
+    esac
+  done
+  [ -n "$target" ] || die "usage: yo config add-repo <clone|url|owner/repo> [--profile=P] [--key=K]"
+  cfg=$(_yo_config_path)
+  _yo_config_is_json "$cfg" || die "$cfg is the old format; yo config migrate first"
+  [ -z "$profile" ] || _yo_pfield "$profile" 1 >/dev/null 2>&1 \
+    || die "no profile '$profile' (profiles: $(_yo_profile_names | paste -sd' ' -))"
+
+  if [ -d "$target" ]; then
+    path=$(cd "$target" && pwd -P)
+    [ -e "$path/.git" ] || die "$path isn't a git clone"
+    for r in upstream origin; do
+      url=$(git -C "$path" remote get-url "$r" 2>/dev/null) || continue
+      gh=$(_yo_owner_repo_from_url "$url") && break
+      gh=""
+    done
+  else
+    case "$target" in
+      *github.com*) gh=$(_yo_owner_repo_from_url "$target") || die "not a github repo URL: $target" ;;
+      */*)          gh="$target" ;;
+      *)            die "not a directory, URL or owner/repo: $target" ;;
+    esac
+    gh="${gh%.git}"
+    if r=$(repo_key_from_url "https://github.com/$gh" 2>/dev/null); then
+      echo "==> $gh is already registered as '$r' ($(repo_path_for "$r"))"
+      return 0
+    fi
+    register_url_repo "$gh" "${profile:-}"
+    path=$(repo_path_for "$YO_URL_REPO")
+  fi
+
+  if r=$(_yo_repo_at "$path" 2>/dev/null) && [ "$r" != "$YO_URL_REPO" ] && [ "$r" != "$_YO_AUTOREG" ]; then
+    echo "==> $path is already registered as '$r'"
+    return 0
+  fi
+  [ -n "$key" ] || key="${YO_URL_REPO:-$(basename "$path")}"
+  case "$key" in *[!A-Za-z0-9._-]*) die "key may only contain letters, digits, . _ - (got: '$key')" ;; esac
+  if [ "$key" != "$YO_URL_REPO" ] && [ "$key" != "$_YO_AUTOREG" ] && _yo_field "$key" 1 >/dev/null 2>&1; then
+    die "there's already a repo called '$key'; pick another with --key=K"
+  fi
+  _yo_cfg add-repo "$cfg" "$profile" "$key" "$path" "$gh" || die "couldn't write $cfg"
+  echo "==> added '$key' ($path)${profile:+ to profile '$profile'} in $cfg"
+}
+
+# Turns the old config.sh into config.json: the registry it built and the
+# settings it assigned, written as data. The old file is kept, renamed.
+_yo_config_migrate() {
+  local dry=0 a cfg dir out repos v
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|-n) dry=1 ;;
+      *) die "usage: yo config migrate [--dry-run]" ;;
+    esac
+  done
+  cfg=$(_yo_config_path)
+  _yo_config_is_json "$cfg" && die "nothing to migrate: $cfg is already JSON"
+  [ -f "$cfg" ] || die "no config at $cfg"
+  dir=$(dirname "$cfg")
+  out="$dir/config.json"
+  [ ! -e "$out" ] || die "$out already exists"
+  # The clone yo registers when the config names no repos isn't the config's.
+  repos="$_YO_REPOS"
+  [ -z "$_YO_AUTOREG" ] || repos=$(printf '%s\n' "$_YO_REPOS" | awk -F'\t' -v k="$_YO_AUTOREG" '$1 != k')
+  for v in YO_BRANCH_PREFIX YO_MODE YO_CLAUDE_CMD YO_MEMORIES YO_MEMORY_STORE \
+      YO_CLAUDE_SETTINGS YO_LAYOUT YO_WINDOW_MODE YO_WINDOW_GROUP YO_WIN_WIDTH \
+      YO_WIN_HEIGHT YO_ITERM_PROFILE YO_REVIEW_CMD YO_DEFAULT_REPO YO_CLONE_ROOT \
+      YO_CLONE_PROTOCOL YO_ADHOC_PROFILE; do
+    # shellcheck disable=SC2163
+    eval "[ -z \"\${$v+x}\" ] || export $v"
+  done
+  if [ "$dry" -eq 1 ]; then
+    local tmp
+    tmp=$(mktemp -d)
+    _YO_REPOS="$repos" _YO_PROFILES="$_YO_PROFILES" _YO_AGENTS="$_YO_AGENTS" \
+      _yo_cfg migrate "$tmp/config.json" && cat "$tmp/config.json"
+    rm -rf "$tmp"
+    echo "dry run: would write $out and rename $cfg to $cfg.migrated"
+    return 0
+  fi
+  _YO_REPOS="$repos" _YO_PROFILES="$_YO_PROFILES" _YO_AGENTS="$_YO_AGENTS" \
+    _yo_cfg migrate "$out" || die "couldn't write $out"
+  _yo_cfg load "$out" >/dev/null || die "$out was written but doesn't load; $cfg is untouched"
+  mv "$cfg" "$cfg.migrated"
+  echo "==> wrote $out (the old $(basename "$cfg") is now $(basename "$cfg").migrated)"
+  [ -z "${YO_CONFIG:-}" ] || echo "yo: YO_CONFIG still points at $cfg; point it at $out"
+}
+
 # --- dispatch -----------------------------------------------------------------
 main() {
   local sub="${1:-}"
@@ -3408,6 +3987,7 @@ main() {
     title)               shift; cmd_title "$@" ;;
     forget)              shift; cmd_forget "$@" ;;
     agent)               shift; cmd_agent "$@" ;;
+    config)              shift; cmd_config "$@" ;;
     *)
       # `yo NAME ['message']` with no flags reaches what NAME names: a registered
       # agent's home, a live session by its Claude name, or a ledger session.

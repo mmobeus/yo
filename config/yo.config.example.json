@@ -1,0 +1,40 @@
+{
+  "defaults": {
+    "branchPrefix": "me",
+    "cloneRoot": "~/src/github.com",
+    "memories": "~/src/github.com/me/home/memories",
+    "defaultRepo": "backend",
+    "guestProfile": "guest"
+  },
+  "profiles": {
+    "acme": {
+      "owners": ["acme"],
+      "memory": "acme",
+      "windowGroup": "acme",
+      "repos": {
+        "backend": {
+          "path": "~/src/github.com/acme/backend",
+          "base": "dev",
+          "mcp": ["grafana"],
+          "mirror": [".env"]
+        }
+      },
+      "agents": {
+        "cindy": { "repo": "backend", "title": "Cindy" }
+      }
+    },
+    "notes": {
+      "dir": "~/notes",
+      "memory": "notes",
+      "settings": "~/.config/yo/notes.settings.json"
+    },
+    "guest": {
+      "memory": "none",
+      "trust": false
+    }
+  },
+  "repos": {
+    "yo": { "path": "~/src/github.com/me/yo" }
+  },
+  "reposIn": ["~/src/scratch"]
+}
