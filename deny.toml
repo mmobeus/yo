@@ -18,6 +18,8 @@ confidence-threshold = 0.9
 allow = [
   "Apache-2.0",
   "MIT",
+  # unicode-ident's Unicode data tables (proc-macro2, so every derive macro)
+  "Unicode-3.0",
 ]
 
 [licenses.private]
