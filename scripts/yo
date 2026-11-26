@@ -2,6 +2,9 @@
 #
 # yo — spin up / tear down an iTerm2 work session on a fresh git worktree.
 #
+# The user guide and full reference are docs/guide.md and docs/reference.md
+# in the yo repo. What follows is the summary.
+#
 # Configuration:
 #   Every site-specific thing (which repos exist, where their clones live, the
 #   branch prefix, window size) lives in a JSON config file — this script
@@ -48,7 +51,7 @@
 #                        HEAD (the code under review, via refs/pull/<n>/head)
 #                        and set to TRACK it so `git pull` refreshes as the PR
 #                        gets new commits; seeds claude with  /code-review <url>
-#                        (the command is configurable — YO_REVIEW_CMD).
+#                        (the command is configurable — defaults.reviewCmd).
 #     .../issues/<n>  -> name issue_<n> (off the repo's base branch); seeds
 #                        claude with a "help me address this issue: <url>"
 #                        message.
@@ -107,9 +110,9 @@
 #   sessions pile up in one window and iTerm2's Session Status tool — which only
 #   lists the sessions of ONE window — becomes a dashboard of all of them.
 #   (Window > Cockpit, ⌥⇧⌘C, shows status across every window regardless.)
-#   YO_WINDOW_MODE=window in the config restores one window per session;
-#   YO_WINDOW_GROUP names the shared window, and may contain {repo} to get one
-#   window per repo.
+#   "windowMode": "window" in the config's defaults restores one window per
+#   session; "windowGroup" names the shared window, and may contain {repo} to
+#   get one window per repo.
 #
 #   --here (--in-place) NO worktree, NO branch: the session runs in an existing
 #   directory, on whatever is checked out there. Nothing is fetched or created.
@@ -135,7 +138,7 @@
 #                         else to the first repo registered under P.
 #   Precedence, everywhere: flag > repo > profile > defaults.
 #
-#   Layout (YO_LAYOUT): `split` puts a shell pane next to claude; `workgroup`
+#   Layout (defaults.layout): `split` puts a shell pane next to claude; `workgroup`
 #   opens claude alone and leaves the shell to the terminal peer ("CLI") of
 #   iTerm2's Claude Code workgroup. The default, `auto`, picks `workgroup` when
 #   that workgroup has a peer session configured, else `split`.
@@ -255,7 +258,7 @@
 #      in the session ledger, stacking yo's settings layer on top of your own
 #      with `claude --settings`: the installed claude-settings.json plus an
 #      autoMemoryDirectory — one memory shared by every session
-#      (~/.claude/memories/yo unless YO_MEMORIES / YO_MEMORY_STORE say
+#      (~/.claude/memories/yo unless the config's "memories" / "memory" say
 #      otherwise) — plus the hooks that keep the ledger current.
 #      ~/.claude/settings.json is never edited.
 #
