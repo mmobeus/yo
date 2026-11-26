@@ -145,6 +145,27 @@
 #                        `yo --agent=NAME --from=NAME-home ...`, never in the
 #                        home checkout, which `yo down` and `yo sweep` leave
 #                        alone. Bare `yo agent` lists the registered agents.
+#                        A message is delivered whichever way the home is
+#                        reached: seeded into a new or resumed home, or, when
+#                        it's already running, typed into its prompt after its
+#                        iTerm tab is brought forward.
+#   yo NAME ['message']  With no flags, reaches what NAME names, in order:
+#                          1. an agent registered with yo_agent: its home, as
+#                             `yo agent NAME`;
+#                          2. a live session by its Claude name (what the
+#                             statusline and ListAgents show, or a Remote
+#                             Control name such as cindy-home): its iTerm tab
+#                             comes forward and the message is typed into its
+#                             prompt;
+#                          3. a session in yo's ledger, by its yo name, session
+#                             id or id prefix: brought forward and typed into
+#                             if running, else resumed with the message as its
+#                             first prompt;
+#                          4. otherwise a new session named NAME, as always.
+#                        A repo or profile NAME keeps its own meaning (`yo
+#                        <repo>`), any flag skips 1-3 (`yo --repo=R NAME`), and
+#                        an existing branch is still named by its full name
+#                        (`yo <prefix>/NAME`).
 #   yo sessions          List the sessions yo knows about and whether each is
 #                        running, ready to resume, or gone (alias: ls).
 #   yo resume <name|session-id|dir> [--model=M] [--new-window|--tab]
@@ -1362,6 +1383,8 @@ mirror_repo_files() {
 #   list                         TSV, one row per record (see row())
 #   sweep [flags]                classify and (with --apply) remove landed
 #                                worktrees; repos in YO_SWEEP_REPOS (cmd_sweep)
+#   reach QUERY                  what `yo QUERY` reaches: a live session by its
+#                                Claude name, else a ledger row (see cmd_reach)
 #   get QUERY                    the same TSV row for one session, matched by
 #                                id (or 8+ char prefix), directory, or name;
 #                                an id the ledger lacks is found by transcript
@@ -1665,6 +1688,37 @@ elif op == "get":
     row(hits[0], live)
     if hits[0].get("transcriptOnly"):
         print("transcript-only", file=sys.stderr)
+
+elif op == "reach":
+    # reach Q: what `yo Q` should reach. A live session by its Claude name
+    # first ("live<TAB>pid<TAB>sessionId<TAB>name"), then a ledger session by
+    # yo name, id or id prefix ("ledger<TAB>" + row). Exit 1: nothing; 2: ambiguous.
+    q = args[0]
+    live = live_sessions()
+    named = [d for d in live if d.get("name") == q]
+    if len(named) > 1:
+        print("ambiguous: %d live sessions are named '%s'" % (len(named), q), file=sys.stderr)
+        sys.exit(2)
+    if named:
+        d = named[0]
+        print("\t".join(["live", str(d["pid"]), d.get("sessionId", "-"), q]))
+        sys.exit(0)
+    recs = load_all()
+    hits = [r for r in recs if r.get("sessionId") == q or r.get("name") == q]
+    if not hits and len(q) >= 8:
+        hits = [r for r in recs if (r.get("sessionId") or "").startswith(q)]
+    if len(hits) > 1:
+        print("ambiguous: %d sessions match '%s'" % (len(hits), q), file=sys.stderr)
+        for r in hits:
+            row(r, live)
+        sys.exit(2)
+    if not hits:
+        sys.exit(1)
+    st, _ = status_of(hits[0], live)
+    if st not in ("running", "ready", "ended"):
+        sys.exit(1)   # gone or no id: nothing to reach, so `yo Q` creates as before
+    sys.stdout.write("ledger\t")
+    row(hits[0], live)
 
 elif op == "sweep":
     # Worktrees whose work has landed, minus any a session still needs.
@@ -2577,9 +2631,10 @@ _yo_ensure_repo() {
 
 # Relaunches the session in the R_* globals, under the repo and profile it was
 # created with, so it gets the same settings layer, memory and window. Without
-# a model it resumes on the model it last ran on.
+# a model it resumes on the model it last ran on; a message becomes its first
+# prompt.
 _yo_resume_row() {
-  local force_new_window="$1" model="${2:-}"
+  local force_new_window="$1" model="${2:-}" message="${3:-}"
   local repo_key="" saved_profile="$YO_PROFILE_SELECTED"
   if [ -n "$R_REPO" ]; then
     if ! repo_key=$(_yo_ensure_repo "$R_REPO" "$R_GUEST"); then
@@ -2609,7 +2664,7 @@ _yo_resume_row() {
   # The agent and Remote Control name come back from the ledger: nothing says
   # `claude --resume` restores either on its own.
   launch_session "$R_WT" "$R_TITLE" \
-    "$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "${R_AGENT:-}")$(_yo_rc_arg "${R_RC:-}") --resume $R_SID" \
+    "$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "${R_AGENT:-}")$(_yo_rc_arg "${R_RC:-}") --resume $R_SID${message:+ $(shell_single_quote "$message")}" \
     "$repo_key" "$label" "$force_new_window"
   YO_PROFILE_SELECTED="$saved_profile"
 }
@@ -2761,6 +2816,116 @@ EOF
   fi
 }
 
+# --- reaching a session -------------------------------------------------------
+# Brings the iTerm tab of a running claude process forward and, given a message,
+# types it into that session's prompt and submits it (claude queues it if a turn
+# is running). The pane is found by its tty, which `ps` reports for the process,
+# so it works for any session however it was started, with nothing recorded at
+# launch.
+focus_running_session() {
+  local pid="$1" message="${2:-}" tty result
+  tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+  case "$tty" in ""|"?"|"??") return 1 ;; esac
+  case "$tty" in /dev/*) : ;; *) tty="/dev/$tty" ;; esac
+  if [ -n "${YO_DRY_LAUNCH:-}" ]; then
+    printf 'dry focus: %s%s\n' "$tty" "${message:+, then type: $message}"
+    return 0
+  fi
+  result=$(/usr/bin/osascript - "$tty" "$message" <<'APPLESCRIPT' 2>/dev/null || true
+on run argv
+  set want to item 1 of argv
+  set msg to item 2 of argv
+  tell application "iTerm2"
+    repeat with ww in windows
+      repeat with tt in tabs of ww
+        repeat with ss in sessions of tt
+          if (tty of ss) is want then
+            select ww
+            tell tt to select
+            tell ss to select
+            activate
+            if msg is not "" then
+              -- Claude reads a long burst of input as a paste, and a newline
+              -- inside a paste is a line break, not Enter: type the message,
+              -- pause, then press Enter on its own.
+              tell ss to write text msg newline no
+              delay 0.5
+              tell ss to write text (character id 13) newline no
+            end if
+            return "found"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return "notfound"
+end run
+APPLESCRIPT
+)
+  [ "$result" = "found" ]
+}
+
+# Reaches the session in the R_* row (see _yo_read_row) with an optional
+# message: a running one has its tab brought forward and the message typed in;
+# a stopped one is resumed with the message as its first prompt. Returns 1 for
+# a row there is nothing to reach in (gone, no id).
+_yo_reach_row() {
+  local message="$1" force_new_window="$2" model="$3" label="$4"
+  case "$R_STATUS" in
+    running)
+      _yo_reach_live "$R_PID" "$message" "$label" "${R_RC:-}"
+      return 0 ;;
+    ready|ended)
+      _yo_resume_row "$force_new_window" "$model" "$message"
+      echo "==> ready."
+      return 0 ;;
+  esac
+  return 1
+}
+
+# A running session, by its claude process: bring its tab forward and type the
+# message, or say how else to reach it.
+_yo_reach_live() {
+  local pid="$1" message="$2" label="$3" rc="${4:-}"
+  if focus_running_session "$pid" "$message"; then
+    echo "==> $label is running (pid $pid): brought its tab forward${message:+ and typed your message}"
+  else
+    echo "==> $label is running (pid $pid), but not in an iTerm tab yo can find;"
+    echo "    reach it ${rc:+by Remote Control as $rc, or }with SendMessage from another session${message:+ (your message was not delivered)}"
+  fi
+}
+
+# `yo NAME ['message']` for a NAME that is a live session's Claude name or a
+# session in the ledger. Returns 1 when NAME names neither, so the caller can
+# create a session instead.
+cmd_reach() {
+  local query="$1" message="${2:-}" out rc=0 kind rest err
+  err=$(mktemp)
+  out=$(_yo_state reach "$query" 2>"$err") || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    cat "$err" >&2; rm -f "$err"
+    die "be more specific (use the session id)"
+  fi
+  rm -f "$err"
+  [ "$rc" -eq 0 ] || return 1
+  kind="${out%%"$_YO_TAB"*}"; rest="${out#*"$_YO_TAB"}"
+  if [ "$kind" = "live" ]; then
+    _yo_reach_live "${rest%%"$_YO_TAB"*}" "$message" "$query"
+    return 0
+  fi
+  _yo_read_row "$rest"
+  _yo_reach_row "$message" -1 "" "$R_NAME"
+}
+
+# True if any argument is a flag (--x).
+_yo_has_flag() {
+  local a
+  for a in "$@"; do
+    case "$a" in --*) return 0 ;; esac
+  done
+  return 1
+}
+
 # --- agent homes --------------------------------------------------------------
 # An agent's home is one long-lived session per agent: a detached checkout of
 # the repo's base branch at <clone>-worktrees/agent-<name>, run as the agent,
@@ -2831,12 +2996,11 @@ cmd_agent() {
     _yo_read_row "$row"
     case "$R_STATUS" in
       running)
-        echo "==> ${display}'s home is already running (pid $R_PID); its Remote Control name is ${R_RC:-$rc_name}"
+        _yo_reach_row "$extra" "$force_new_window" "$model" "${display}'s home"
         return 0 ;;
       ready|ended)
         _yo_agent_home_refresh "$wt_path" "$remote" "$base_ref"
-        _yo_resume_row "$force_new_window" "$model"
-        echo "==> ready."
+        _yo_reach_row "$extra" "$force_new_window" "$model" "${display}'s home"
         return 0 ;;
     esac
     # gone / no-id: start a fresh home below.
@@ -3244,7 +3408,22 @@ main() {
     title)               shift; cmd_title "$@" ;;
     forget)              shift; cmd_forget "$@" ;;
     agent)               shift; cmd_agent "$@" ;;
-    *)                   cmd_up "$@" ;;
+    *)
+      # `yo NAME ['message']` with no flags reaches what NAME names: a registered
+      # agent's home, a live session by its Claude name, or a ledger session.
+      # A repo or profile name keeps its positional meaning (`yo <repo>`), and
+      # anything else, or any flag, creates a session as before.
+      if [ "$#" -ge 1 ] && [ "$#" -le 2 ] && ! _yo_has_flag "$@" \
+          && ! _yo_field "$1" 1 >/dev/null 2>&1 \
+          && ! _yo_pfield "$1" 1 >/dev/null 2>&1; then
+        if _yo_agent_field "$1" 1 >/dev/null 2>&1; then
+          cmd_agent "$@"
+        elif ! cmd_reach "$@"; then
+          cmd_up "$@"
+        fi
+      else
+        cmd_up "$@"
+      fi ;;
   esac
 }
 

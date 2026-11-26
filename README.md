@@ -172,6 +172,7 @@ themselves, with their own instructions:
 yo --agent=cindy https://github.com/acme/backend/issues/123   # work an issue as Cindy
 yo --agent=cindy unit-time 'cut the test time'                 # a named session as Cindy
 yo agent cindy            # Cindy's home: a long-lived checkout of the base branch
+yo cindy 'how is the queue today?'   # reach the home: start, resume, or type into it
 yo agent                  # the agents registered in the config
 ```
 
@@ -187,6 +188,23 @@ yo agent                  # the agents registered in the config
   `yo down` and `yo sweep` never remove it; quit it with `/exit`.
 - `yo_agent` in the config gives an agent a default repo and a display name.
   Unregistered merged agents still work with `--agent` and a repo.
+
+### Reaching a session by name
+
+```sh
+yo cindy 'how is the queue today?'   # a registered agent's home
+yo cindy-home 'status?'              # a live session by its Claude name (statusline, ListAgents)
+yo my-fix 'rebase on main'           # a session in yo's ledger: yo name, session id or id prefix
+```
+
+With no flags, `yo NAME ['message']` looks for a registered agent, then a live
+session whose Claude name is NAME (a Remote Control name like `cindy-home`
+counts), then a session in yo's ledger. A running one has its iTerm tab
+brought forward and the message typed in and submitted (its pane is found by
+the tty of its `claude` process); a stopped one is resumed with the message as
+its first prompt. A name that matches nothing creates a session as before. A
+repo or profile name keeps its own meaning (`yo <repo>`), and any flag makes it
+an ordinary new session (`yo --repo=backend cindy`).
 
 ## Profiles
 
