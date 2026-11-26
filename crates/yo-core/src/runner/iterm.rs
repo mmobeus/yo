@@ -20,6 +20,57 @@ const PREFS: &str = include_str!("iterm/prefs.js");
 const OPEN: &str = include_str!("iterm/open.applescript");
 const RETITLE: &str = include_str!("iterm/retitle.applescript");
 const FOCUS: &str = include_str!("iterm/focus.applescript");
+const TITLE: &str = include_str!("iterm/title.applescript");
+const OWN_TITLE: &str = include_str!("iterm/own_title.applescript");
+const RESYNC: &str = include_str!("iterm/resync.applescript");
+
+/// `osascript -` with `script` on stdin and `args` after it.
+fn script(script: &str, args: &[&str]) -> CommandSpec {
+    CommandSpec {
+        stdin: Some(script.as_bytes().to_vec()),
+        ..CommandSpec::new("osascript")
+            .arg("-")
+            .args(args.iter().copied())
+    }
+}
+
+/// The session's unique id out of `ITERM_SESSION_ID` (`w0t1p0:<uuid>`).
+pub fn own_session(iterm_session_id: &str) -> &str {
+    iterm_session_id
+        .split_once(':')
+        .map_or(iterm_session_id, |(_, id)| id)
+}
+
+/// Titles, for `yo title` and `yo adopt`: these work on the tab yo runs
+/// in, which iTerm names in `ITERM_SESSION_ID`.
+impl Iterm {
+    /// Retitles every pane of the tab holding session `id`. `Ok(false)`:
+    /// no such tab.
+    pub fn retitle_own(sys: &dyn Sys, id: &str, title: &str) -> Result<bool> {
+        let out = sys
+            .cmd()
+            .run(&script(TITLE, &[own_session(id), title]))
+            .map_err(|e| Error::Failed(format!("osascript: {e}")))?;
+        Ok(out.success() && out.text() == "ok")
+    }
+
+    /// Puts `title` back as the session's name when Claude Code's workgroup
+    /// renames it, for a while, detached.
+    pub fn hold_title(sys: &dyn Sys, title: &str) {
+        let _ = sys.cmd().spawn(&script(RETITLE, &[title]));
+    }
+
+    /// The title yo gave session `id`'s tab, if any.
+    pub fn own_title(sys: &dyn Sys, id: &str) -> Option<String> {
+        let out = sys.cmd().run(&script(OWN_TITLE, &[own_session(id)])).ok()?;
+        out.success().then(|| out.text()).filter(|t| !t.is_empty())
+    }
+
+    /// Every session yo titled gets its title back as its name.
+    pub fn resync_titles(sys: &dyn Sys) {
+        let _ = sys.cmd().run(&script(RESYNC, &[]));
+    }
+}
 
 /// The settings it runs with, from the registry's defaults.
 #[derive(Clone, Debug)]

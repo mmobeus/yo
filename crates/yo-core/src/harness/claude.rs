@@ -100,6 +100,52 @@ impl Harness for Claude {
         }
     }
 
+    /// Its session file (`~/.claude/sessions/<pid>.json`, live or not),
+    /// else the first `cwd` in its transcript (`~/.claude/projects/*/<id>.jsonl`).
+    fn session_cwd(&self, sys: &dyn Sys, id: &str) -> Option<PathBuf> {
+        if !valid_session_id(id) {
+            return None;
+        }
+        let home = sys.home();
+        let files = |dir: PathBuf| -> Vec<PathBuf> {
+            fs::read_dir(dir)
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+                .unwrap_or_default()
+        };
+        for f in files(home.join(".claude/sessions")) {
+            let Some(d) = fs::read_to_string(&f)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            else {
+                continue;
+            };
+            if d.get("sessionId").and_then(Value::as_str) == Some(id)
+                && let Some(c) = d
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.is_empty())
+            {
+                return Some(PathBuf::from(c));
+            }
+        }
+        for proj in files(home.join(".claude/projects")) {
+            let t = proj.join(format!("{id}.jsonl"));
+            let Ok(text) = fs::read_to_string(&t) else {
+                continue;
+            };
+            for line in text.lines() {
+                if let Some(c) = serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|v| v.get("cwd").and_then(Value::as_str).map(str::to_string))
+                    .filter(|c| !c.is_empty())
+                {
+                    return Some(PathBuf::from(c));
+                }
+            }
+        }
+        None
+    }
+
     /// `<command> [--settings F] [--model M] [--agent A] --name NAME
     /// [--remote-control NAME] --resume ID [MESSAGE]`. The agent and Remote
     /// Control name come from the ledger: nothing says `claude --resume`

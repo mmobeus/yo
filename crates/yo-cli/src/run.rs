@@ -19,7 +19,7 @@ use yo_core::runner::{DryLaunch, Runner, WindowChoice};
 use yo_core::sys::Sys;
 
 use crate::cli::{Cli, Command, ConfigCmd, Up, Window};
-use crate::render;
+use crate::{ledger_cmds, render};
 
 /// Runs `cli`, writing to `out` and `err`, and returns the exit status.
 pub fn run(
@@ -45,8 +45,22 @@ fn go(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    if cli.command.is_none() {
-        return up(&cli.up, sys, cwd, out);
+    match &cli.command {
+        None => return up(&cli.up, sys, cwd, out),
+        Some(Command::Resume(r)) => {
+            return ledger_cmds::resume(&mut Ctx::load(sys, cwd)?, r, cwd, out);
+        }
+        Some(Command::ResumeAll(r)) => {
+            return ledger_cmds::resume_all(&mut Ctx::load(sys, cwd)?, r, out);
+        }
+        Some(Command::Adopt(a)) => return ledger_cmds::adopt(&Ctx::load(sys, cwd)?, a, cwd, out),
+        Some(Command::Forget { query }) => {
+            return ledger_cmds::forget(&Ctx::load(sys, cwd)?, query, cwd, out);
+        }
+        Some(Command::Title { title }) => {
+            return ledger_cmds::title(&Ctx::load(sys, cwd)?, title.as_deref(), cwd, out);
+        }
+        Some(_) => {}
     }
     let Some(name) = read_only(cli.command.as_ref()) else {
         if let Some(c) = &cli.command {
@@ -202,7 +216,7 @@ fn up(
 }
 
 /// Prints notes as progress does.
-fn say(out: &mut dyn Write, notes: &[Note]) {
+pub(crate) fn say(out: &mut dyn Write, notes: &[Note]) {
     let mut report = render::Progress::new(out);
     for n in notes {
         report.note(n);
@@ -381,7 +395,7 @@ fn place_answer(c: &place::Choices, ans: &str) -> PlaceTo {
     }
 }
 
-fn window(w: &Window) -> WindowChoice {
+pub(crate) fn window(w: &Window) -> WindowChoice {
     if w.new_window {
         WindowChoice::Window
     } else if w.tab {

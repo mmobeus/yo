@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`). Next: the ledger commands and resume |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`; PR #28). The ledger commands: `resume` (by name, id, prefix, directory, or an id only the harness's transcripts know), `resume-all`, `adopt`, `forget`, `title`. Next: down and sweep |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -258,7 +258,7 @@ yo-core/src/
   resolve.rs    `yo NAME`: the ordered lookup
   reach.rs      reaching what it found: focus a running session (typing the message), resume a stopped one
   create.rs     plan a new session: INPUT (unnamed, PR, issue, existing or new branch), worktree, branch, title, codename, brief
-  resume.rs     resume one, resume-all
+  session.rs    for the ledger commands: where a directory sits (a yo worktree, a clone), a session by query, recording one
   down.rs       tear down the current session
   sweep.rs      classify worktrees; remove
   naming.rs     codenames, titles, truncation
@@ -428,14 +428,14 @@ impl Ledger {
     pub fn all(&self) -> Vec<Entry>;                          // Entry = key + record
     pub fn write(&self, e: &mut Entry) -> Result<()>;         // back to its own file; stamps updatedAt, machine
     pub fn put(&self, rec: Record) -> Result<Key>;
-    pub fn adopt(&self, a: Adopt) -> Result<Key>;
+    pub fn adopt(&self, a: &Adopt) -> Result<Key>;
     pub fn drop(&self, key: &Key) -> Result<bool>;            // false: there was none
     pub fn drop_dir(&self, worktree: &Path) -> Result<bool>;
-    pub fn retitle(&self, by: RetitleBy, title: &str) -> Result<Option<Key>>;
+    pub fn retitle(&self, key: Option<&str>, id: Option<&str>, cwd: &Path, title: &str) -> Result<bool>;
     pub fn learn_id(&self, key: &Key, session_id: &str) -> Result<()>;  // a harness that names its own ids
     pub fn sync(&self, clones: &[SyncClone], live: &[LiveSession]) -> Result<Vec<Adopted>>;
     pub fn hook(&self, ev: &HookEvent);                       // never fails the caller
-    pub fn get(&self, q: &str, live: &[LiveSession]) -> Result<Found>; // id, 8+ prefix, dir, name; transcript fallback
+    pub fn get(&self, q: &str) -> Result<Option<Entry>, Vec<Entry>>; // id or dir, 8+ prefix, name; the harness's transcripts are session::find's fallback
 }
 
 pub enum HookEvent {                                          // from Harness::hook_event
@@ -534,7 +534,8 @@ Like the rest of the core's API, the trait grows with the commands that use
 it: phase 1's foundations have `name`, `live`, `capabilities` and `hook_event`, create added
 `tui_command` and `prepare` (Claude's steps are `Action::Prepare(Prep::Claude(..))`; the
 settings layer and memory directory are plain `WriteFile` and `MakeDir` actions), and
-resuming comes with the commands that do it.
+reaching and the ledger commands added `resume_command` and `session_cwd` (where a
+session ran, from the harness's own records: Claude's session files, else its transcript).
 
 ```rust
 pub trait Harness {

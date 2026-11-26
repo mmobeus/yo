@@ -30,6 +30,7 @@ pub mod reach;
 pub mod registry;
 pub mod resolve;
 pub mod runner;
+pub mod session;
 pub mod sys;
 
 pub use error::{Error, Result};
