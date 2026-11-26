@@ -14,7 +14,7 @@
 #
 # Usage:
 #   yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S]
-#      [--model=M] [INPUT] [extra]
+#      [--model=M] [--agent=NAME] [INPUT] [extra]
 #
 #   INPUT is resolved in order:
 #     PR / issue URL     github.com/.../pull/N or /issues/N (see below)
@@ -79,6 +79,16 @@
 #   is untouched, and resume keeps the session on whatever it last ran on.
 #   `yo resume --model=M <session>` switches a session as it comes back.
 #
+#   --agent=NAME  run the session AS agent NAME (claude --agent): its system
+#   prompt and rules instead of the default ones. NAME must be an agent merged on
+#   the repo's base branch (a .claude/agents/*.md file with `name: NAME`) or one
+#   in ~/.claude/agents. The ledger records it, so resume and resume-all bring
+#   the session back as the same agent. The tab and the codename lead with the
+#   agent's name ("Cindy · Plucky Gary"), and an issue or PR URL is handed to the
+#   agent to work or review by its own instructions. An agent registered with
+#   yo_agent (see the config) defaults the repo to its own.
+#     yo --agent=cindy https://github.com/acme/service/issues/123
+#
 #   --new-window (--window) put this session in a NEW iTerm window instead of a
 #   tab in the shared one; --tab forces the opposite. The default is a tab, so
 #   sessions pile up in one window and iTerm2's Session Status tool — which only
@@ -125,6 +135,16 @@
 #                        it can run from inside claude (the /yo-down skill); it
 #                        refuses to lose uncommitted work unless --discard.
 #                        --dry-run reports what would happen and stops.
+#   yo agent [NAME] [--model=M] [--new-window|--tab] ['message']
+#                        Start, or bring back, agent NAME's home session: a
+#                        long-lived checkout of the repo's base branch at
+#                        <clone>-worktrees/agent-NAME (detached, refreshed from
+#                        the base each time it starts while it's clean), run as
+#                        the agent with Remote Control on, named NAME-home. Its
+#                        work happens in worker sessions it starts with
+#                        `yo --agent=NAME --from=NAME-home ...`, never in the
+#                        home checkout, which `yo down` and `yo sweep` leave
+#                        alone. Bare `yo agent` lists the registered agents.
 #   yo sessions          List the sessions yo knows about and whether each is
 #                        running, ready to resume, or gone (alias: ls).
 #   yo resume <name|session-id|dir> [--model=M] [--new-window|--tab]
@@ -298,6 +318,13 @@ usage() {
       printf '    %-12s %s\n' "$n" "${d:+$d  }repos: ${r:-(none)}"
     done
   fi
+  if [ -n "$_YO_AGENTS" ]; then
+    echo "agents:"
+    local a
+    for a in $(_yo_agent_names); do
+      printf '    %-12s repo: %s\n' "$a" "$(_yo_agent_field "$a" 2)"
+    done
+  fi
 }
 
 # --- repo registry -----------------------------------------------------------
@@ -360,6 +387,81 @@ yo_repos_in() {
     _yo_field "$key" 1 >/dev/null 2>&1 && continue
     yo_repo "$key" --path="$d" "$@"
   done
+}
+
+# --- agents -------------------------------------------------------------------
+# Agents are declared by the config file calling yo_agent, the same way as repos.
+# fields: 1=name 2=repo 3=title
+_YO_AGENTS=""
+
+yo_agent() {
+  local name="${1:-}"; shift || true
+  local repo="" title="" a
+  [ -n "$name" ] || die "yo_agent: missing agent name"
+  _yo_agent_name_ok "$name" || die "yo_agent: name may only contain letters, digits, . _ - (got: '$name')"
+  for a in "$@"; do
+    case "$a" in
+      --repo=*)  repo="${a#--repo=}" ;;
+      --title=*) title="${a#--title=}" ;;
+      *) die "yo_agent $name: unknown option '$a'" ;;
+    esac
+  done
+  [ -n "$repo" ] || die "yo_agent $name: --repo is required"
+  _yo_agent_field "$name" 1 >/dev/null 2>&1 && die "yo_agent: '$name' is already registered"
+  _YO_AGENTS="${_YO_AGENTS}${name}${_YO_TAB}${repo}${_YO_TAB}${title}
+"
+}
+
+_yo_agent_field() {
+  printf '%s\n' "$_YO_AGENTS" \
+    | awk -F'\t' -v k="$1" -v n="$2" '$1==k { print $n; f=1; exit } END { exit f?0:1 }'
+}
+
+_yo_agent_names() { printf '%s\n' "$_YO_AGENTS" | awk -F'\t' 'NF { print $1 }'; }
+
+_yo_agent_name_ok() {
+  case "$1" in ""|*[!A-Za-z0-9._-]*) return 1 ;; esac
+}
+
+# The name an agent's tabs and codenames lead with: its yo_agent --title, else
+# the name with its first letter capitalized (bash 3.2: no ${x^}).
+_yo_agent_display() {
+  local t
+  t=$(_yo_agent_field "$1" 3 2>/dev/null || true)
+  if [ -n "$t" ]; then printf '%s' "$t"; return 0; fi
+  printf '%s' "$1" | awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) }'
+}
+
+# Refuses an agent claude can't find, before anything is created. With a ref,
+# looks in the repo's committed .claude/agents at that ref (merged agents only);
+# without one, in DIR/.claude/agents on disk. ~/.claude/agents always counts.
+_yo_agent_check() {
+  local name="$1" dir="$2" ref="${3:-}" pat
+  pat="^name:[[:space:]]*[\"']?${name}[\"']?[[:space:]]*\$"
+  if [ -n "$ref" ]; then
+    git -C "$dir" grep -q -E "$pat" "$ref" -- .claude/agents 2>/dev/null && return 0
+  elif [ -d "$dir/.claude/agents" ]; then
+    grep -rqE "$pat" "$dir/.claude/agents" 2>/dev/null && return 0
+  fi
+  [ -d "$HOME/.claude/agents" ] && grep -rqE "$pat" "$HOME/.claude/agents" 2>/dev/null && return 0
+  die "no agent named '$name' in ${ref:+$ref:}.claude/agents of $dir, or in ~/.claude/agents
+        yo starts only agents that are merged (or installed in ~/.claude/agents)"
+}
+
+# " --agent 'NAME'" for a claude command line, or nothing.
+_yo_agent_arg() {
+  [ -n "$1" ] || return 0
+  printf ' --agent %s' "$(shell_single_quote "$1")"
+}
+
+# " --name 'NAME' --remote-control 'NAME'" for a claude command line, or nothing.
+# The session takes the Remote Control name as its own too: otherwise Claude
+# derives one from the directory (agent-cindy-52), and that is the name
+# ListAgents, SendMessage and a worker's --from see.
+_yo_rc_arg() {
+  [ -n "$1" ] || return 0
+  local q; q=$(shell_single_quote "$1")
+  printf ' --name %s --remote-control %s' "$q" "$q"
 }
 
 # Field <n> of the record for repo <key>. Non-zero exit if the key is unknown.
@@ -1243,8 +1345,10 @@ mirror_repo_files() {
 #     sessions started some other way (by hand, or before yo kept a ledger).
 
 # Every op is best-effort JSON wrangling, so it all lives in one python3 helper.
-#   put DIR SID TITLE REPO NAME PROFILE MODE GUEST
-#                                create/replace a record; prints its key
+#   put DIR SID TITLE REPO NAME PROFILE MODE GUEST [AGENT [HOME [RC]]]
+#                                create/replace a record; prints its key.
+#                                HOME=1 marks an agent's home; RC is its
+#                                Remote Control name
 #   hook                         SessionStart/SessionEnd payload in
 #                                $YO_HOOK_INPUT; never fails
 #   drop KEY                     forget one record
@@ -1347,16 +1451,25 @@ def row(rec, live):
     # every field after an empty one.
     fields = [st, pid, rec.get("name"), rec.get("repo"), rec.get("sessionId"),
               rec["worktree"], rec.get("title") or rec.get("name"),
-              rec.get("_key"), rec.get("profile"), mode, rec.get("guest")]
+              rec.get("_key"), rec.get("profile"), mode, rec.get("guest"),
+              rec.get("agent"), "home" if rec.get("home") else "",
+              rec.get("remoteControl")]
     print("\t".join(f or "-" for f in fields))
 
 if op == "put":
-    d, sid, title, repo, name, profile, mode, guest = args
+    d, sid, title, repo, name, profile, mode, guest = args[:8]
+    agent, is_home, rc = (args[8:] + ["", "", ""])[:3]
     rec = {"worktree": d, "sessionId": sid, "title": title, "repo": repo,
            "name": name, "profile": profile, "mode": mode,
            "createdAt": int(time.time())}
     if guest:
         rec["guest"] = guest
+    if agent:
+        rec["agent"] = agent
+    if is_home == "1":
+        rec["home"] = True
+    if rc:
+        rec["remoteControl"] = rc
     if mode == "here":
         rec["byId"] = True
         rec["_key"] = "id-" + sid
@@ -1417,7 +1530,10 @@ elif op == "adopt":
             rec["byId"] = True
         for old in recs:
             if old["_key"] == key:
-                for k in ("createdAt", "profile", "guest") + \
+                # what yo recorded at create time, including the agent it
+                # runs as and whether it is an agent's home
+                for k in ("createdAt", "profile", "guest", "agent", "home",
+                          "remoteControl") + \
                         (("title",) if title_given != "1" else ()):
                     if old.get(k):
                         rec[k] = old[k]
@@ -1633,6 +1749,9 @@ elif op == "sweep":
         # one the ledger would bring back on resume-all (crashed, or its tab
         # was closed). A session ended with /exit holds nothing.
         rp = os.path.realpath(path)
+        for rec in ledger:
+            if os.path.realpath(rec["worktree"]) == rp and rec.get("home"):
+                return KEEP, "%s's home (yo agent %s)" % (rec.get("agent"), rec.get("agent"))
         for d in live:
             if owns(rp, os.path.realpath(d.get("cwd", ""))):
                 return KEEP, "live session, pid %s" % d["pid"]
@@ -1765,7 +1884,7 @@ _yo_sync_ledger() {
 # Splits one `_yo_state` TSV row into the R_* globals.
 _yo_read_row() {
   IFS="$_YO_TAB" read -r R_STATUS R_PID R_NAME R_REPO R_SID R_WT R_TITLE R_KEY \
-    R_PROFILE R_MODE R_GUEST <<EOF
+    R_PROFILE R_MODE R_GUEST R_AGENT R_HOME R_RC <<EOF
 $1
 EOF
   [ "$R_PID" = "-" ] && R_PID=""
@@ -1773,6 +1892,9 @@ EOF
   [ "$R_SID" = "-" ] && R_SID=""
   [ "$R_PROFILE" = "-" ] && R_PROFILE=""
   [ "$R_GUEST" = "-" ] && R_GUEST=""
+  [ "${R_AGENT:-}" = "-" ] && R_AGENT=""
+  [ "${R_HOME:-}" = "-" ] && R_HOME=""
+  [ "${R_RC:-}" = "-" ] && R_RC=""
   return 0
 }
 
@@ -1872,7 +1994,7 @@ _yo_model_arg() {
 # instruction (--from), then the codename. One line — the command is written
 # into the pane as a single shell line, so no embedded newlines.
 _yo_compose_message() {
-  local msg="$1" extra="$2" report_to="$3"
+  local msg="$1" extra="$2" report_to="$3" agent_display="${4:-}" fixed_persona="${5:-}"
   if [ -n "$extra" ]; then
     msg="${msg:+$msg }$extra"
   fi
@@ -1881,7 +2003,11 @@ _yo_compose_message() {
   fi
   # Every session gets a persona, and claude is told up front — partly for fun,
   # partly so sessions can identify themselves in notes and messages.
-  COMPOSED_PERSONA=$(fun_session_title)
+  # An agent's sessions lead with its name ("Cindy · Plucky Gary"), so several
+  # of them stay apart in ListAgents, tabs and the notes they sign.
+  COMPOSED_PERSONA="${fixed_persona:-$(fun_session_title)}"
+  [ -n "$agent_display" ] && [ -z "$fixed_persona" ] \
+    && COMPOSED_PERSONA="${agent_display} · ${COMPOSED_PERSONA}"
   if [ -n "$msg" ]; then
     COMPOSED_MSG="${msg} (FYI, your codename for this session is \"${COMPOSED_PERSONA}\" — introduce yourself with it and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.)"
   else
@@ -1929,6 +2055,9 @@ create_session_worktree() {
   [ -d "$repo_path/.git" ] || die "no clone at: $repo_path
         clone '$repo_key' there, or fix its --path in $(_yo_config_path)"
   base_ref=$(base_ref_for "$repo_key")
+  # Merged agents only: checked against the base branch before anything is created.
+  [ -z "$agent" ] \
+    || _yo_agent_check "$agent" "$repo_path" "$(_yo_upstream_remote "$repo_key")/$base_ref"
 
   # Branch-vs-name resolution for a plain INPUT: if it names an existing branch
   # verbatim (local or on origin — e.g. `yo sagark/rollbacks`), use THAT
@@ -2073,7 +2202,7 @@ cmd_up() {
   local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
   local explicit_branch="" unnamed=0 persona="" force_new_window=-1
   local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir=""
-  local title_override="" report_to="" model=""
+  local title_override="" report_to="" model="" agent="" agent_repo="" agent_display=""
 
   # Flags may appear anywhere; strip them out of the positional args.
   local args=() a
@@ -2096,6 +2225,8 @@ cmd_up() {
       --model=*)             model="${a#--model=}"
                              [ -n "$model" ] || die "--model needs a value"
                              _yo_model_arg "$model" >/dev/null ;;   # validate now, before anything is created
+      --agent=*)             agent="${a#--agent=}"
+                             _yo_agent_name_ok "$agent" || die "--agent: names may only contain letters, digits, . _ - (got: '$agent')" ;;
       --*)      die "unknown flag: $a" ;;
       *)        args+=("$a") ;;
     esac
@@ -2111,8 +2242,14 @@ cmd_up() {
       && _yo_pfield "$1" 1 >/dev/null 2>&1; then
     YO_PROFILE_SELECTED="$1"; shift
   fi
-  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S] [--model=M] [INPUT] [extra]"
+  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S] [--model=M] [--agent=NAME] [INPUT] [extra]"
   input="${1:-}"; extra_msg="${2:-}"
+
+  if [ -n "$agent" ]; then
+    agent_display=$(_yo_agent_display "$agent")
+    # A registered agent's repo stands in where yo would otherwise infer one.
+    agent_repo=$(_yo_agent_field "$agent" 2 2>/dev/null || true)
+  fi
 
   # Which repo. One that was NAMED (--repo, the positional form, a URL, or the
   # default repo standing in for a cwd yo doesn't know) is also where an
@@ -2124,21 +2261,30 @@ cmd_up() {
     url_repo="$GH_REPO_KEY"
     # A repo nobody registered: bring it in as a guest, unless the session
     # was pointed somewhere itself (--repo, --here).
-    if [ -z "$url_repo" ] && [ -z "$repo_override" ] && [ "$mode" != "here" ]; then
+    # An issue is only context, so an agent's own repo counts as pointed too.
+    local issue_repo=""
+    [ "$GH_KIND" = "issue" ] && issue_repo="$agent_repo"
+    if [ -z "$url_repo" ] && [ -z "$repo_override" ] && [ -z "$issue_repo" ] \
+        && [ "$mode" != "here" ]; then
       register_url_repo "$gh_owner_repo"
       url_repo="$YO_GUEST_REPO"
     fi
     # Issues are just context — the WORK may live in the other repo
     # (e.g. --repo=<other> for an issue tracked in a different repo).
-    repo_key="${repo_override:-$url_repo}"
+    repo_key="${repo_override:-${issue_repo:-$url_repo}}"
     [ -n "$repo_key" ] && repo_named=1
     if [ "$GH_KIND" = "pr" ]; then
       name="review_pr_${GH_NUMBER}"
       initial_msg="${YO_REVIEW_CMD_RESOLVED} ${GH_URL}"
+      # An agent reviews by its own instructions, not the personal review command.
+      [ -n "$agent" ] && initial_msg="Review the pull request ${GH_URL} as your instructions describe."
       pr_review=1
     else
       name="issue_${GH_NUMBER}"
       initial_msg="take a look at the following issue, and work with me to address it: ${GH_URL} review the issue, its comments, any parent issue context you may need. then give me your take on it before doing any work. Issues may need to be broken down first, or we may only focus on a part of it."
+      # An agent works the issue by its own instructions (claiming it, recording
+      # progress on it), rather than the take-first brief a person gets.
+      [ -n "$agent" ] && initial_msg="Take the issue ${GH_URL}: read it, its comments and any parent issue, then work it as your instructions describe."
     fi
   else
     if [ -z "$input" ] || [ "$input" = "-" ]; then
@@ -2155,6 +2301,8 @@ cmd_up() {
     # unless --here asked for this very directory.
     if [ -n "$repo_override" ]; then
       repo_key="$repo_override"; repo_named=1
+    elif [ -n "$agent_repo" ] && [ "$mode" != "here" ]; then
+      repo_key="$agent_repo"; repo_named=1
     elif [ -n "$YO_PROFILE_SELECTED" ] && [ "$mode" != "here" ]; then
       resolve_profile_target
     else
@@ -2200,7 +2348,7 @@ cmd_up() {
     initial_msg="${initial_msg} NOTE: this session runs in place — the PR's head was NOT checked out, so the local tree may not be the code under review."
   fi
 
-  _yo_compose_message "$initial_msg" "$extra_msg" "$report_to"
+  _yo_compose_message "$initial_msg" "$extra_msg" "$report_to" "$agent_display"
   initial_msg="$COMPOSED_MSG"; persona="$COMPOSED_PERSONA"
 
   case "$name" in
@@ -2234,6 +2382,7 @@ cmd_up() {
     fi
     # No trust seeding here: yo didn't create this directory, so whether to
     # trust it stays Claude's question to ask.
+    [ -z "$agent" ] || _yo_agent_check "$agent" "$wt_path"
   else
     create_session_worktree
   fi
@@ -2263,6 +2412,10 @@ cmd_up() {
   elif [ "$unnamed" -eq 1 ]; then
     win_title="$persona"
   fi
+  # An agent's tab leads with its name (an unnamed one already does, via the persona).
+  if [ -n "$agent" ] && [ "$unnamed" -eq 0 ]; then
+    win_title="${agent_display} · ${win_title}"
+  fi
   win_title="$(session_title_prefix "$repo_key" "$label")$win_title"
   [ -n "$title_override" ] && win_title="$title_override"
 
@@ -2274,7 +2427,7 @@ cmd_up() {
   [ -n "$repo_key" ] && [ "$repo_key" = "$YO_GUEST_REPO" ] \
     && guest=$(_yo_github_for "$repo_key")
   session_key=$(_yo_state put "$wt_path" "$session_id" "$win_title" "$repo_key" \
-    "$name" "$(profile_for "$repo_key")" "$(mode_word "$here")" "$guest") \
+    "$name" "$(profile_for "$repo_key")" "$(mode_word "$here")" "$guest" "$agent") \
     || { session_key=""; echo "yo: couldn't record the session in $YO_STATE_DIR (resume-all won't know about it)"; }
 
   # Seed the left-pane claude with an initial message when we have one (PR/issue
@@ -2285,13 +2438,14 @@ cmd_up() {
   # like what it is.
   prepare_claude_cmd "$repo_key" "$label" "$session_key"
   local claude_cmd
-  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model") --session-id $session_id"
+  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "$agent") --session-id $session_id"
   if [ -n "$initial_msg" ]; then
     claude_cmd="$claude_cmd $(shell_single_quote "$initial_msg")"
   fi
 
   echo "        persona: $persona"
   echo "        session: $session_id"
+  [ -n "$agent" ] && echo "        agent:   $agent"
   [ -n "$model" ] && echo "        model:   $model"
   [ -n "$initial_msg" ] && echo "        seeding claude with: $initial_msg"
   launch_session "$wt_path" "$win_title" "$claude_cmd" "$repo_key" "$label" \
@@ -2448,11 +2602,14 @@ _yo_resume_row() {
     fi
   fi
 
-  echo "==> resuming $R_NAME ($R_SID) in $R_WT"
+  echo "==> resuming $R_NAME ($R_SID) in $R_WT${R_AGENT:+ as $R_AGENT}"
   local label
   label=$(session_label "$repo_key" "$R_WT")
   prepare_claude_cmd "$repo_key" "$label" "$R_KEY"
-  launch_session "$R_WT" "$R_TITLE" "$YO_CLAUDE_LINE$(_yo_model_arg "$model") --resume $R_SID" \
+  # The agent and Remote Control name come back from the ledger: nothing says
+  # `claude --resume` restores either on its own.
+  launch_session "$R_WT" "$R_TITLE" \
+    "$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "${R_AGENT:-}")$(_yo_rc_arg "${R_RC:-}") --resume $R_SID" \
     "$repo_key" "$label" "$force_new_window"
   YO_PROFILE_SELECTED="$saved_profile"
 }
@@ -2489,14 +2646,17 @@ cmd_sessions() {
     echo "no sessions in the ledger ($YO_STATE_DIR)"
     return 0
   fi
-  local st pid name repo sid wt title key prof mode guest where
-  printf '%-8s %-7s %-12s %-36s %s\n' STATUS PID REPO SESSION NAME
-  while IFS="$_YO_TAB" read -r st pid name repo sid wt title key prof mode guest; do
+  local st pid name repo sid wt title key prof mode guest agent home rc where
+  printf '%-8s %-7s %-12s %-10s %-36s %s\n' STATUS PID REPO AGENT SESSION NAME
+  while IFS="$_YO_TAB" read -r st pid name repo sid wt title key prof mode guest agent home rc; do
     where="$repo"
     [ "$where" = "-" ] && [ "$prof" != "-" ] && where="($prof)"
     [ "$title" != "$name" ] && name="$name — $title"
     [ "$mode" = "here" ] && name="$name  (in place)"
-    printf '%-8s %-7s %-12s %-36s %s\n' "$st" "$pid" "$where" "$sid" "$name"
+    if [ "$home" = "home" ]; then
+      case "$name" in *"(home)"*) : ;; *) name="$name  (home)" ;; esac
+    fi
+    printf '%-8s %-7s %-12s %-10s %-36s %s\n' "$st" "$pid" "$where" "$agent" "$sid" "$name"
   done <<EOF
 $rows
 EOF
@@ -2601,19 +2761,137 @@ EOF
   fi
 }
 
+# --- agent homes --------------------------------------------------------------
+# An agent's home is one long-lived session per agent: a detached checkout of
+# the repo's base branch at <clone>-worktrees/agent-<name>, run as the agent,
+# reachable by Remote Control as <name>-home. It reads and coordinates; its
+# changes happen in worker sessions (yo --agent=<name> --from=<name>-home ...).
+# Each start moves a clean home to the newest base, so it reads current docs.
+_yo_agent_home_refresh() {
+  local wt="$1" remote="$2" base="$3"
+  if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+    echo "==> note: $wt has uncommitted changes; left at its current commit"
+    return 0
+  fi
+  git -C "$wt" fetch --quiet "$remote" "$base" 2>/dev/null || true
+  if git -C "$wt" checkout --quiet --detach "$remote/$base" 2>/dev/null; then
+    echo "==> home at $remote/$base ($(git -C "$wt" rev-parse --short HEAD))"
+  else
+    echo "==> note: couldn't move $wt to $remote/$base; left at its current commit"
+  fi
+}
+
+cmd_agent() {
+  local name="" extra="" force_new_window=-1 model="" a
+  local usage="usage: yo agent [NAME] [--model=M] [--new-window|--tab] ['message']"
+  for a in "$@"; do
+    case "$a" in
+      --new-window|--window) force_new_window=1 ;;
+      --tab)                 force_new_window=0 ;;
+      --model=*)             model="${a#--model=}"
+                             [ -n "$model" ] || die "--model needs a value"
+                             _yo_model_arg "$model" >/dev/null ;;
+      --*) die "$usage" ;;
+      *)   if [ -z "$name" ]; then name="$a"
+           elif [ -z "$extra" ]; then extra="$a"
+           else die "$usage"; fi ;;
+    esac
+  done
+
+  if [ -z "$name" ]; then
+    if [ -z "$_YO_AGENTS" ]; then
+      echo "no agents registered; add one with yo_agent in $(_yo_config_path)"
+      return 0
+    fi
+    local n r
+    printf '%-14s %-12s %s\n' AGENT REPO HOME
+    for n in $(_yo_agent_names); do
+      r=$(_yo_agent_field "$n" 2)
+      printf '%-14s %-12s %s\n' "$n" "$r" "$(repo_path_for "$r" 2>/dev/null || echo '?')-worktrees/agent-$n"
+    done
+    return 0
+  fi
+
+  local repo_key repo_path base_ref remote wt_path display title rc_name
+  repo_key=$(_yo_agent_field "$name" 2) \
+    || die "unknown agent '$name': register it with yo_agent in $(_yo_config_path)"
+  repo_path=$(repo_path_for "$repo_key") \
+    || die "agent '$name' names unknown repo '$repo_key' (known: $(_yo_repo_list))"
+  [ -d "$repo_path/.git" ] || die "no clone at: $repo_path"
+  base_ref=$(base_ref_for "$repo_key")
+  remote=$(_yo_upstream_remote "$repo_key")
+  wt_path="${repo_path}-worktrees/agent-${name}"
+  display=$(_yo_agent_display "$name")
+  title="${display} (home)"
+  rc_name="${name}-home"
+
+  # Already recorded: bring it back rather than starting a second home.
+  local row
+  if row=$(_yo_state get "$wt_path" 2>/dev/null); then
+    _yo_read_row "$row"
+    case "$R_STATUS" in
+      running)
+        echo "==> ${display}'s home is already running (pid $R_PID); its Remote Control name is ${R_RC:-$rc_name}"
+        return 0 ;;
+      ready|ended)
+        _yo_agent_home_refresh "$wt_path" "$remote" "$base_ref"
+        _yo_resume_row "$force_new_window" "$model"
+        echo "==> ready."
+        return 0 ;;
+    esac
+    # gone / no-id: start a fresh home below.
+    _yo_state drop-dir "$wt_path" || true
+  fi
+
+  echo "==> fetching $remote/$base_ref"
+  git -C "$repo_path" fetch --quiet "$remote" "$base_ref" || die "couldn't fetch $remote/$base_ref"
+  _yo_agent_check "$name" "$repo_path" "$remote/$base_ref"
+  if [ -e "$wt_path" ]; then
+    git -C "$wt_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || die "$wt_path exists and isn't a git worktree"
+    _yo_agent_home_refresh "$wt_path" "$remote" "$base_ref"
+  else
+    echo "==> worktree add --detach $wt_path $remote/$base_ref"
+    mkdir -p "$(dirname "$wt_path")"
+    git -C "$repo_path" worktree add --quiet --detach "$wt_path" "$remote/$base_ref"
+  fi
+
+  echo "==> pre-trusting worktree in ~/.claude.json"
+  seed_trust "$wt_path" "$repo_path" \
+    || echo "yo: trust-seed skipped (couldn't update ~/.claude.json; Claude will prompt)"
+  mirror_local_settings "$wt_path" "$repo_path" "$repo_key"
+  mirror_repo_files "$wt_path" "$repo_path" "$repo_key"
+
+  _yo_compose_message "" "$extra" "" "$display" "$title"
+  local initial_msg="$COMPOSED_MSG" session_id session_key label claude_cmd
+  session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  session_key=$(_yo_state put "$wt_path" "$session_id" "$title" "$repo_key" \
+    "agent-${name}" "$(profile_for "$repo_key")" worktree "" "$name" 1 "$rc_name") \
+    || { session_key=""; echo "yo: couldn't record the session in $YO_STATE_DIR (resume-all won't know about it)"; }
+  label=$(session_label "$repo_key" "$wt_path")
+  prepare_claude_cmd "$repo_key" "$label" "$session_key"
+  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model")$(_yo_agent_arg "$name")$(_yo_rc_arg "$rc_name") --session-id $session_id $(shell_single_quote "$initial_msg")"
+
+  echo "        agent:   $name (Remote Control: $rc_name)"
+  echo "        session: $session_id"
+  [ -n "$model" ] && echo "        model:   $model"
+  launch_session "$wt_path" "$title" "$claude_cmd" "$repo_key" "$label" "$force_new_window"
+  echo "==> ready."
+}
+
 # --- teardown -----------------------------------------------------------------
 # The ledger key of the in-place session `yo down` runs in, if it can tell:
 # YO_SESSION_KEY (claude, and so the /yo-down skill, runs with it), else the
 # session id claude exports to its tools, else the one in-place record for this
 # directory. Empty when none or several match.
 _yo_here_session_key() {
-  local dir="$1" rows st pid name repo sid wt title k prof mode guest
+  local dir="$1" rows st pid name repo sid wt title k prof mode guest agent home rc
   local by_id="" by_dir="" n=0
   if [ -n "${YO_SESSION_KEY:-}" ]; then
     printf '%s' "$YO_SESSION_KEY"; return 0
   fi
   rows=$(_yo_state list) || return 0
-  while IFS="$_YO_TAB" read -r st pid name repo sid wt title k prof mode guest; do
+  while IFS="$_YO_TAB" read -r st pid name repo sid wt title k prof mode guest agent home rc; do
     [ -n "$k" ] || continue
     [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ "$sid" = "$CLAUDE_CODE_SESSION_ID" ] \
       && by_id="$k"
@@ -2689,6 +2967,12 @@ cmd_down() {
        close_iterm_own_tab
        return 0 ;;
   esac
+
+  local home_row
+  if home_row=$(_yo_state get "$toplevel" 2>/dev/null); then
+    _yo_read_row "$home_row"
+    [ "$R_HOME" != "home" ] || die "this is ${R_AGENT}'s home checkout, which yo keeps; quit the session with /exit instead"
+  fi
 
   local repo_key repo_path branch dirty unpushed
   repo_key=$(detect_repo_key) || die "couldn't identify the repo from its remotes"
@@ -2959,6 +3243,7 @@ main() {
     adopt)               shift; cmd_adopt "$@" ;;
     title)               shift; cmd_title "$@" ;;
     forget)              shift; cmd_forget "$@" ;;
+    agent)               shift; cmd_agent "$@" ;;
     *)                   cmd_up "$@" ;;
   esac
 }

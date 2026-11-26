@@ -163,6 +163,31 @@ tree is whatever was last checked out, not the PR's head or a fresh base.
 In such a session `yo down` only forgets the session and closes the tab;
 there is no worktree to remove, and the directory is left exactly as it is.
 
+### Agents
+
+A repo's merged agents (its `.claude/agents/`) can run a session as
+themselves, with their own instructions:
+
+```sh
+yo --agent=cindy https://github.com/acme/backend/issues/123   # work an issue as Cindy
+yo --agent=cindy unit-time 'cut the test time'                 # a named session as Cindy
+yo agent cindy            # Cindy's home: a long-lived checkout of the base branch
+yo agent                  # the agents registered in the config
+```
+
+- Only agents merged on the repo's base branch (or installed in
+  `~/.claude/agents`) are accepted, checked before anything is created.
+- The ledger records the agent, so `resume` and `resume-all` bring a session
+  back as the same agent. Tabs and codenames lead with its name
+  ("Cindy · Plucky Gary"); `yo sessions` has an AGENT column.
+- An agent's home (`<clone>-worktrees/agent-<name>`) reads and coordinates. It
+  runs with Remote Control on and is named `<name>-home`, so workers it starts
+  with `yo --agent=<name> --from=<name>-home ...` can report back to it by
+  `SendMessage`. Each start moves a clean home to the newest base branch.
+  `yo down` and `yo sweep` never remove it; quit it with `/exit`.
+- `yo_agent` in the config gives an agent a default repo and a display name.
+  Unregistered merged agents still work with `--agent` and a repo.
+
 ## Profiles
 
 A profile is one of *your* projects: a named bundle of defaults that the repos
