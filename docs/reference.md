@@ -178,7 +178,7 @@ setting's environment variable, if set, beats the file.
 | --- | --- |
 | config | `~/.config/yo/config.json` |
 | base settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
-| ledger | `~/.local/state/yo/sessions/*.json` |
+| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent) |
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
 | skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title` |

@@ -334,6 +334,9 @@ know why something behaves as it does.*
    gitignored files the repo lists in `mirror`, such as `.env`.
 3. Records the session in yo's ledger (`~/.local/state/yo/sessions/`), under
    an id yo picks, which a hook keeps current through `/clear` and `/exit`.
+   The record holds what yo needs to bring the session back (directory, repo,
+   profile, title, agent) and what it is: its codename and its brief, the
+   first message it was given.
 4. Opens the tab and starts claude with yo's settings layer and your message.
 
 ### The settings layer
