@@ -98,6 +98,18 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         }
     }
 
+    let harness: &dyn Harness = ctx
+        .harnesses
+        .first()
+        .map(|h| &**h)
+        .ok_or_else(|| Error::Refused("no harness".into()))?;
+    if !harness.capabilities().personas {
+        return Err(Error::Refused(format!(
+            "agent '{name}': the {} harness has no agents",
+            harness.name()
+        )));
+    }
+
     // Merged agents only: checked against the base, freshly fetched.
     plan.notes.push(Note::Info(format!("fetching {start}")));
     let _ = git::git(sys, &repo.path, &["fetch", "--quiet", &remote, &base]);
@@ -125,11 +137,6 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         });
     }
 
-    let harness: &dyn Harness = ctx
-        .harnesses
-        .first()
-        .map(|h| &**h)
-        .ok_or_else(|| Error::Refused("no harness".into()))?;
     let trusted = crate::create::trusted(ctx, repo);
     if !trusted {
         plan.notes.push(Note::Info(format!(

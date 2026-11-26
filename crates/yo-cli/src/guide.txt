@@ -150,7 +150,7 @@ Usage:
                        it can run from inside claude (the /yo-down skill); it
                        refuses to lose uncommitted work unless --discard.
                        --dry-run reports what would happen and stops.
-  yo agent [NAME] [--model=M] [--new-window|--tab] ['message']
+  yo agent [NAME] [--model=M] [--new-window|--tab] [--dry-run] ['message']
                        Start, or bring back, agent NAME's home session: a
                        long-lived checkout of the repo's base branch at
                        <clone>-worktrees/agent-NAME (detached, refreshed from

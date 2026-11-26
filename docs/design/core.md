@@ -503,6 +503,16 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runners: &Runners, out: &mut dyn Report) 
 `Report` is where output goes: the CLI renders it as today's text; the daemon
 turns it into events. The core never prints.
 
+As built in phase 1, not every command that changes something has a plan
+yet. `resume-all` plans each session with `plan_resume`, but choosing which
+ones (only `ready`) happens in `yo-cli`, and its `--dry-run` lists them
+rather than printing a plan; `resume` refuses running and gone sessions in
+`yo-cli` too. `adopt`, `forget` and `title` write the ledger directly, and
+`title` and `adopt` call the iTerm runner's own methods rather than going
+through `Runner`. `config edit` runs `$EDITOR` outside `Sys`. These move
+into `yo-core` plans (`plan_resume_all` and small ones for the ledger
+commands) when the daemon or the TUI needs them, no later than phase 4.
+
 ### `yo NAME`
 
 Resolution is a pure function over the registry, the ledger and the live
@@ -877,7 +887,10 @@ This replaces the phase list in #9. Each phase is useful on its own.
    (iTerm), but both already behind their traits. `--name` is passed at launch.
 2. **A second harness:** Codex, in iTerm tabs. Launch, resume, the ledger
    with ids learned late, `--harness`, messages by typing. This is what proves
-   the `Harness` trait.
+   the `Harness` trait. It also moves what phase 1 left outside
+   `harness/claude/`: looking agents up in `.claude/agents` (`agent.rs`,
+   `git.rs`, `create.rs`), and `yo-cli` reading `CLAUDE_CODE_SESSION_ID`
+   and `CLAUDECODE`, which become `Harness` methods.
 3. **Status and events:** the event log, Claude's extra hooks, Claude's status
    from `claude agents --json`, `yo status`, `yo watch`.
 4. **`yo tui`:** session list with live status, a "needs me" filter, focus,

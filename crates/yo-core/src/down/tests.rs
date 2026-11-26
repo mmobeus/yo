@@ -7,6 +7,9 @@ use std::sync::Arc;
 use super::*;
 use crate::fake::{FakeSys, TempDir, ok};
 use crate::ledger::Record;
+use crate::plan::execute;
+use crate::realgit::{GitSys, Said, run};
+use crate::runner::DryLaunch;
 
 struct T {
     _dir: TempDir,
@@ -262,4 +265,104 @@ fn planning_runs_nothing_that_changes() {
             c.args
         );
     }
+}
+
+/// A clone, its origin and two worktrees, all real; the fake's `HOME` and
+/// environment, with real git.
+#[test]
+fn a_teardown_against_real_git() {
+    let dir = TempDir::new().unwrap();
+    let home = fs::canonicalize(dir.path()).unwrap();
+    let origin = home.join("origin.git");
+    let clone = home.join("src/api");
+    fs::create_dir_all(&clone).unwrap();
+    run(&home, &["init", "-q", "--bare", &origin.to_string_lossy()]);
+    run(&clone, &["init", "-q"]);
+    run(
+        &clone,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    run(&clone, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    run(&clone, &["push", "-q", "origin", "HEAD:main"]);
+    run(&clone, &["fetch", "-q", "origin"]);
+    let wt = |n: &str| home.join("src/api-worktrees").join(n);
+    for n in ["feat", "late"] {
+        run(
+            &clone,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                n,
+                &wt(n).to_string_lossy(),
+                "origin/main",
+            ],
+        );
+    }
+    fs::write(wt("feat").join("f"), "x").unwrap();
+    run(&wt("feat"), &["add", "f"]);
+    run(&wt("feat"), &["commit", "-q", "-m", "work"]);
+
+    let cfg = home.join("c.json");
+    fs::write(
+        &cfg,
+        format!(
+            r#"{{"repos": {{"api": {{"path": "{}"}}}}}}"#,
+            clone.display()
+        ),
+    )
+    .unwrap();
+    let fake = FakeSys::new(&home);
+    fake.set_env("YO_CONFIG", &cfg.to_string_lossy());
+    let ctx = Ctx::load(Arc::new(GitSys(fake)), &home).unwrap();
+    for n in ["feat", "late"] {
+        let mut e = Entry {
+            key: Key::for_worktree(&home, &wt(n)),
+            record: Record {
+                worktree: wt(n),
+                name: Some(n.into()),
+                session_id: Some(format!("id-{n}")),
+                ..Record::default()
+            },
+        };
+        ctx.ledger().write(&mut e).unwrap();
+    }
+    let yes = DownOpts {
+        yes: true,
+        discard: false,
+    };
+    let recorded = |n: &str| {
+        ctx.ledger()
+            .get(&wt(n).to_string_lossy())
+            .unwrap()
+            .is_some()
+    };
+
+    // Clean, with a commit not pushed: the worktree goes, its branch (and
+    // the commit) stays, and only its own record is dropped.
+    let (found, plan) = plan_down(&ctx, &wt("feat"), yes).unwrap();
+    assert!(
+        matches!(&found, Found::Worktree { dirty, unpushed, .. } if dirty.is_empty() && unpushed.len() == 1),
+        "{found:?}"
+    );
+    execute(&ctx, &plan, &DryLaunch, &mut Said::default()).unwrap();
+    assert!(!wt("feat").exists());
+    assert!(run(&clone, &["branch", "--list", "feat"]).contains("feat"));
+    assert!(!run(&clone, &["worktree", "list"]).contains("api-worktrees/feat"));
+    assert!(!recorded("feat"));
+    assert!(recorded("late"));
+
+    // Clean when planned, dirty by the time it runs: the plan didn't ask
+    // for --force, so git refuses and everything stays, the record too.
+    let (_, plan) = plan_down(&ctx, &wt("late"), yes).unwrap();
+    assert!(plan.actions.contains(&Action::RemoveWorktree {
+        repo: clone.clone(),
+        path: wt("late"),
+        force: false,
+    }));
+    fs::write(wt("late").join("new"), "x").unwrap();
+    assert!(execute(&ctx, &plan, &DryLaunch, &mut Said::default()).is_err());
+    assert!(wt("late").join("new").is_file());
+    assert!(recorded("late"));
 }

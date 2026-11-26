@@ -409,7 +409,7 @@ with no argument restores every yo tab's name.
 JSON error. `yo config edit` checks the file when you save.
 
 **Seeing what yo would do.** `--dry-run` (on starting a session, `yo NAME`,
-`down` and `resume-all`) prints the plan and changes nothing.
+`yo agent`, `down` and `resume-all`) prints the plan and changes nothing.
 
 **Testing yo itself.** Build it (`cargo build`) and run `target/debug/yo` by
 path with `YO_DRY_LAUNCH=1` to print the launch instead of opening iTerm. yo

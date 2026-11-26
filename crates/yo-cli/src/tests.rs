@@ -555,3 +555,159 @@ fn adopt_forget_and_title() {
     let c = sys.calls().into_iter().last().unwrap();
     assert_eq!(c.args, ["-", "UUID", "x"]);
 }
+
+/// Every file under `dir`, with its contents.
+fn snapshot(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut v = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                todo.push(p);
+            } else {
+                v.push((p.clone(), fs::read(&p).unwrap()));
+            }
+        }
+    }
+    v.sort();
+    v
+}
+
+#[test]
+fn down_dry_run_shows_what_it_would_do_and_changes_nothing() {
+    let (t, sys, api, wt) = with_session();
+    let (a, w) = (api.display().to_string(), wt.display().to_string());
+    sys.answer_ok("git", &["-C", &w, "rev-parse", "--show-toplevel"], &w);
+    sys.answer_ok(
+        "git",
+        &["-C", &w, "rev-parse", "--git-common-dir"],
+        &format!("{a}/.git"),
+    );
+    sys.answer_ok(
+        "git",
+        &["-C", &w, "rev-parse", "--abbrev-ref", "HEAD"],
+        "feat",
+    );
+    sys.answer_ok("git", &["-C", &w, "status", "--porcelain"], "");
+    sys.answer_ok(
+        "git",
+        &["-C", &w, "log", "--oneline", "origin/main..HEAD"],
+        "abc1 work\n",
+    );
+    let before = snapshot(t.path());
+
+    let out = yo(&sys, &wt, &["down", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    for want in [
+        "  repo:     api\n".to_string(),
+        format!("  worktree: {w}\n"),
+        "  branch:   feat   (KEPT — not deleted)\n".to_string(),
+        "  *   commits not on origin/main (preserved on branch 'feat'):\n        abc1 work\n"
+            .to_string(),
+    ] {
+        assert!(out.out.contains(&want), "missing {want:?} in:\n{}", out.out);
+    }
+    assert!(
+        out.out.ends_with("dry run: nothing changed.\n"),
+        "{}",
+        out.out
+    );
+    assert_eq!(snapshot(t.path()), before);
+    let removes = || {
+        sys.calls()
+            .iter()
+            .any(|c| c.args.iter().any(|x| x == "remove" || x == "prune"))
+    };
+    assert!(!removes());
+
+    // --yes runs it: the worktree's removal (git is the fake's, so the
+    // directory stays) and the record dropped.
+    sys.answer_ok("git", &["-C", &a, "worktree", "remove", &w], "");
+    let out = yo(&sys, &wt, &["down", "--yes"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(removes());
+    assert!(
+        !t.path()
+            .join(".local/state/yo/sessions/src__api-worktrees__feat.json")
+            .exists()
+    );
+    assert!(
+        out.out.contains("worktree removed; branch 'feat' kept."),
+        "{}",
+        out.out
+    );
+}
+
+#[test]
+fn an_agents_home_dry_run_changes_nothing() {
+    let (t, sys, api) = with_clone();
+    fs::write(
+        t.path().join(".config/yo/config.json"),
+        format!(
+            r#"{{"repos": {{"api": {{"path": "{}"}}}}, "agents": {{"cindy": {{"repo": "api"}}}}}}"#,
+            api.display()
+        ),
+    )
+    .unwrap();
+    let agents = t.path().join(".claude/agents");
+    fs::create_dir_all(&agents).unwrap();
+    fs::write(agents.join("cindy.md"), "---\nname: cindy\n---\n").unwrap();
+    let before = snapshot(t.path());
+    for args in [
+        &["cindy", "--dry-run"][..],
+        &["agent", "cindy", "--dry-run"],
+    ] {
+        let out = yo(&sys, &api, args);
+        assert_eq!(out.code, 0, "{args:?}: {}", out.err);
+        // The fetch happens while planning, to check the agent is merged.
+        assert!(
+            out.out
+                .starts_with("==> fetching origin/main\ndry run: would\n"),
+            "{args:?}: {}",
+            out.out
+        );
+        assert!(
+            out.out.ends_with("dry run: nothing changed.\n"),
+            "{}",
+            out.out
+        );
+    }
+    assert_eq!(snapshot(t.path()), before);
+    assert!(
+        !sys.calls()
+            .iter()
+            .any(|c| c.args.iter().any(|a| a == "worktree" || a == "osascript"))
+    );
+}
+
+#[test]
+fn reaching_a_guest_session_dry_neither_clones_nor_registers() {
+    let (t, sys, api, _) = with_session();
+    let wt = t.path().join("dev/src/github.com/acme/lib-worktrees/fix");
+    fs::create_dir_all(&wt).unwrap();
+    fs::write(
+        t.path().join(".local/state/yo/sessions/fix.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "abcdef12-1111-4000-8000-000000000000", "name": "fix", "repo": "lib", "guest": "acme/lib"}}"#,
+            wt.display()
+        ),
+    )
+    .unwrap();
+    let before = snapshot(t.path());
+    let out = yo(&sys, &api, &["fix", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert_eq!(
+        out.out,
+        format!(
+            "dry run: acme/lib isn't registered; yo would clone it to {} and register it as a guest, then plan the session\ndry run: nothing changed.\n",
+            t.path().join("dev/src/github.com/acme/lib").display()
+        )
+    );
+    assert_eq!(snapshot(t.path()), before);
+    assert!(
+        !sys.calls()
+            .iter()
+            .any(|c| c.args.iter().any(|a| a == "clone"))
+    );
+}

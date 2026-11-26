@@ -3,55 +3,17 @@
 //! the fake's; only commands are real.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 use super::*;
 use crate::fake::{FakeSys, TempDir};
 use crate::harness::{Argv, Capabilities, Harness, SessionSpec};
 use crate::ledger::Record;
-use crate::plan::{Report, execute};
-use crate::runner::{DryLaunch, LaunchSpec, Launched};
-use crate::sys::{CommandRunner, ProcessTable, RealSys, Sys};
-
-static REAL: RealSys = RealSys;
-
-/// The fake, with real commands.
-struct GitSys(FakeSys);
-
-impl Sys for GitSys {
-    fn now(&self) -> SystemTime {
-        self.0.now()
-    }
-    fn new_session_id(&self) -> String {
-        self.0.new_session_id()
-    }
-    fn pick(&self, n: usize) -> usize {
-        self.0.pick(n)
-    }
-    fn env(&self, key: &str) -> Option<String> {
-        self.0.env(key)
-    }
-    fn home(&self) -> PathBuf {
-        self.0.home()
-    }
-    fn cmd(&self) -> &dyn CommandRunner {
-        &REAL
-    }
-    fn procs(&self) -> &dyn ProcessTable {
-        self.0.procs()
-    }
-    fn hostname(&self) -> String {
-        self.0.hostname()
-    }
-    fn exe(&self) -> PathBuf {
-        self.0.exe()
-    }
-    fn sleep(&self, d: Duration) {
-        self.0.sleep(d);
-    }
-}
+use crate::plan::execute;
+use crate::realgit::{GitSys, Said, run};
+use crate::runner::DryLaunch;
+use crate::sys::Sys;
 
 /// A harness whose only live session runs in `cwd`.
 struct OneLive(PathBuf);
@@ -79,28 +41,6 @@ impl Harness for OneLive {
     fn resume_command(&self, _: &str, _: &SessionSpec) -> Argv {
         Argv::default()
     }
-}
-
-fn run(dir: &Path, args: &[&str]) -> String {
-    let spec = CommandSpec::new("git")
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .arg("-C")
-        .arg(dir.to_string_lossy())
-        .args(args.iter().copied());
-    let out = REAL.run(&spec).unwrap();
-    assert!(
-        out.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out.text()
 }
 
 struct T {
@@ -254,17 +194,6 @@ fn swept(plan: &Plan) -> Vec<String> {
         .collect();
     v.sort();
     v
-}
-
-#[derive(Default)]
-struct Said(Vec<String>);
-impl Report for Said {
-    fn note(&mut self, n: &Note) {
-        let (Note::Info(s) | Note::Detail(s) | Note::Warn(s)) = n;
-        self.0.push(s.clone());
-    }
-    fn doing(&mut self, _: &Action) {}
-    fn launched(&mut self, _: &LaunchSpec, _: &Launched) {}
 }
 
 #[test]

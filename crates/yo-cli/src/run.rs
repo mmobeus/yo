@@ -162,6 +162,7 @@ fn up(
             let a = crate::cli::Agent {
                 name: Some(n),
                 message,
+                dry_run: up.dry_run,
                 model: None,
                 window: Window::default(),
             };
@@ -176,6 +177,9 @@ fn up(
         }
         Resolved::Ledger(e, st) => {
             let label = e.record.name.clone().unwrap_or_else(|| up.args[0].clone());
+            if guest_stops_dry_run(&ctx, &e, up.dry_run, out)? {
+                return Ok(0);
+            }
             say(out, &ensure_guest(&mut ctx, &e)?);
             let running = matches!(st, State::Running { .. });
             (plan_reach(&ctx, &e, st, &label, &opts)?, !running)
@@ -208,6 +212,9 @@ fn up(
                 HomeTarget::Ledger(e, st) => {
                     let label =
                         format!("{name}'s home ({})", e.record.name.as_deref().unwrap_or(""));
+                    if guest_stops_dry_run(&ctx, &e, up.dry_run, out)? {
+                        return Ok(0);
+                    }
                     say(out, &ensure_guest(&mut ctx, &e)?);
                     let running = matches!(st, State::Running { .. });
                     (plan_reach(&ctx, &e, st, &label, &opts)?, !running)
@@ -273,7 +280,36 @@ fn agent(
         .actions
         .iter()
         .any(|x| matches!(x, yo_core::plan::Action::Launch(_)));
-    run_plan(ctx, &plan, false, launches, out)
+    run_plan(ctx, &plan, a.dry_run, launches, out)
+}
+
+/// Under `--dry-run`, a session whose guest repo isn't registered stops
+/// here: registering it (and cloning it, if its clone is gone) comes before
+/// the plan, so the dry run says what it would do and changes nothing.
+fn guest_stops_dry_run(
+    ctx: &Ctx,
+    e: &yo_core::ledger::Entry,
+    dry_run: bool,
+    out: &mut dyn Write,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(guest) = dry_run
+        .then(|| yo_core::reach::unregistered_guest(ctx, e))
+        .flatten()
+    else {
+        return Ok(false);
+    };
+    let path = place::clone_path(ctx, &guest);
+    write!(
+        out,
+        "dry run: {guest} isn't registered; yo would {} {} and register it as a guest, then plan the session\ndry run: nothing changed.\n",
+        if path.exists() {
+            "use the clone at"
+        } else {
+            "clone it to"
+        },
+        path.display()
+    )?;
+    Ok(true)
 }
 
 /// `yo config edit`: the config in `$EDITOR` (made first if there's none),
@@ -290,7 +326,10 @@ fn config_edit(ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Box<dyn std::error
         .sys
         .env_nonempty("EDITOR")
         .unwrap_or_else(|| "vi".into());
-    // EDITOR may carry arguments (`code -w`), as the shell would split it.
+    // EDITOR may carry arguments (`code -w`), so it's run through the
+    // shell, as git runs it. This is the one `sh -c` with text in it, and
+    // it's allowed: the text is the user's own EDITOR, never outside data,
+    // and the config's path goes in as "$1", not into the text.
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$1\""))

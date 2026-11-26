@@ -68,19 +68,26 @@ pub fn plan_reach(ctx: &Ctx, e: &Entry, st: State, label: &str, o: &ResumeOpts) 
 /// A guest repo a session was created in is registered only for that run:
 /// registers it again, from its clone, so the session resumes with it.
 pub fn ensure_guest(ctx: &mut Ctx, e: &Entry) -> Result<Vec<Note>> {
+    match unregistered_guest(ctx, e) {
+        Some(guest) => place::place(ctx, &guest, &PlaceTo::Guest).map(|(_, n)| n),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The guest repo (`owner/repo`) a record was created in, when it isn't
+/// registered now: what [`ensure_guest`] would place (and maybe clone)
+/// before planning. A dry run stops there instead.
+pub fn unregistered_guest(ctx: &Ctx, e: &Entry) -> Option<String> {
     let r = &e.record;
     let (Some(key), Some(guest)) = (&r.repo, &r.guest) else {
-        return Ok(Vec::new());
+        return None;
     };
     let known = ctx.registry.repo(key).is_some()
         || ctx
             .registry
             .repo_for_url(&*ctx.sys, &format!("https://github.com/{guest}"))
             .is_some();
-    if known {
-        return Ok(Vec::new());
-    }
-    place::place(ctx, guest, &PlaceTo::Guest).map(|(_, n)| n)
+    (!known).then(|| guest.clone())
 }
 
 /// The repo a record was created in, as it's registered now.

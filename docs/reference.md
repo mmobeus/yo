@@ -27,7 +27,7 @@ as `--flag=value` or `--flag value`.
 | `yo title ["T"]` | retitle the session this runs in; bare, reset every yo tab's name |
 | `yo adopt [--title=T] [--session-id=ID]` | record the session this runs in |
 | `yo forget <name\|id\|dir>` | drop a session from the ledger |
-| `yo agent [NAME] [--model=M] [--new-window\|--tab] ['message']` | start or reach agent NAME's home; bare, list agents |
+| `yo agent [NAME] [--model=M] [--new-window\|--tab] [--dry-run] ['message']` | start or reach agent NAME's home; bare, list agents |
 | `yo sweep [--apply] [--repo=R]... [--include-stale] [--include-suspended] [--delete-branches]` | find (and remove) worktrees whose work has landed |
 | `yo config [show]` | the config file, and every repo, profile and agent it registers |
 | `yo config path` | the config file's path |
@@ -211,7 +211,8 @@ list):
 - `yo -d` and `yo --resume` are gone: use `yo down` (or `rm`, `teardown`)
   and `yo resume`.
 - `--discard` needs `--yes`; `--here` and `--worktree` can't both be given.
-- Starting a session, `yo NAME`, `down` and `resume-all` take `--dry-run`.
+- Starting a session, `yo NAME`, `yo agent`, `down` and `resume-all` take
+  `--dry-run`.
 - A session name with an empty or dot-only part, or a part starting with
   `-`, is refused.
 - A bad config's error names the key and where it is in the file.
