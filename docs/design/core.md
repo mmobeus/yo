@@ -176,13 +176,15 @@ Wails was considered and rejected.
 ## Shape
 
 ```
-     yo (CLI)       yo tui     yo app (Tauri)   phone browser   [MCP server?]
-         \             |             |              |              /
-          \            +--------- yo-client --------+-------------+
-           \                    |  Unix socket locally; opt-in HTTP for remote
-            \             yo serve (daemon, async)
-             \            ACP runner · relay · API · event tailer
-              \                 |
+     yo (CLI)        yo tui        yo app (Tauri)     phone browser
+         \             |                 |                  |
+          \      the yo API (trait) -----+                  |
+           \      |            \                            |
+           \   in process    yo-client (Unix socket)   opt-in HTTP
+            \     |               \                         |
+             \    |           yo serve (daemon, async) -----+
+             \    |           ACP runner · relay · API · event tailer
+              \   |                 |
               +------------ yo-core (sync) ---------------------------+
               | config · registry (repos, profiles, agents, homes)    |
               | ledger · resolve (`yo NAME`) · create · resume · down |
@@ -196,8 +198,22 @@ Wails was considered and rejected.
 - The CLI calls `yo-core` directly and works with no daemon running, as
   today. For what only a daemon has (ACP sessions, the relay), it starts one
   or asks the running one.
-- The TUI and app talk only to a daemon, through `yo-client`, and never
-  assume it's local.
+- The TUI and the app use **the yo API**: one trait, with its types in
+  `yo-proto`, and two implementations.
+  - **In process,** over `yo-core` and the event log files, with no daemon.
+    The TUI uses it from phase 4, before the daemon exists, and whenever
+    none is running.
+  - **Over `yo-client`,** talking to the daemon on this machine through its
+    Unix socket. The app always uses it, and the TUI does once a daemon is
+    running, since only the daemon has ACP sessions and the relay.
+
+  Nothing above the trait knows which implementation it has.
+- **The daemon is local; sessions needn't be.** The TUI and app talk to this
+  machine's daemon. Once the hub exists, that daemon is how they reach every
+  machine's sessions, so nothing in the TUI or app assumes a session is on
+  this machine.
+- **The browser path** (a phone, UI development) doesn't use `yo-client`,
+  which is Rust: the web UI talks to the daemon's opt-in HTTP directly.
 - There is one binary, `yo`, with `yo serve` and `yo tui` among its
   subcommands. No `--mode=` flag: `mode` already means in place vs worktree.
 
@@ -209,8 +225,9 @@ A Cargo workspace:
 | --- | --- | --- |
 | `yo-core` | lib, sync | everything that's site logic today, plus harnesses and the iTerm runner; see [the core's API](#the-cores-api) |
 | `yo-cli` | bin `yo` | clap commands, flags, output rendering, prompts. Thin over `yo-core` |
-| `yo-proto` | lib | the daemon's API types (requests, responses, the event stream), shared by daemon and clients; an OpenAPI spec is generated from them |
-| `yo-client` | lib | a client for a daemon, local (Unix socket) or remote (HTTPS), used by the TUI, app and CLI |
+| `yo-proto` | lib | the yo API: its trait and types (requests, responses, the event stream), shared by daemon and clients; an OpenAPI spec is generated from them. Types only |
+| `yo-local` | lib | the yo API in process, over `yo-core` and the event log files: what the TUI uses with no daemon |
+| `yo-client` | lib | the yo API over a daemon's Unix socket (or HTTPS, for a daemon elsewhere), used by the TUI, the app and the CLI |
 | `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the ACP runner, the relay |
 | `yo-tui` | lib | `yo tui` |
 | `yo-app` | bin, Tauri | `yo app`: the Tauri shell around `web/`. Forwards to the daemon through `yo-client`; tray, notifications, shortcut, Keychain. No yo logic |
@@ -771,9 +788,12 @@ This replaces the phase list in #9. Each phase is useful on its own.
    from `claude agents --json`, `yo status`, `yo watch`.
 4. **`yo tui`:** session list with live status, a "needs me" filter, focus,
    send, start (with an editor for the brief), resume, sweep with checkboxes.
+   Built on the yo API's in-process implementation (`yo-local`), since there's
+   no daemon yet.
 5. **The daemon, the ACP runner and the relay:** background sessions for
    Claude and Codex, opening them in a tab to take over, the relay and its
-   inbox.
+   inbox. `yo-client` lands here, and the TUI uses it when a daemon is
+   running.
 6. **`yo app`:** the Tauri app: the web UI, the menu bar icon, notifications.
    Maybe the MCP server.
 7. **Reach:** a phone (Remote Control for Claude sessions; for any harness,
@@ -944,7 +964,8 @@ it.
 | rule | check |
 | --- | --- |
 | `yo-core` stays synchronous and light | a test over `cargo metadata` fails if `yo-core` depends on tokio, axum or the ACP crate |
-| the app holds no yo logic | the same test fails if `yo-app` depends on `yo-core` or `yo-daemon`; it may use only `yo-client` and `yo-proto` |
+| the app holds no yo logic | the same test fails if `yo-app` depends on `yo-core`, `yo-local` or `yo-daemon`; it may use only `yo-client` and `yo-proto` |
+| the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
 | the core never prints | `clippy::print_stdout` and `clippy::print_stderr` denied in `yo-core` |
 | every outside effect goes through `Sys` | `clippy::disallowed-methods` bans `std::process::Command::new`, the system clock and randomness in `yo-core` outside `sys.rs` |
 | a dry run changes nothing | every parity scenario also runs with `--dry-run`, and the sandbox must be byte-identical afterwards |
