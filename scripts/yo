@@ -13,7 +13,8 @@
 #   the repos yo can currently see.
 #
 # Usage:
-#   yo [--repo=R] [--profile=P] [--here|--worktree] [INPUT] [extra]
+#   yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S]
+#      [INPUT] [extra]
 #
 #   INPUT is resolved in order:
 #     PR / issue URL     github.com/.../pull/N or /issues/N (see below)
@@ -64,6 +65,14 @@
 #   Personas: EVERY session gets a codename ("Adventurous Possum") told to
 #   claude in its first message — it introduces itself with it, and unnamed
 #   sessions use it as the window title.
+#
+#   --title="T"  use T as the tab / Session Status title instead of the derived
+#   one (session name, PR/issue title, or codename). Retitle later, from inside
+#   the session, with `yo title`.
+#
+#   --from=SESSION  tell the new session to report back to the Claude session
+#   named SESSION (the name the statusline shows, what SendMessage takes) when
+#   it finishes or gets blocked. For a coordinating session handing work out.
 #
 #   --new-window (--window) put this session in a NEW iTerm window instead of a
 #   tab in the shared one; --tab forces the opposite. The default is a tab, so
@@ -119,6 +128,10 @@
 #                        profile and settings layer it started with (alias:
 #                        --resume). Any session id works, even one yo didn't
 #                        start: its directory is read from the transcript.
+#   yo title ["T"]       Retitle the session this runs in (tab, Session Status
+#                        and the ledger; the /yo-title skill). Bare `yo title`
+#                        resets every yo tab's name to its title, undoing the
+#                        workgroup's "Chat" rename.
 #   yo adopt [--title=T] Run from inside a claude session yo didn't start (the
 #                        /yo-adopt skill): record it so resume-all brings it
 #                        back. Works anywhere, not just in a yo worktree.
@@ -1234,6 +1247,8 @@ mirror_repo_files() {
 #                                record a session from inside it (yo adopt)
 #   launch-cwd SID               the directory that session was launched in
 #   drop-dir WT                  forget a worktree's record
+#   retitle KEY SID CWD TITLE    set the title on record KEY, else the one
+#                                holding SID, else CWD's yo worktree's
 #   sync                         adopt live sessions in yo worktrees (YO_CLONES)
 #   list                         TSV, one row per record (see row())
 #   sweep [flags]                classify and (with --apply) remove landed
@@ -1431,6 +1446,22 @@ elif op == "launch-cwd":
                     print(cwd)
                     sys.exit(0)
     sys.exit(1)
+
+elif op == "retitle":
+    # retitle KEY SID CWD TITLE: claude runs with YO_SESSION_KEY, so a session
+    # yo launched names its record outright; one it didn't goes by its id, and
+    # a plain shell (neither) by the yo worktree it stands in.
+    key, sid, cwd, title = args
+    recs = load_all()
+    hit = [r for r in recs if key and r["_key"] == key]
+    if not hit:
+        hit = [r for r in recs if sid and r.get("sessionId") == sid]
+    if not hit:
+        hit = [r for r in recs if not r.get("byId") and owns(r["worktree"], cwd)]
+    for rec in hit:
+        rec["title"] = title
+        write(rec)
+    sys.exit(0 if hit else 1)
 
 elif op in ("drop", "drop-dir"):
     key = args[0] if op == "drop" else wt_key(args[0])
@@ -1820,6 +1851,28 @@ PY_EOF
   printf '%s' "$out"
 }
 
+# Builds a session's first message into COMPOSED_MSG (and its codename into
+# COMPOSED_PERSONA): the mode's own message, then [extra], then the report-back
+# instruction (--from), then the codename. One line — the command is written
+# into the pane as a single shell line, so no embedded newlines.
+_yo_compose_message() {
+  local msg="$1" extra="$2" report_to="$3"
+  if [ -n "$extra" ]; then
+    msg="${msg:+$msg }$extra"
+  fi
+  if [ -n "$report_to" ]; then
+    msg="${msg:+$msg }When you finish, or get blocked on something only a person can decide, report back to the Claude session named \"${report_to}\" with SendMessage: a few lines on the outcome and where the work is (branch, PR, files). Do the work in this session; don't hand it back."
+  fi
+  # Every session gets a persona, and claude is told up front — partly for fun,
+  # partly so sessions can identify themselves in notes and messages.
+  COMPOSED_PERSONA=$(fun_session_title)
+  if [ -n "$msg" ]; then
+    COMPOSED_MSG="${msg} (FYI, your codename for this session is \"${COMPOSED_PERSONA}\" — introduce yourself with it and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.)"
+  else
+    COMPOSED_MSG="Your codename for this session is \"${COMPOSED_PERSONA}\". Briefly introduce yourself by codename, then wait for instructions."
+  fi
+}
+
 # --- create -------------------------------------------------------------------
 # Where a session goes when a profile was picked and no repo was named. Works
 # on cmd_up's locals, like create_session_worktree below: sets repo_key and
@@ -2004,8 +2057,9 @@ cmd_up() {
   local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
   local explicit_branch="" unnamed=0 persona="" force_new_window=-1
   local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir=""
+  local title_override="" report_to=""
 
-  # --repo=R may appear anywhere; strip it out of the positional args.
+  # Flags may appear anywhere; strip them out of the positional args.
   local args=() a
   for a in "$@"; do
     case "$a" in
@@ -2019,6 +2073,10 @@ cmd_up() {
                   || die "--profile must be one of: $(_yo_profile_names | paste -sd'|' - | sed 's/|/ | /g') (got: '$YO_PROFILE_SELECTED')" ;;
       --here|--in-place)     mode="here" ;;
       --worktree)            mode="worktree" ;;
+      --title=*)             title_override="${a#--title=}"
+                             [ -n "$title_override" ] || die "--title needs a value" ;;
+      --from=*)              report_to="${a#--from=}"
+                             [ -n "$report_to" ] || die "--from needs a session name" ;;
       --*)      die "unknown flag: $a" ;;
       *)        args+=("$a") ;;
     esac
@@ -2034,7 +2092,7 @@ cmd_up() {
       && _yo_pfield "$1" 1 >/dev/null 2>&1; then
     YO_PROFILE_SELECTED="$1"; shift
   fi
-  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [INPUT] [extra]"
+  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S] [INPUT] [extra]"
   input="${1:-}"; extra_msg="${2:-}"
 
   # Which repo. One that was NAMED (--repo, the positional form, a URL, or the
@@ -2123,24 +2181,8 @@ cmd_up() {
     initial_msg="${initial_msg} NOTE: this session runs in place — the PR's head was NOT checked out, so the local tree may not be the code under review."
   fi
 
-  # Fold the extra instructions into the initial message (single line — the
-  # command is written into the pane as one shell line, so no embedded newlines).
-  if [ -n "$extra_msg" ]; then
-    if [ -n "$initial_msg" ]; then
-      initial_msg="${initial_msg} ${extra_msg}"
-    else
-      initial_msg="$extra_msg"
-    fi
-  fi
-
-  # Every session gets a persona, and claude is told up front — partly for fun,
-  # partly groundwork for sessions identifying themselves over Slack/MCP later.
-  persona=$(fun_session_title)
-  if [ -n "$initial_msg" ]; then
-    initial_msg="${initial_msg} (FYI, your codename for this session is \"${persona}\" — introduce yourself with it and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.)"
-  else
-    initial_msg="Your codename for this session is \"${persona}\". Briefly introduce yourself by codename, then wait for instructions."
-  fi
+  _yo_compose_message "$initial_msg" "$extra_msg" "$report_to"
+  initial_msg="$COMPOSED_MSG"; persona="$COMPOSED_PERSONA"
 
   case "$name" in
     *[!A-Za-z0-9._/-]*) die "name may only contain letters, digits, . _ / - (got: '$name')" ;;
@@ -2203,6 +2245,7 @@ cmd_up() {
     win_title="$persona"
   fi
   win_title="$(session_title_prefix "$repo_key" "$label")$win_title"
+  [ -n "$title_override" ] && win_title="$title_override"
 
   # The session id is chosen here rather than by claude, so the ledger knows
   # it before claude has even started — which is what lets `yo resume-all`
@@ -2293,6 +2336,13 @@ prepare_claude_cmd() {
 launch_session() {
   local wt_path="$1" win_title="$2" claude_cmd="$3" repo_key="$4" label="$5"
   local force_new_window="$6"
+
+  # YO_DRY_LAUNCH=1 prints what would run instead of opening iTerm: for testing
+  # yo itself by path, against a throwaway HOME and config.
+  if [ -n "${YO_DRY_LAUNCH:-}" ]; then
+    printf 'dry launch: [%s] in %s\n  %s\n' "$win_title" "$wt_path" "$claude_cmd"
+    return 0
+  fi
 
   # ensure the title-locked iTerm profile exists (falls back to default profile)
   local profile="$WORKSESH_PROFILE_NAME" wrote
@@ -2683,6 +2733,86 @@ cmd_down() {
   close_iterm_own_tab
 }
 
+# --- title --------------------------------------------------------------------
+# A session's title lives in three places, and they drift apart if only one is
+# changed: the iTerm session NAME (what Session Status lists, and what the
+# Claude Code workgroup overwrites with "Chat"), user.yoTitle (what the tab
+# title is pinned to by the profile), and the ledger (what resume restores).
+# `yo title T` sets all three for the tab it runs in, found by ITERM_SESSION_ID
+# rather than focus, so it is right when run from claude or a background tab.
+# Bare `yo title` puts every yo tab's name back to its yoTitle.
+cmd_title() {
+  local title="${1:-}"
+  [ "$#" -le 1 ] || die "usage: yo title [\"new title\"]   (quote it)"
+
+  if [ -z "$title" ]; then
+    _yo_resync_titles
+    echo "==> session names reset to their yo titles"
+    return 0
+  fi
+  [ -n "${ITERM_SESSION_ID:-}" ] || die "not inside an iTerm2 session — no tab to retitle"
+
+  local res
+  res=$(/usr/bin/osascript - "${ITERM_SESSION_ID#*:}" "$title" <<'APPLESCRIPT'
+on run argv
+  set want to item 1 of argv
+  set newTitle to item 2 of argv
+  tell application "iTerm2"
+    repeat with ww in windows
+      repeat with tt in tabs of ww
+        set hit to false
+        repeat with ss in sessions of tt
+          if (unique id of ss) is want then set hit to true
+        end repeat
+        if hit then
+          -- every pane in the tab: Session Status lists them all
+          repeat with ss in sessions of tt
+            tell ss
+              set variable named "user.yoTitle" to newTitle
+              set name to newTitle
+            end tell
+          end repeat
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run
+APPLESCRIPT
+  ) || res="error"
+  [ "$res" = "ok" ] || die "couldn't find this session's iTerm tab ($res)"
+
+  local top
+  top=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)
+  _yo_state retitle "${YO_SESSION_KEY:-}" "${CLAUDE_CODE_SESSION_ID:-}" "$top" "$title" \
+    || echo "yo: (not in the ledger — the title won't survive a resume; yo adopt records it)"
+  # The workgroup may rename the session again shortly; hold the name for a bit.
+  reassert_session_title "$title"
+  echo "==> titled: $title"
+}
+
+# Every session carrying a user.yoTitle gets that as its name again.
+_yo_resync_titles() {
+  /usr/bin/osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
+tell application "iTerm2"
+  repeat with ww in windows
+    repeat with tt in tabs of ww
+      repeat with ss in sessions of tt
+        set v to missing value
+        try
+          tell ss to set v to variable named "user.yoTitle"
+        end try
+        if v is not missing value and v is not "" then
+          if (name of ss) is not v then set name of ss to v
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell
+APPLESCRIPT
+}
+
 # --- adopt / forget -----------------------------------------------------------
 # For sessions yo didn't start, run from INSIDE them (the /yo-adopt skill): the
 # session knows its own id (CLAUDE_CODE_SESSION_ID, exported to every tool
@@ -2801,6 +2931,7 @@ main() {
     sessions|ls)         shift; cmd_sessions "$@" ;;
     sweep)               shift; cmd_sweep "$@" ;;
     adopt)               shift; cmd_adopt "$@" ;;
+    title)               shift; cmd_title "$@" ;;
     forget)              shift; cmd_forget "$@" ;;
     *)                   cmd_up "$@" ;;
   esac

@@ -8,7 +8,7 @@ scripts/yo              iTerm2 work-session launcher (git worktrees, or in place
 config/yo.config.example.sh   starting point for your own config
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
-claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt)
+claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt, yo-title)
 install.sh              wires it all up
 ```
 
@@ -44,6 +44,9 @@ yo my-fix                         # worktree + branch <prefix>/my-fix, off the b
 yo https://github.com/o/r/pull/7  # worktree at the PR's head, review seeded
 yo --repo=backend -  'look into the flaky test'
 yo --here - 'read HANDOFF.md'     # no worktree: this directory, as checked out
+yo --title='Fix flaky retry' my-fix   # your own tab / Session Status title
+yo --from=<session> my-fix 'brief'    # report back to that Claude session when done
+yo title 'new title'              # retitle the session you're in (or /yo-title in claude)
 yo down                           # tear the session down
 yo sessions                       # what yo knows about, and what's running
 yo resume-all                     # after a restart: bring them all back
@@ -269,6 +272,11 @@ the work in a worktree:
 yo yo tweak-the-installer     # worktree + session, this checkout untouched
 ../yo-worktrees/tweak-the-installer/scripts/yo help   # test by path
 ```
+
+To exercise `yo` without opening iTerm, set `YO_DRY_LAUNCH=1`: it prints the
+tab title, directory and `claude` command instead of launching. Point `HOME`,
+`XDG_STATE_HOME` and `YO_CONFIG` at a throwaway directory as well, so the test
+leaves your ledger and `~/.claude.json` alone.
 
 Merge to `main` and the installed symlinks pick it up with nothing to re-run.
 `install.sh` is only needed again when a *new* file needs linking.
