@@ -401,13 +401,18 @@ impl Ledger {
     pub fn write(&self, e: &mut Entry) -> Result<()>;         // back to its own file; stamps updatedAt, machine
     pub fn put(&self, rec: Record) -> Result<Key>;
     pub fn adopt(&self, a: Adopt) -> Result<Key>;
-    pub fn drop(&self, key: &Key) -> Result<()>;
-    pub fn drop_dir(&self, worktree: &Path) -> Result<()>;
+    pub fn drop(&self, key: &Key) -> Result<bool>;            // false: there was none
+    pub fn drop_dir(&self, worktree: &Path) -> Result<bool>;
     pub fn retitle(&self, by: RetitleBy, title: &str) -> Result<Option<Key>>;
     pub fn learn_id(&self, key: &Key, session_id: &str) -> Result<()>;  // a harness that names its own ids
-    pub fn sync(&self, repos: &[&Repo], live: &[LiveSession]) -> Result<Vec<Key>>;
-    pub fn hook(&self, payload: &str);                        // never fails the caller
+    pub fn sync(&self, clones: &[SyncClone], live: &[LiveSession]) -> Result<Vec<Adopted>>;
+    pub fn hook(&self, ev: &HookEvent);                       // never fails the caller
     pub fn get(&self, q: &str, live: &[LiveSession]) -> Result<Found>; // id, 8+ prefix, dir, name; transcript fallback
+}
+
+pub enum HookEvent {                                          // from Harness::hook_event
+    Start { id: String, cwd: PathBuf },
+    End { id: String, cwd: PathBuf, deliberate: bool },       // Claude: /exit, ctrl-d
 }
 
 pub enum State { Running { pid: u32 }, Ready, Ended, Gone, NoId }
@@ -498,7 +503,7 @@ a Claude session, not in runners or sessions. All of that moves behind one
 trait.
 
 Like the rest of the core's API, the trait grows with the commands that use
-it: phase 1's foundations have `name`, `live` and `capabilities`, and launching
+it: phase 1's foundations have `name`, `live`, `capabilities` and `hook_event`, and launching
 and resuming come with the commands that do them.
 
 ```rust
@@ -514,6 +519,7 @@ pub trait Harness {
 
     // optional: what a harness has, it says here
     fn capabilities(&self) -> Capabilities;
+    fn hook_event(&self, payload: &str) -> Option<HookEvent> { None }  // its ledger hook's payload, made neutral
     fn prepare(&self, ctx: &Ctx, s: &SessionSpec) -> Result<Vec<HarnessPrep>> { Ok(vec![]) }
     fn status(&self, sys: &dyn Sys) -> Vec<(SessionId, HarnessStatus)> { vec![] }
     fn relay(&self) -> Option<&dyn Relay> { None }

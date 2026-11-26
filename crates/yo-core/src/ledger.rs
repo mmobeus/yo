@@ -4,7 +4,8 @@
 //! `machine`, `harness` and `runner`.
 //!
 //! What's here so far: reading, writing back, dropping, liveness
-//! ([`state_of`]), the hook Claude's `SessionStart`/`SessionEnd` call, and
+//! ([`state_of`]), the hook a harness's session start and end call (its payload made
+//! neutral by [`crate::harness::Harness::hook_event`]), and
 //! `sync` (what `yo sessions` runs first). `put`, `adopt`, `retitle` and
 //! `get` arrive with the commands that use them.
 
@@ -173,6 +174,22 @@ pub fn state_of(rec: &Record, live: &[LiveSession]) -> State {
     }
 }
 
+/// A session starting or ending, as a harness's hook reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HookEvent {
+    Start {
+        id: String,
+        cwd: PathBuf,
+    },
+    /// `deliberate`: the user quit (Claude: `/exit`, ctrl-d), so the
+    /// session is ended for good rather than left resumable.
+    End {
+        id: String,
+        cwd: PathBuf,
+        deliberate: bool,
+    },
+}
+
 /// A registered clone, for [`Ledger::sync`].
 #[derive(Clone, Debug)]
 pub struct SyncClone {
@@ -260,55 +277,51 @@ impl Ledger {
         self.drop(&Key::for_worktree(&self.sys.home(), worktree))
     }
 
-    /// The ledger hook: Claude's `SessionStart` and `SessionEnd`, with the
-    /// hook's JSON payload. It never fails the caller: a ledger hiccup must
-    /// never get in the way of a session.
+    /// The ledger hook: a harness's session starting or ending (the harness
+    /// turns its own hook payload into a [`HookEvent`]). It never fails the
+    /// caller: a ledger hiccup must never get in the way of a session.
     ///
     /// The record it updates is the one `YO_SESSION_KEY` names (a session yo
-    /// launched), else every record whose worktree holds the payload's
-    /// `cwd` (a session in place only by its own id). `SessionStart`
-    /// records the session id and clears `endedAt`; `SessionEnd` with
-    /// `prompt_input_exit` (`/exit`, ctrl-d) sets `endedAt`. Any other end
-    /// (a closed tab, a crash) leaves it resumable.
-    pub fn hook(&self, payload: &str) {
-        let Ok(d) = serde_json::from_str::<Value>(payload) else {
-            return;
+    /// launched), else every record whose worktree holds the event's `cwd`
+    /// (a session in place only by its own id). A start records the session
+    /// id and clears `endedAt`; a deliberate end sets `endedAt`. Any other
+    /// end (a closed tab, a crash) leaves it resumable.
+    pub fn hook(&self, ev: &HookEvent) {
+        let (id, cwd) = match ev {
+            HookEvent::Start { id, cwd } | HookEvent::End { id, cwd, .. } => (id.as_str(), cwd),
         };
-        let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("");
-        let (cwd, sid) = (s("cwd"), s("session_id"));
-        if sid.is_empty() {
+        if id.is_empty() {
             return;
         }
-        let event = d
-            .get("hook_event_name")
-            .and_then(Value::as_str)
-            .unwrap_or("SessionStart");
         let key = self.sys.env_nonempty("YO_SESSION_KEY");
         for mut e in self.all() {
             match &key {
                 Some(k) if e.key.0 != *k => continue,
                 Some(_) => {}
                 None => {
-                    if !owns(&e.record.worktree, Path::new(cwd))
-                        || (e.record.by_id && e.record.id() != Some(sid))
+                    if !owns(&e.record.worktree, cwd)
+                        || (e.record.by_id && e.record.id() != Some(id))
                     {
                         continue;
                     }
                 }
             }
-            if event == "SessionEnd" {
-                if s("reason") == "prompt_input_exit" && e.record.id() == Some(sid) {
-                    e.record.ended_at = Some(self.sys.unix_now());
-                    let _ = self.write(&mut e);
+            match ev {
+                HookEvent::End { deliberate, .. } => {
+                    if *deliberate && e.record.id() == Some(id) {
+                        e.record.ended_at = Some(self.sys.unix_now());
+                        let _ = self.write(&mut e);
+                    }
                 }
-            } else {
-                let mut changed = e.record.id() != Some(sid);
-                e.record.session_id = Some(sid.to_string());
-                if e.record.ended_at.take().is_some() {
-                    changed = true; // resumed after a deliberate exit
-                }
-                if changed {
-                    let _ = self.write(&mut e);
+                HookEvent::Start { .. } => {
+                    let mut changed = e.record.id() != Some(id);
+                    e.record.session_id = Some(id.to_string());
+                    if e.record.ended_at.take().is_some() {
+                        changed = true; // resumed after a deliberate exit
+                    }
+                    if changed {
+                        let _ = self.write(&mut e);
+                    }
                 }
             }
         }
@@ -322,7 +335,8 @@ impl Ledger {
         let mut recs: BTreeMap<Key, Record> =
             self.all().into_iter().map(|e| (e.key, e.record)).collect();
         let mut live: Vec<&LiveSession> = live.iter().collect();
-        live.sort_by_key(|l| l.updated_at);
+        // updated_at is in each harness's own units: order within a harness.
+        live.sort_by(|a, b| (&a.harness, a.updated_at).cmp(&(&b.harness, b.updated_at)));
         let mut adopted = Vec::new();
         for l in live {
             let cwd = l.cwd.to_string_lossy();
@@ -334,7 +348,7 @@ impl Ledger {
                 };
                 let name = rest.split('/').next().unwrap_or("");
                 let wt = PathBuf::from(format!("{root}{name}"));
-                if name.is_empty() || !wt.join(".git").exists() {
+                if matches!(name, "" | "." | "..") || !wt.join(".git").exists() {
                     continue;
                 }
                 let key = Key::for_worktree(&home, &wt);
@@ -511,6 +525,21 @@ mod tests {
         assert_eq!(state_of(&rec(Some("s2"), None, &wt), &l), State::Ready);
     }
 
+    fn start(id: &str, cwd: &Path) -> HookEvent {
+        HookEvent::Start {
+            id: id.into(),
+            cwd: cwd.to_path_buf(),
+        }
+    }
+
+    fn end(id: &str, cwd: &Path, deliberate: bool) -> HookEvent {
+        HookEvent::End {
+            id: id.into(),
+            cwd: cwd.to_path_buf(),
+            deliberate,
+        }
+    }
+
     #[test]
     fn hook_start_and_end() {
         let t = setup();
@@ -525,25 +554,18 @@ mod tests {
             },
         );
         let cwd = wt.join("sub");
-        let start = format!(
-            r#"{{"hook_event_name":"SessionStart","session_id":"new","cwd":"{}"}}"#,
-            cwd.display()
-        );
-        t.ledger.hook(&start);
+        t.ledger.hook(&start("new", &cwd));
         let r = t.get("x");
         assert_eq!((r.session_id.as_deref(), r.ended_at), (Some("new"), None));
 
         // A closed tab: still resumable.
-        let end = |reason: &str| {
-            format!(
-                r#"{{"hook_event_name":"SessionEnd","session_id":"new","cwd":"{}","reason":"{reason}"}}"#,
-                cwd.display()
-            )
-        };
-        t.ledger.hook(&end("other"));
+        t.ledger.hook(&end("new", &cwd, false));
+        assert_eq!(t.get("x").ended_at, None);
+        // A deliberate quit, but by another session: not this one's end.
+        t.ledger.hook(&end("other", &cwd, true));
         assert_eq!(t.get("x").ended_at, None);
         // /exit: ended.
-        t.ledger.hook(&end("prompt_input_exit"));
+        t.ledger.hook(&end("new", &cwd, true));
         assert_eq!(t.get("x").ended_at, Some(1_795_683_262));
     }
 
@@ -551,64 +573,64 @@ mod tests {
     fn hook_by_key_and_by_id() {
         let t = setup();
         let wt = t.worktree("clone");
-        t.put(
-            "id-a",
-            Record {
-                worktree: wt.clone(),
-                session_id: Some("a".into()),
-                by_id: true,
-                ..Record::default()
-            },
-        );
-        t.put(
-            "id-b",
-            Record {
-                worktree: wt.clone(),
-                session_id: Some("b".into()),
-                by_id: true,
-                ..Record::default()
-            },
-        );
+        for (key, id) in [("id-a", "a"), ("id-b", "b")] {
+            t.put(
+                key,
+                Record {
+                    worktree: wt.clone(),
+                    session_id: Some(id.into()),
+                    by_id: true,
+                    ..Record::default()
+                },
+            );
+        }
         t.put(
             "other",
             Record {
                 worktree: "/elsewhere".into(),
+                session_id: Some("c".into()),
                 ..Record::default()
             },
         );
         // In place, only the record with its own id matches: nothing changes.
-        let p = format!(r#"{{"session_id":"a","cwd":"{}"}}"#, wt.display());
-        t.ledger.hook(&p);
+        t.ledger.hook(&start("a", &wt));
         assert_eq!(t.get("id-b").session_id.as_deref(), Some("b"));
         // YO_SESSION_KEY names the record outright, wherever the cwd is.
         t.sys.set_env("YO_SESSION_KEY", "other");
-        t.ledger.hook(r#"{"session_id":"c","cwd":"/nowhere"}"#);
-        assert_eq!(t.get("other").session_id.as_deref(), Some("c"));
+        t.ledger.hook(&start("d", Path::new("/nowhere")));
+        assert_eq!(t.get("other").session_id.as_deref(), Some("d"));
         assert_eq!(t.get("id-a").session_id.as_deref(), Some("a"));
+        // Matched by key, a deliberate end with another id leaves it alone.
+        t.ledger.hook(&end("zzz", Path::new("/nowhere"), true));
+        assert_eq!(t.get("other").ended_at, None);
     }
 
     #[test]
-    fn hook_never_fails() {
+    fn hook_with_no_id_does_nothing() {
         let t = setup();
+        let wt = t.worktree("w");
         t.put(
             "x",
             Record {
-                worktree: "/w".into(),
+                worktree: wt.clone(),
                 ..Record::default()
             },
         );
-        for p in [
-            "",
-            "null",
-            "[]",
-            "{",
-            r#"{"session_id": 5}"#,
-            r#"{"session_id":"s","cwd":null}"#,
-            "\u{0}",
-        ] {
-            t.ledger.hook(p);
-        }
+        t.ledger.hook(&start("", &wt));
         assert_eq!(t.get("x").session_id, None);
+    }
+
+    #[test]
+    fn mode_of_old_records() {
+        let r = |by_id| Record {
+            by_id,
+            ..Record::default()
+        };
+        assert_eq!(r(true).mode_or_default(), Mode::Here);
+        assert_eq!(r(false).mode_or_default(), Mode::Worktree);
+        let mut set = r(true);
+        set.mode = Some(Mode::Worktree);
+        assert_eq!(set.mode_or_default(), Mode::Worktree);
     }
 
     #[test]
@@ -624,6 +646,20 @@ mod tests {
             title_prefix: "[a] ".into(),
             profile: Some("p".into()),
         }];
+        // z ended with /exit, and is running again under the same id.
+        let z = t.worktree("dev/a-worktrees/z");
+        t.put(
+            "dev__a-worktrees__z",
+            Record {
+                worktree: z.clone(),
+                session_id: Some("sz".into()),
+                ended_at: Some(7),
+                ..Record::default()
+            },
+        );
+        // A cwd that climbs out of the worktree root, to a directory that's a
+        // clone: never a worktree.
+        fs::create_dir_all(t.home.join("dev/.git")).unwrap();
         // y is known under an older id; x isn't known at all.
         t.put(
             "dev__a-worktrees__y",
@@ -639,6 +675,8 @@ mod tests {
             live("sy", 2, &y, 1),
             live("sn", 3, &t.home.join("dev/a-worktrees/noclone"), 3),
             live("sc", 4, &clone, 4),
+            live("sz", 5, &z, 5),
+            live("sdots", 6, &t.home.join("dev/a-worktrees/../a"), 6),
         ];
         let got = t.ledger.sync(&clones, &l).unwrap();
         assert_eq!(
@@ -651,6 +689,10 @@ mod tests {
                 Adopted {
                     name: "x".into(),
                     id: "sx".into()
+                },
+                Adopted {
+                    name: "z".into(),
+                    id: "sz".into()
                 }
             ]
         );
@@ -663,6 +705,8 @@ mod tests {
             t.get("dev__a-worktrees__y").session_id.as_deref(),
             Some("sy")
         );
+        assert_eq!(t.get("dev__a-worktrees__z").ended_at, None);
+        assert!(t.ledger.all().iter().all(|e| !e.key.0.contains("..")));
         // Nothing new the second time.
         assert!(t.ledger.sync(&clones, &l).unwrap().is_empty());
     }

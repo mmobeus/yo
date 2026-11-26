@@ -257,6 +257,33 @@ mod tests {
     }
 
     #[test]
+    fn load_a_file() {
+        let t = crate::fake::TempDir::new().unwrap();
+        let good = t.path().join("good.json");
+        std::fs::write(&good, r#"{"repos": {"a": {"path": "/a"}}}"#).unwrap();
+        assert_eq!(Config::load(&good).unwrap().unwrap().repos.0.len(), 1);
+        for (name, text, want) in [
+            ("bad.json", "{", "EOF"),
+            ("unknown.json", r#"{"repo": {}}"#, "unknown field `repo`"),
+        ] {
+            let p = t.path().join(name);
+            std::fs::write(&p, text).unwrap();
+            let e = Config::load(&p).unwrap_err().to_string();
+            assert!(e.starts_with(&format!("{}: ", p.display())), "{e}");
+            assert!(e.contains(want), "{e}");
+        }
+    }
+
+    #[test]
+    fn booleans_as_bash_takes_them_and_nulls_refused() {
+        let c = parse(r#"{"defaults": {"mode": true, "claude": false}}"#).unwrap();
+        assert_eq!(c.defaults.mode, Some(Text("True".into())));
+        assert_eq!(c.defaults.claude, Some(Text("False".into())));
+        assert!(parse(r#"{"repos": {"a": {"path": null}}}"#).is_err());
+        assert!(parse(r#"{"repos": {"a": {"path": ["/a"]}}}"#).is_err());
+    }
+
+    #[test]
     fn scalars_and_words() {
         let c = parse(
             r#"{"defaults": {"winWidth": 1200},

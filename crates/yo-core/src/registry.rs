@@ -704,9 +704,11 @@ fn bad(var: &str, want: &str, got: &str) -> Error {
     Error::Setting(format!("{var} must be {want} (got: '{got}')"))
 }
 
-/// A repo key, profile or agent name: letters, digits, `.`, `_`, `-`.
+/// A repo key, profile or agent name: letters, digits, `.`, `_`, `-`, and
+/// not only dots (`.` and `..` would make paths that climb out).
 pub fn valid_key(k: &str) -> bool {
     !k.is_empty()
+        && !k.chars().all(|c| c == '.')
         && k.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
@@ -1019,6 +1021,94 @@ mod tests {
         // Outside a clone, with no config: no repos, and no error.
         let r = Registry::load(&sys, Path::new("/no/config.json"), Path::new("/tmp")).unwrap();
         assert!(r.repos().is_empty());
+    }
+
+    #[test]
+    fn keys_of_only_dots_are_refused() {
+        let sys = FakeSys::new("/h");
+        assert!(err(&sys, r#"{"repos": {"..": {"path": "/a"}}}"#).contains("got: '..'"));
+        assert!(err(&sys, r#"{"agents": {".": {"repo": "a"}}}"#).contains("got: '.'"));
+        assert!(valid_key(".dotfiles") && valid_key("a.b") && valid_key("-x"));
+    }
+
+    #[test]
+    fn clone_root_from_the_environment_beats_the_file() {
+        let t = TempDir::new().unwrap();
+        for d in ["file/acme/api/.git", "env/acme/web/.git"] {
+            fs::create_dir_all(t.path().join(d)).unwrap();
+        }
+        let sys = FakeSys::new(t.path());
+        let json =
+            r#"{"defaults": {"cloneRoot": "~/file"}, "profiles": {"w": {"owners": ["acme"]}}}"#;
+        assert_eq!(keys(&reg(&sys, json)), ["api"]);
+        sys.set_env("YO_CLONE_ROOT", &t.path().join("env").to_string_lossy());
+        let r = reg(&sys, json);
+        assert_eq!(keys(&r), ["web"]);
+        assert_eq!(r.defaults.clone_root, t.path().join("env"));
+    }
+
+    #[test]
+    fn detect_repo_by_remote_then_clone() {
+        let t = TempDir::new().unwrap();
+        let clone = t.path().join("src/api");
+        fs::create_dir_all(clone.join(".git")).unwrap();
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(t.path().join("src"), &link).unwrap();
+        let sys = FakeSys::new(t.path());
+        let json = format!(
+            r#"{{"repos": {{"api": {{"path": "{}"}}, "web": {{"path": "/web", "github": "acme/web"}}}}}}"#,
+            clone.display()
+        );
+        let r = reg(&sys, &json);
+        let git = |dir: &str, args: &[&str], out: &str| {
+            let mut a = vec!["-C", dir];
+            a.extend_from_slice(args);
+            sys.answer_ok("git", &a, out);
+        };
+
+        // A remote names a registered repo, whatever directory it's in.
+        git("/w1", &["remote"], "fork\nupstream\n");
+        git(
+            "/w1",
+            &["remote", "get-url", "fork"],
+            "git@github.com:me/web.git",
+        );
+        git(
+            "/w1",
+            &["remote", "get-url", "upstream"],
+            "git@github.com:acme/web.git",
+        );
+        assert_eq!(r.detect_repo(&sys, Path::new("/w1")).unwrap().key, "web");
+
+        // No remote matches: a worktree of a registered clone.
+        git("/w2", &["remote"], "origin\n");
+        git(
+            "/w2",
+            &["remote", "get-url", "origin"],
+            "git@github.com:someone/else.git",
+        );
+        git("/w2", &["rev-parse", "--show-toplevel"], "/w2");
+        git(
+            "/w2",
+            &["rev-parse", "--git-common-dir"],
+            &format!("{}/.git", clone.display()),
+        );
+        assert_eq!(r.detect_repo(&sys, Path::new("/w2")).unwrap().key, "api");
+
+        // The clone reached through a symlink: found by its real path.
+        git(
+            "/w3",
+            &["rev-parse", "--show-toplevel"],
+            &link.join("api").to_string_lossy(),
+        );
+        git("/w3", &["rev-parse", "--git-common-dir"], ".git");
+        assert_eq!(r.detect_repo(&sys, Path::new("/w3")).unwrap().key, "api");
+
+        // Not in a clone at all, or in an unregistered one.
+        assert_eq!(r.detect_repo(&sys, Path::new("/nowhere")), None);
+        git("/w4", &["rev-parse", "--show-toplevel"], "/other");
+        git("/w4", &["rev-parse", "--git-common-dir"], ".git");
+        assert_eq!(r.detect_repo(&sys, Path::new("/w4")), None);
     }
 
     #[test]

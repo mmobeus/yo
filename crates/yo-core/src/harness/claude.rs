@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use super::{Capabilities, Harness, LiveSession};
+use crate::ledger::HookEvent;
 use crate::sys::Sys;
 
 #[derive(Debug, Default)]
@@ -58,6 +59,26 @@ impl Harness for Claude {
             ledger_hooks: true,
             remote_control: true,
             models: true,
+        }
+    }
+
+    /// `SessionStart` and `SessionEnd` payloads (a missing event name is a
+    /// start, as bash takes it). Only `/exit` and ctrl-d
+    /// (`prompt_input_exit`) end a session deliberately; a closed tab
+    /// reports `other`, and a crash reports nothing.
+    fn hook_event(&self, payload: &str) -> Option<HookEvent> {
+        let d: Value = serde_json::from_str(payload).ok()?;
+        let s = |k: &str| d.get(k).and_then(Value::as_str);
+        let id = s("session_id").filter(|s| !s.is_empty())?.to_string();
+        let cwd = PathBuf::from(s("cwd").unwrap_or(""));
+        match s("hook_event_name").unwrap_or("SessionStart") {
+            "SessionEnd" => Some(HookEvent::End {
+                id,
+                cwd,
+                deliberate: s("reason") == Some("prompt_input_exit"),
+            }),
+            "SessionStart" => Some(HookEvent::Start { id, cwd }),
+            _ => None,
         }
     }
 }
@@ -125,17 +146,79 @@ mod tests {
         write(t.path(), 14, r#"{"pid":14,"sessionId":"s14","cwd":"/w/e"}"#);
         // no kind: interactive
         write(t.path(), 15, r#"{"pid":15,"sessionId":"s15","cwd":"/w/f"}"#);
+        // a pid written as a string
+        write(
+            t.path(),
+            17,
+            r#"{"pid":"17","sessionId":"s17","cwd":"/w/g"}"#,
+        );
         fs::write(t.path().join(".claude/sessions/16.json"), "not json").unwrap();
-        for pid in [10, 11, 12, 15] {
+        for pid in [10, 11, 12, 15, 17] {
             sys.add_process(pid, "claude", None);
         }
         sys.add_process(14, "vim", None);
         let live = Claude.live(&sys);
         let ids: Vec<&str> = live.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["s10", "s15"]);
+        assert_eq!(ids, ["s10", "s15", "s17"]);
         assert_eq!(live[0].name.as_deref(), Some("a-1"));
         assert_eq!(live[0].cwd, PathBuf::from("/w/a"));
         assert_eq!(live[0].updated_at, 5);
+    }
+
+    #[test]
+    fn hook_payloads() {
+        let ev = |p: &str| Claude.hook_event(p);
+        assert_eq!(
+            ev(r#"{"hook_event_name":"SessionStart","session_id":"s","cwd":"/w"}"#),
+            Some(HookEvent::Start {
+                id: "s".into(),
+                cwd: "/w".into()
+            })
+        );
+        assert_eq!(
+            ev(r#"{"session_id":"s","cwd":"/w"}"#),
+            Some(HookEvent::Start {
+                id: "s".into(),
+                cwd: "/w".into()
+            })
+        );
+        for (reason, deliberate) in [("prompt_input_exit", true), ("other", false), ("", false)] {
+            let p = format!(
+                r#"{{"hook_event_name":"SessionEnd","session_id":"s","cwd":"/w","reason":"{reason}"}}"#
+            );
+            assert_eq!(
+                ev(&p),
+                Some(HookEvent::End {
+                    id: "s".into(),
+                    cwd: "/w".into(),
+                    deliberate
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn bad_hook_payloads_are_ignored() {
+        for p in [
+            "",
+            "null",
+            "[]",
+            "{",
+            "\u{0}",
+            r#"{"session_id": 5}"#,
+            r#"{"session_id": ""}"#,
+            r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        ] {
+            assert_eq!(Claude.hook_event(p), None, "{p}");
+        }
+        // A cwd that isn't a string is no cwd.
+        assert_eq!(
+            Claude.hook_event(r#"{"session_id":"s","cwd":null}"#),
+            Some(HookEvent::Start {
+                id: "s".into(),
+                cwd: "".into()
+            })
+        );
     }
 
     #[test]

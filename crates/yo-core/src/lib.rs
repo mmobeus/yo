@@ -93,3 +93,38 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     fs::write(&tmp, data).map_err(|e| Error::io(path, e))?;
     fs::rename(&tmp, path).map_err(|e| Error::io(path, e))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fake::{FakeSys, TempDir};
+
+    #[test]
+    fn sync_clones_carry_prefixes_and_profiles() {
+        let t = TempDir::new().unwrap();
+        let cfg = t.path().join("config.json");
+        fs::write(
+            &cfg,
+            r#"{"profiles": {"p": {"repos": {"b": {"path": "/b"}}}},
+                "repos": {"a": {"path": "/a"}, "c": {"path": "/c", "titlePrefix": "C: "}}}"#,
+        )
+        .unwrap();
+        let sys = FakeSys::new(t.path());
+        sys.set_env("YO_CONFIG", &cfg.to_string_lossy());
+        let ctx = Ctx::load(Arc::new(sys), t.path()).unwrap();
+        let got: Vec<(String, String, Option<String>)> = ctx
+            .sync_clones()
+            .into_iter()
+            .map(|c| (c.repo, c.title_prefix, c.profile))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a".into(), String::new(), None),
+                ("c".into(), "C: ".into(), None),
+                ("b".into(), "[b] ".into(), Some("p".into())),
+            ]
+        );
+        assert!(ctx.live().is_empty());
+    }
+}

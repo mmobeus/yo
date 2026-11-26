@@ -46,4 +46,20 @@ mod tests {
         assert_eq!(a.0, "11111111-1111-4111-8111-111111111111");
         assert_eq!(a, b);
     }
+
+    #[test]
+    fn an_empty_file_is_replaced() {
+        let t = TempDir::new().unwrap();
+        let sys = FakeSys::new(t.path());
+        sys.push_ids(["22222222-2222-4222-8222-222222222222"]);
+        let paths = Paths::new(&sys);
+        std::fs::create_dir_all(&paths.state).unwrap();
+        std::fs::write(paths.machine_id(), "\n").unwrap();
+        let a = MachineId::get(&sys, &paths).unwrap();
+        assert_eq!(a.0, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(
+            std::fs::read_to_string(paths.machine_id()).unwrap().trim(),
+            a.0
+        );
+    }
 }

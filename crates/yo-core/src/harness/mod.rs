@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use crate::ledger::HookEvent;
 use crate::sys::Sys;
 
 pub mod claude;
@@ -18,6 +19,11 @@ pub trait Harness: Send + Sync {
     /// Its sessions that are running now.
     fn live(&self, sys: &dyn Sys) -> Vec<LiveSession>;
     fn capabilities(&self) -> Capabilities;
+    /// Its ledger hook's payload as a start or an end, for a harness with
+    /// `ledger_hooks`. `None` for anything it doesn't recognize.
+    fn hook_event(&self, _payload: &str) -> Option<HookEvent> {
+        None
+    }
 }
 
 /// What a harness has beyond the required parts. Anything it lacks shows
