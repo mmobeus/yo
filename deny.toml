@@ -59,6 +59,26 @@ allow = [
   "serde_derive",
   "syn",
   "unicode-ident",
+
+  # clap, for yo-cli's argument parsing, with what it brings for styled
+  # output and its derive (windows-* only on Windows)
+  "anstream",
+  "anstyle",
+  "anstyle-parse",
+  "anstyle-query",
+  "anstyle-wincon",
+  "clap",
+  "clap_builder",
+  "clap_derive",
+  "clap_lex",
+  "colorchoice",
+  "heck",
+  "is_terminal_polyfill",
+  "once_cell_polyfill",
+  "strsim",
+  "utf8parse",
+  "windows-link",
+  "windows-sys",
 ]
 
 [sources]

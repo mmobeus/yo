@@ -1,0 +1,270 @@
+yo — spin up / tear down an iTerm2 work session on a fresh git worktree.
+
+The user guide and full reference are docs/guide.md and docs/reference.md
+in the yo repo. What follows is the summary.
+
+Configuration:
+  Every site-specific thing (which repos exist, where their clones live, the
+  branch prefix, window size) lives in a JSON config file — this script
+  itself is generic. yo reads, in order:
+      $YO_CONFIG
+      ${XDG_CONFIG_HOME:-~/.config}/yo/config.json
+  The file holds "defaults" (global settings), "profiles" (each with its own
+  settings, and the repos and agents inside it) and repos and agents that
+  belong to no profile. A profile's "owners" claim GitHub owners: every clone
+  at <cloneRoot>/<owner>/* joins it, and so does a PR/issue URL for one. See
+  config/yo.config.example.json, `_yo_cfg` below for every key, and `yo
+  config` for the commands that edit it. A setting already in the
+  environment (YO_MODE=here yo ...) beats the file.
+  With no config file, yo runs in single-repo mode: the clone you are standing
+  in is the repo and its default branch is the base branch. `yo help` prints
+  the repos yo can currently see.
+
+Usage:
+  yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S]
+     [--model=M] [--agent=NAME] [--add-to=PROFILE|guest] [INPUT] [extra]
+
+  INPUT is resolved in order:
+    PR / issue URL     github.com/.../pull/N or /issues/N (see below)
+    existing branch    exact branch name (local or origin) -> reused as-is;
+                       also matches <prefix>/<INPUT> (the classic reuse case)
+    session name       otherwise: a new branch off the repo's base branch,
+                       named <INPUT> (<prefix>/<INPUT> when a branchPrefix
+                       is configured)
+    - or (omitted)     timestamped session (sesh_YYYYmmdd_HHMMSS) with a fun
+                       window title ("Adventurous Possum"). `-` is the
+                       explicit spelling so an [extra] can follow:
+                         yo - 'prod is broken, investigate!'
+                       Bare `yo` works too: repo = --repo, else inferred
+                       from the cwd, else the default repo. Help is `yo help`.
+
+  --repo=R overrides repo inference — e.g. work in one repo on an issue that
+  is tracked in another:
+    yo --repo=backend https://github.com/acme/tracker/issues/123
+  (For PR URLs the worktree must come from the PR's own repo, so a
+  conflicting --repo is an error.) The legacy positional form
+  `yo <repo> <name> [extra]` still works.
+
+  URL forms (repo, kind, and number are read from the URL):
+    .../pull/<n>    -> name review_pr_<n>; worktree checked out at the PR's
+                       HEAD (the code under review, via refs/pull/<n>/head)
+                       and set to TRACK it so `git pull` refreshes as the PR
+                       gets new commits; seeds claude with  /code-review <url>
+                       (the command is configurable — defaults.reviewCmd).
+    .../issues/<n>  -> name issue_<n> (off the repo's base branch); seeds
+                       claude with a "help me address this issue: <url>"
+                       message.
+
+  A clone whose origin is your fork works as well: the real repo is whichever
+  remote points at the repo's owner/repo (conventionally `upstream`), and PR
+  heads and the base branch are fetched from there; your own branches still
+  come from origin.
+
+  A URL for a repo yo has never heard of works too: the repo is cloned to
+  <cloneRoot>/<owner>/<repo> (or found there, if it already is) and the
+  session gets a worktree off it as usual. Where it belongs:
+    - a profile that claims its owner: it joins that profile, no questions;
+    - --add-to=PROFILE: it joins PROFILE, and is saved there in the config;
+    - otherwise, at a terminal, yo asks: one of your profiles (saved), a new
+      profile claiming its owner (saved), or a guest just this once;
+    - with nobody to ask (no terminal, or from inside claude), a guest.
+  A guest gets no shared memory (Claude keeps its own), and its worktree is
+  NOT pre-trusted — Claude asks before running anything the repo configures.
+  (A profile with "trust": false does the same for its own repos.) The
+  "guestProfile" default names a profile to run guests under instead.
+
+  Window titles: non-default repos get a "[<repo>] " prefix; PR/issue
+  sessions show "PR#1234: <title>" / "Issue#1234: <title>" (fetched via gh,
+  truncated to 50 chars; falls back to the session name if gh fails).
+
+  Personas: EVERY session gets a codename ("Adventurous Possum") told to
+  claude in its first message — it introduces itself with it, and unnamed
+  sessions use it as the window title.
+
+  --title="T"  use T as the tab / Session Status title instead of the derived
+  one (session name, PR/issue title, or codename). Retitle later, from inside
+  the session, with `yo title`.
+
+  --from=SESSION  tell the new session to report back to the Claude session
+  named SESSION (the name the statusline shows, what SendMessage takes) when
+  it finishes or gets blocked. For a coordinating session handing work out.
+
+  --model=M  run this session on model M (an alias like opus, sonnet, haiku,
+  opus[1m], or a full model id). Session only: your default in settings.json
+  is untouched, and resume keeps the session on whatever it last ran on.
+  `yo resume --model=M <session>` switches a session as it comes back.
+
+  --agent=NAME  run the session AS agent NAME (claude --agent): its system
+  prompt and rules instead of the default ones. NAME must be an agent merged on
+  the repo's base branch (a .claude/agents/*.md file with `name: NAME`) or one
+  in ~/.claude/agents. The ledger records it, so resume and resume-all bring
+  the session back as the same agent. The tab and the codename lead with the
+  agent's name ("Cindy · Plucky Gary"), and an issue or PR URL is handed to the
+  agent to work or review by its own instructions. An agent registered with
+  in the config ("agents") defaults the repo to its own.
+    yo --agent=cindy https://github.com/acme/service/issues/123
+
+  --new-window (--window) put this session in a NEW iTerm window instead of a
+  tab in the shared one; --tab forces the opposite. The default is a tab, so
+  sessions pile up in one window and iTerm2's Session Status tool — which only
+  lists the sessions of ONE window — becomes a dashboard of all of them.
+  (Window > Cockpit, ⌥⇧⌘C, shows status across every window regardless.)
+  "windowMode": "window" in the config's defaults restores one window per
+  session; "windowGroup" names the shared window, and may contain {repo} to
+  get one window per repo.
+
+  --here (--in-place) NO worktree, NO branch: the session runs in an existing
+  directory, on whatever is checked out there. Nothing is fetched or created.
+  Which directory:
+    a repo you NAMED (--repo, `yo <repo>`, a PR/issue URL)  -> its clone
+    otherwise                                               -> the cwd, which
+                                      needn't be a git clone at all
+  INPUT is then only the session's title. A PR/issue URL still seeds claude,
+  but checks nothing out — yo says so, since the tree may be stale.
+  Made for handing work from one session to the next in the same tree:
+    yo --here - 'read HANDOFF.md, then ask the previous session what is open'
+  In place can be the DEFAULT — per repo ("mode": "here"), per profile, or
+  everywhere (defaults.mode); --worktree then asks for a worktree this
+  once.
+
+  --profile=P (or `yo <profile>`) run the session under a profile: a named
+  bundle of defaults for one of YOUR projects — mode, memory, branch prefix,
+  the claude command, a settings layer (permissions, hooks, ...), a home
+  directory. Repos listed inside a profile (or under an owner it claims) get
+  it without asking. A profile also stands on its own: with no repo named,
+    yo --profile=P      goes to the profile's "dir" (which needn't be a git
+                        clone), else to the cwd's repo if it belongs to P,
+                        else to the first repo registered under P.
+  Precedence, everywhere: flag > repo > profile > defaults.
+
+  Layout (defaults.layout): `split` puts a shell pane next to claude; `workgroup`
+  opens claude alone and leaves the shell to the terminal peer ("CLI") of
+  iTerm2's Claude Code workgroup. The default, `auto`, picks `workgroup` when
+  that workgroup has a peer session configured, else `split`.
+
+  yo down [--dry-run] [--yes [--discard]]
+                       Tear down the session you're currently in
+                       (aliases: rm, teardown, -d). In a --here session there
+                       is no worktree to remove, so it only forgets the
+                       session and closes the tab. --yes skips the prompt so
+                       it can run from inside claude (the /yo-down skill); it
+                       refuses to lose uncommitted work unless --discard.
+                       --dry-run reports what would happen and stops.
+  yo agent [NAME] [--model=M] [--new-window|--tab] ['message']
+                       Start, or bring back, agent NAME's home session: a
+                       long-lived checkout of the repo's base branch at
+                       <clone>-worktrees/agent-NAME (detached, refreshed from
+                       the base each time it starts while it's clean), run as
+                       the agent with Remote Control on, named NAME-home. Its
+                       work happens in worker sessions it starts with
+                       `yo --agent=NAME --from=NAME-home ...`, never in the
+                       home checkout, which `yo down` and `yo sweep` leave
+                       alone. Bare `yo agent` lists the registered agents.
+                       A message is delivered whichever way the home is
+                       reached: seeded into a new or resumed home, or, when
+                       it's already running, typed into its prompt after its
+                       iTerm tab is brought forward.
+  yo NAME ['message']  With no flags, reaches what NAME names, in order:
+                         1. an agent registered in the config: its home, as
+                            `yo agent NAME`;
+                         2. a live session by its Claude name (what the
+                            statusline and ListAgents show, or a Remote
+                            Control name such as cindy-home): its iTerm tab
+                            comes forward and the message is typed into its
+                            prompt;
+                         3. a session in yo's ledger, by its yo name, session
+                            id or id prefix: brought forward and typed into
+                            if running, else resumed with the message as its
+                            first prompt;
+                         4. a repo named NAME-home (its key, or its clone's
+                            directory name): the home's session — brought
+                            forward and typed into if one is running, else
+                            the most recently used one resumed with the
+                            message, else a new one started in place there,
+                            seeded with it;
+                         5. otherwise a new session named NAME, as always.
+                       A repo or profile NAME keeps its own meaning (`yo
+                       <repo>`), any flag skips 1-4 (`yo --repo=R NAME`), and
+                       an existing branch is still named by its full name
+                       (`yo <prefix>/NAME`).
+  yo sessions          List the sessions yo knows about and whether each is
+                       running, ready to resume, or gone (alias: ls).
+  yo resume <name|session-id|dir> [--model=M] [--new-window|--tab]
+                       Reopen one session in a tab of its shared window and
+                       `claude --resume` it there, under the same repo,
+                       profile and settings layer it started with (alias:
+                       --resume). Any session id works, even one yo didn't
+                       start: its directory is read from the transcript.
+  yo title ["T"]       Retitle the session this runs in (tab, Session Status
+                       and the ledger; the /yo-title skill). Bare `yo title`
+                       resets every yo tab's name to its title, undoing the
+                       workgroup's "Chat" rename.
+  yo adopt [--title=T] Run from inside a claude session yo didn't start (the
+                       /yo-adopt skill): record it so resume-all brings it
+                       back. Works anywhere, not just in a yo worktree.
+  yo forget <name|session-id|dir>
+                       Drop a session from the ledger (resume-all skips it);
+                       its transcript and directory are left alone.
+  yo resume-all [--dry-run] [--new-window|--tab]
+                       After a restart or crash: reopen every session that
+                       was live, one tab each. Sessions quit with /exit are
+                       left out (yo resume <name> still reopens one).
+  yo sweep [--apply] [--repo=R]... [--include-stale] [--include-suspended]
+           [--delete-branches]
+                       Find worktrees whose work has landed and (with --apply)
+                       remove them; dry run by default. DEAD = merged PR (a
+                       squash merge leaves the PR as the only witness), no
+                       commits beyond base, or a clean PR-review checkout.
+                       STALE = unmerged work, kept. SUSP = a session the
+                       ledger would resume, kept. KEEP = dirty, open PR, the
+                       current directory, or a live claude session. Branches
+                       are kept unless --delete-branches; removal never uses
+                       --force.
+  yo config [show | path | edit | add-repo <clone|url|owner/repo>
+            [--profile=P] [--key=K]]
+                       Show the config and what it registers; open it in
+                       $EDITOR (validated after); or list a repo, cloning it
+                       first unless it's a directory.
+  yo help              Show this help, plus the configured repos and profiles.
+
+Session ledger: yo records each session's id under
+${XDG_STATE_HOME:-~/.local/state}/yo/sessions/, because Claude Code's own
+list of running sessions doesn't survive a restart (the first claude started
+afterwards prunes the rest). `yo sessions` also adopts sessions that are
+running in a yo worktree but were started some other way — run it before a
+planned restart to make sure resume-all will know about them.
+
+[extra] — optional final argument: additional instructions appended to the
+initial message seeded into claude (PR/issue modes), or used AS the initial
+message for a plain <name> session (which otherwise seeds nothing). Quote it:
+  yo <repo> my-fix 'focus on the retry path; skip tests for now'
+
+What "create" does:
+  1. fetch the repo's base branch in the primary clone
+  2. worktree add  <clone>-worktrees/<name>  on branch  <name> (or
+     <prefix>/<name>, with a branchPrefix) —
+     REUSED if it already exists locally (must not be checked out elsewhere),
+     created tracking origin/<prefix>/<name> if that exists, else created
+     fresh from the base branch (or the PR's head commit in PR-review mode)
+  3. open a tab titled <name> in the shared iTerm2 window (creating that
+     window if it isn't open yet)
+  4. split the tab side-by-side; cd both panes to the worktree (layout
+     `split` — under `workgroup` there is one pane and no split)
+  5. seed the worktree's trust record in ~/.claude.json so no folder-trust
+     dialog appears, and copy the base clone's .claude/settings.local.json
+     (gitignored, holds MCP-server approvals) so the MCP prompt is skipped too
+  6. launch claude in the LEFT pane (with an initial message pre-filled when
+     created from a PR/issue URL), under a session id yo picks and records
+     in the session ledger, stacking yo's settings layer on top of your own
+     with `claude --settings`: the installed claude-settings.json plus an
+     autoMemoryDirectory — one memory shared by every session
+     (~/.claude/memories/yo unless the config's "memories" / "memory" say
+     otherwise) — plus the hooks that keep the ledger current.
+     ~/.claude/settings.json is never edited.
+
+What "down" does (from inside the worktree: the right pane, or claude itself):
+  - warns loudly about uncommitted / unpushed work
+  - confirms, removes the worktree, KEEPS the branch, forgets the session
+  - closes ITS OWN iTerm2 tab (and the window with it, if it was the last
+    tab) — found by session id, so it's safe when another tab has focus
+
