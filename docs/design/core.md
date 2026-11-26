@@ -11,6 +11,7 @@
 | phase | what | status |
 | --- | --- | --- |
 | 0 | this design | in review (#8) |
+| before 1 | the gates: CI, lints, review skills, skill tuning | not started (#11) |
 | 1 | Rust core with CLI parity | not started |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
@@ -46,6 +47,7 @@ builds against it.
 - [The daemon](#the-daemon)
 - [Phases](#phases)
 - [Parity test plan](#parity-test-plan)
+- [How it's built](#how-its-built)
 - [Open questions](#open-questions)
 
 ## Decisions
@@ -714,6 +716,8 @@ the relay live in it, but it stays small.
 This replaces the phase list in #9. Each phase is useful on its own.
 
 0. **Design:** this doc.
+   Then, before any Rust is written: **the gates** (#11), as described in
+   [how it's built](#how-its-built).
 1. **Core with CLI parity:** port yo behind the same commands and effects, with
    tests ([below](#parity-test-plan)). One harness (Claude) and one runner
    (iTerm), but both already behind their traits. `--name` is passed at launch.
@@ -837,6 +841,97 @@ tested without a model.
 Fakes can't prove the AppleScript drives iTerm correctly. A short manual
 checklist covers that, run once before the switch: start, start in a new
 window, reach with a message, title, down, resume-all.
+
+## How it's built
+
+yo will be built and maintained mostly by coding agents. The compiler is the
+first gate, but not the only one: every PR clears the same bar, whoever or
+whatever wrote it. #11 sets this up before phase 1 writes any Rust.
+
+The rule for where a check lives: **the cheapest gate that can catch it.**
+Rules that can be checked mechanically become tests and lints, which are free
+and certain. Review agents cover what can't be, and the maintainer reviews
+last.
+
+### Gates, cheapest first
+
+| gate | what it catches | runs |
+| --- | --- | --- |
+| the compiler, `cargo fmt`, `cargo clippy -D warnings` | type errors, unhandled cases, lint rules | every PR, in CI |
+| tests: unit, parity, architecture, security | behavior, and the rules below | every PR, in CI |
+| `cargo-deny` | licenses, advisories, duplicate crates, new dependencies | every PR, in CI |
+| review skills (`review-pr`) | what can't be checked mechanically | by hand; sets the `yo-review` commit status |
+| the maintainer | everything else, and any loosened gate | before merging |
+
+`main` requires the CI checks and `yo-review` at the PR's head commit. Running
+the review skills automatically in CI is left until the cost is clearly worth
+it.
+
+### Architecture rules as tests and lints
+
+| rule | check |
+| --- | --- |
+| `yo-core` stays synchronous and light | a test over `cargo metadata` fails if `yo-core` depends on tokio, axum or the ACP crate |
+| the core never prints | `clippy::print_stdout` and `clippy::print_stderr` denied in `yo-core` |
+| every outside effect goes through `Sys` | `clippy::disallowed-methods` bans `std::process::Command::new`, the system clock and randomness in `yo-core` outside `sys.rs` |
+| a dry run changes nothing | every parity scenario also runs with `--dry-run`, and the sandbox must be byte-identical afterwards |
+| Claude-specific, not Claude-assumed | a fake harness with no optional capabilities runs the whole scenario suite |
+
+### Security tests
+
+- **Quoting:** randomized tests that pass arbitrary strings through the
+  single-quoting, run the result through `sh`, and require them to come back
+  unchanged. Messages and titles reach AppleScript as arguments, never pasted
+  into the script's text.
+- **Paths:** session names and URL inputs can't escape the worktree root.
+- **Destructive operations:** over randomized repo states, sweep and `down`
+  never remove a dirty worktree, the primary clone, the current directory, an
+  agent's home, or a worktree a session still holds.
+- **The daemon:** requests with no token, a wrong token, or a bad `Origin` or
+  `Host` are refused. The socket and token file are `0600`. It listens only
+  locally unless asked otherwise.
+- **The relay:** a fake ACP stream with a changed recipient or changed text is
+  a failed delivery. A relayed message is never reported as your voice.
+- **The hook:** random and malformed payloads never make it fail or hang.
+- **The event log:** newlines and control characters in any text can't break
+  the JSON lines format.
+
+### Review skills
+
+In the repo's own `.claude/skills/`, for working on yo. These are separate from
+`claude/skills/`, which yo installs for its users. The checklists they apply
+live as plain markdown in `docs/dev/`, so any harness can follow them, and
+`AGENTS.md` (which `CLAUDE.md` points to) tells authoring agents which gates
+to run before opening a PR.
+
+- **`review-architecture`:** the diff against this doc's principles and rules.
+  Is the doc, and its status table, still true?
+- **`review-security`:** the points above, plus new outside commands, new
+  places that accept input, and new dependencies.
+- **`review-tests`:** tests at the right layer for each change; parity
+  scenarios and `accepted.diff` entries justified.
+- **`review-pr`** runs the three, each as a separate agent that sees only the
+  diff and this doc, not the author's explanation, so it can't simply agree
+  with it. It posts one PR comment with blocking and non-blocking findings and
+  the commit it reviewed, and sets the `yo-review` status on that commit.
+
+They focus on yo's own rules. General correctness is the built-in
+`/code-review`'s job.
+
+### Tuning the review skills
+
+`tune-review-skills` runs at the end of a phase, or after a miss. It looks at
+bugs found after merging that review missed, findings dismissed as wrong, and
+changes to this doc since the last tuning, and proposes edits to the skills
+as a PR.
+
+- **Test cases for the reviewers.** Each review skill has planted-bad diffs it
+  must flag and known-good diffs it must pass. Every miss adds a case, and an
+  edit lands only if every case still holds.
+- **Only the maintainer can loosen a gate.** An edit that weakens a check,
+  removes a test case, or relaxes a lint or `cargo-deny` rule needs the
+  maintainer's explicit approval in that PR. Agents don't lower the bar
+  they're measured against.
 
 ## Open questions
 
