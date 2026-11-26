@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness taken out of the plan; testing is `yo-core` unit tests with a fake `Sys`, and comparing with bash by hand |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22). In `yo-core`: `Sys` and its fake, config and the registry with precedence, the ledger (reading and writing, liveness, the hook, sync), Claude's live sessions. Next: `yo-cli` and the read-only commands |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -244,12 +244,15 @@ Inside `yo-core`:
 ```
 yo-core/src/
   sys.rs        Sys: clock, ids, rng, process table, command runner, env, paths
+  fake.rs       the fake Sys, for tests (the `fake` feature); outside sys.rs, so not exempt from its bans
+  error.rs      yo-core's errors; the CLI renders them
   paths.rs      XDG dirs, config path, state dir, worktree roots
-  config/       the config file: types (serde, deny_unknown_fields), load, validate, write (add-repo)
-  registry/     resolved repos, profiles, agents, homes; precedence (flag > repo > profile > defaults, env beats file)
+  machine.rs    this machine's id
+  config.rs     the config file: types (serde, deny_unknown_fields, the file's order kept), load; later write (add-repo)
+  registry.rs   resolved repos, profiles, agents, homes; precedence (flag > repo > profile > defaults, env beats file)
   git.rs        the git CLI: worktrees, branches, remotes, status, default branch
   github.rs     the gh CLI: PR and issue titles, PR listings for sweep; URL parsing
-  ledger/       session records: load, put, adopt, drop, retitle, sync, the hook
+  ledger.rs     session records: load, write, drop, liveness, sync, the hook; later put, adopt, retitle, get
   resolve.rs    `yo NAME`: the ordered lookup
   input.rs      INPUT -> what to create: unnamed, PR, issue, existing branch, new branch
   create.rs     plan a new session: worktree, branch, title, codename, brief, message
@@ -260,8 +263,8 @@ yo-core/src/
   plan.rs       Plan and Action: what a command will do, before it does it
   events.rs     event types, append, read, tail
   status.rs     the status model: a fold over records, liveness and events
-  harness/      the Harness trait; claude/ (settings layer, trust, memory, hooks, agents), codex/
-  runner/       the Runner trait; iterm.rs. The ACP runner's client side lives here; its processes live in the daemon
+  harness/      the Harness trait; claude.rs (live sessions; later settings layer, trust, memory, hooks, agents), codex/
+  runner.rs     the Runner trait; later iterm.rs. The ACP runner's client side lives here; its processes live in the daemon
   message.rs    delivering a message: choosing a method, and the result
 ```
 
@@ -279,12 +282,12 @@ what makes the suite possible.
 ```rust
 pub trait Sys: Send + Sync {
     fn now(&self) -> SystemTime;
-    fn new_session_id(&self) -> Uuid;                // today: uuidgen
+    fn new_session_id(&self) -> String;              // a v4 UUID; today: uuidgen
     fn pick(&self, n: usize) -> usize;               // codenames; today: $RANDOM
-    fn env(&self, key: &str) -> Option<String>;
+    fn env(&self, key: &str) -> Option<String>;      // Some("") is set but empty
     fn home(&self) -> PathBuf;
-    fn cmd(&self) -> &dyn CommandRunner;             // git, gh, osascript, ps, claude, codex
-    fn procs(&self) -> &dyn ProcessTable;            // is pid alive, its comm, its tty
+    fn cmd(&self) -> &dyn CommandRunner;             // git, gh, osascript, claude, codex
+    fn procs(&self) -> &dyn ProcessTable;            // a pid's comm (None: not running), its tty
     fn hostname(&self) -> String;
 }
 
@@ -296,14 +299,20 @@ pub trait CommandRunner: Send + Sync {
 Files are touched with plain `std::fs` under paths the `Sys` gives (`home`, and
 XDG variables via `env`), so a throwaway `HOME` sandboxes them, as today.
 
+The real `Sys` takes its randomness from `/dev/urandom` and asks `ps` whether a
+pid is alive and what it is, rather than pulling in `uuid`, `rand` or `libc`
+(the workspace forbids `unsafe`). The fake lives in `fake.rs`, not under
+`sys.rs`, so the banned calls `sys.rs` may make aren't open to it; other
+crates use it only as a dev-dependency feature.
+
 ### Context and config
 
 ```rust
 pub struct Ctx {
     pub sys: Arc<dyn Sys>,
     pub paths: Paths,           // config path, state dir, settings dir, ...
-    pub machine: MachineId,
-    pub registry: Registry,     // config resolved: repos, profiles, agents, harnesses
+    pub registry: Registry,     // config resolved: repos, profiles, agents, global settings
+    pub harnesses: Vec<Box<dyn Harness>>,
 }
 
 impl Ctx {
@@ -317,7 +326,7 @@ pub struct Config {            // the JSON file, as today, plus harness settings
     pub repos: BTreeMap<String, RepoCfg>,
     pub repos_in: Vec<PathBuf>,
     pub agents: BTreeMap<String, AgentCfg>,
-    pub harnesses: BTreeMap<String, HarnessCfg>,   // new, optional: command, extra args per harness
+    pub harnesses: BTreeMap<String, HarnessCfg>,   // new in phase 2, optional: command, extra args per harness
 }
 
 impl Registry {
@@ -329,16 +338,25 @@ impl Registry {
     pub fn agent(&self, name: &str) -> Option<&Agent>;
     pub fn home_repo(&self, name: &str) -> Option<&Repo>;      // NAME-home
     pub fn harness(&self, name: &str) -> Option<&dyn Harness>;
-    pub fn setting<T>(&self, s: Setting<T>, repo: Option<&Repo>, flag: Option<T>) -> T;
+    pub fn layered<T>(&self, flag: Option<T>, repo: Option<&Repo>, picked_profile: Option<&str>,
+                      of_repo: impl Fn(&Repo) -> Option<T>, of_profile: impl Fn(&Profile) -> Option<T>,
+                      default: T) -> T;
+    pub fn mode(&self, flag: Option<Mode>, repo: Option<&Repo>, picked: Option<&str>) -> Mode;
+    // branch_prefix, claude_cmd, window_group, memory_dir, title_prefix, ...: each over `layered`
 }
 ```
 
-`Registry::setting` is the one place precedence lives: flag, then repo, then
-profile, then `defaults`, with a setting's environment variable beating the
-file. Today that's spread over `*_for` functions.
+`Registry::layered` is the one place precedence lives: flag, then repo, then
+profile, then `defaults`. Each setting is a named method over it. A global
+setting's environment variable beats the file when it's set, even to nothing,
+as bash's `${X+x}` does; `Defaults` holds the global settings resolved that
+way. Today that's spread over `*_for` functions.
+
+The machine id isn't in `Ctx`: it's read (and made, the first time) when a
+ledger record is written, so commands that write nothing never create it.
 
 A new setting, `harness` (default `claude`), sits at every level like `mode`
-does, with a `--harness=H` flag. Today's `claude` setting stays, as the
+does, with a `--harness=H` flag. It comes with phase 2, with Codex. Today's `claude` setting stays, as the
 command for the `claude` harness; `harnesses.<name>.command` is the same for
 any harness.
 
@@ -369,17 +387,18 @@ pub struct Record {
     pub harness: Option<String>,          // new; absent = claude
     pub machine: Option<MachineId>,       // new; absent = this machine
     pub runner: Option<RunnerKind>,       // new; absent = iterm
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub created_at: Option<i64>,          // unix seconds, as bash writes them
+    pub updated_at: Option<i64>,
     pub ended_at: Option<i64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,   // unknown keys survive a rewrite
 }
 
-pub struct Ledger { /* dir */ }
+pub struct Ledger { /* sys, paths */ }
 
 impl Ledger {
     pub fn all(&self) -> Vec<Entry>;                          // Entry = key + record
+    pub fn write(&self, e: &mut Entry) -> Result<()>;         // back to its own file; stamps updatedAt, machine
     pub fn put(&self, rec: Record) -> Result<Key>;
     pub fn adopt(&self, a: Adopt) -> Result<Key>;
     pub fn drop(&self, key: &Key) -> Result<()>;
@@ -387,18 +406,21 @@ impl Ledger {
     pub fn retitle(&self, by: RetitleBy, title: &str) -> Result<Option<Key>>;
     pub fn learn_id(&self, key: &Key, session_id: &str) -> Result<()>;  // a harness that names its own ids
     pub fn sync(&self, repos: &[&Repo], live: &[LiveSession]) -> Result<Vec<Key>>;
-    pub fn hook(&self, payload: &HookPayload) -> Result<()>;  // never fails the caller
+    pub fn hook(&self, payload: &str);                        // never fails the caller
     pub fn get(&self, q: &str, live: &[LiveSession]) -> Result<Found>; // id, 8+ prefix, dir, name; transcript fallback
 }
 
-pub enum State { Running { pid: Option<u32> }, Ready, Ended, Gone, NoId }
+pub enum State { Running { pid: u32 }, Ready, Ended, Gone, NoId }
 
 pub fn state_of(rec: &Record, live: &[LiveSession]) -> State;   // today's status_of
 ```
 
-Writes go to a temporary file followed by a rename, as today. A record goes
-back to the file it came from, even when its session id has changed (after a
-`/clear`).
+Writes go to a temporary file followed by a rename, as today, with sorted
+keys and two-space indents. One difference: Python escaped non-ASCII text
+(`\u00e9`), and serde writes it as UTF-8; both read back the same. A record
+goes back to the file it came from, even when its session id has changed
+(after a `/clear`). `sync` returns what it adopted, for the CLI to report,
+rather than printing it.
 
 **Session ids known late.** yo picks a Claude session's id before launching it
 (`--session-id`), which is how the ledger knows a session before it has
@@ -475,6 +497,10 @@ what's Claude-specific in yo today is in how it prepares, launches and watches
 a Claude session, not in runners or sessions. All of that moves behind one
 trait.
 
+Like the rest of the core's API, the trait grows with the commands that use
+it: phase 1's foundations have `name`, `live` and `capabilities`, and launching
+and resuming come with the commands that do them.
+
 ```rust
 pub trait Harness {
     fn name(&self) -> &str;                                       // "claude", "codex"
@@ -543,6 +569,9 @@ pub struct SessionSpec {
 
 A runner is how a session runs. A session is a record in yo; its runner and
 harness are fields on it.
+
+So far the trait has only `kind`, for ledger records; the rest, and the iTerm
+runner, come with the commands that launch and reach sessions.
 
 ```rust
 pub trait Runner {
@@ -935,7 +964,7 @@ it.
 | the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
 | the core never prints | `clippy::print_stdout`, `clippy::print_stderr` and `clippy::dbg_macro` denied in `yo-core` |
 | every outside effect goes through `Sys` | `clippy::disallowed-methods` (`crates/yo-core/clippy.toml`) bans `std::process::Command::new`, the system clock, randomness, new uuids, reading the environment and `home_dir` in `yo-core` outside `sys.rs` |
-| a dry run changes nothing | each changing command (all have `--dry-run`, through plans) has a test that runs it dry against the fake `Sys`: it runs no command that changes anything, and its temporary `HOME` is byte-identical afterwards |
+| a dry run changes nothing | each changing command (all have `--dry-run`, through plans) has a test that runs it dry against the fake `Sys`: the fake records no changing call (for sweep and `down`, no worktree removal or branch deletion), and its temporary `HOME` is byte-identical afterwards. sweep and `down` also have one dry run against a real temporary repo, with its worktrees and branches compared afterwards |
 | Claude-specific, not Claude-assumed | the command tests run with a fake harness that has no optional capabilities, as well as with Claude |
 
 ### Security tests
@@ -947,7 +976,9 @@ it.
 - **Paths:** session names and URL inputs can't escape the worktree root.
 - **Destructive operations:** over randomized repo states, sweep and `down`
   never remove a dirty worktree, the primary clone, the current directory, an
-  agent's home, or a worktree a session still holds.
+  agent's home, or a worktree a session still holds. These run against real
+  temporary git repos, not only the fake `Sys`, so they check how git itself
+  reports dirty and unpushed work and what it refuses to remove.
 - **The daemon:** requests with no token or a wrong one are refused, on the
   socket and over TCP; over TCP, so are requests with a bad `Origin` or
   `Host`. The socket and token file are `0600`. With default settings it opens

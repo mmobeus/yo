@@ -16,6 +16,7 @@ yo-client = { path = "crates/yo-client" }
 yo-daemon = { path = "crates/yo-daemon" }
 yo-tui = { path = "crates/yo-tui" }
 
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [workspace.lints.rust]
