@@ -43,7 +43,7 @@ checkout staying put), `--force`, `--merge-settings`, `--no-iterm`,
 ## A quick tour
 
 ```sh
-yo my-fix 'the retry test is flaky'      # a worktree + branch <prefix>/my-fix, claude seeded
+yo my-fix 'the retry test is flaky'      # a worktree + branch my-fix, claude seeded
 yo https://github.com/o/r/pull/7         # a worktree at the PR's head, review seeded
 yo --here - 'read HANDOFF.md'            # no worktree: this directory, as checked out
 yo --agent=cindy <issue URL>             # work an issue as one of the repo's agents

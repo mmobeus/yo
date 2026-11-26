@@ -39,8 +39,8 @@ yo my-fix 'the retry test is flaky; find out why'
 ```
 
 An iTerm tab opens with claude already reading your message. It's working in
-a new git worktree at `../backend-worktrees/my-fix`, on a new branch
-`<you>/my-fix` off the repo's main branch, so your clone is untouched and you
+a new git worktree at `../backend-worktrees/my-fix`, on a new branch `my-fix`
+off the repo's main branch, so your clone is untouched and you
 can start more sessions side by side. Claude introduces itself with a
 codename ("Plucky Gary") that identifies the session.
 
@@ -94,7 +94,7 @@ yo https://github.com/acme/backend/pull/123 'focus on the migration'
 Name the branch in full and yo checks it out as-is:
 
 ```sh
-yo jj/rollbacks
+yo fix/rollbacks
 ```
 
 ### Titles and models
