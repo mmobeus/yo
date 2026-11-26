@@ -220,15 +220,14 @@ fn sessions_lists_and_adopts() {
 }
 
 #[test]
-fn commands_not_ported_yet_say_so() {
+fn refusals_write_nothing() {
     let (t, sys) = sandbox(None);
     let out = yo(&sys, t.path(), &["agent", "cindy"]);
-    assert_eq!(
-        (out.code, out.err.as_str()),
-        (
-            1,
-            "yo: `yo agent` isn't in the Rust yo yet; scripts/yo still has it\n"
-        )
+    assert_eq!(out.code, 1);
+    assert!(
+        out.err.starts_with("yo: unknown agent 'cindy'"),
+        "{}",
+        out.err
     );
     // Creating with no repo to work in refuses before anything is created.
     let out = yo(&sys, t.path(), &["some-name", "a message"]);

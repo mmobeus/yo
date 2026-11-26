@@ -545,7 +545,7 @@ pub fn unplaced(ctx: &Ctx, req: &CreateRequest) -> Result<Option<String>> {
 
 /// Whether yo pre-trusts `repo`'s worktrees: not a guest, and not when its
 /// own profile says `trust: false`.
-fn trusted(ctx: &Ctx, repo: &Repo) -> bool {
+pub(crate) fn trusted(ctx: &Ctx, repo: &Repo) -> bool {
     if ctx.registry.guest.as_deref() == Some(repo.key.as_str()) {
         return false;
     }
@@ -781,7 +781,7 @@ fn check_agent_on_disk(ctx: &Ctx, name: &str, dir: &Path) -> Result<()> {
     }
 }
 
-fn home_has_agent(ctx: &Ctx, name: &str) -> bool {
+pub(crate) fn home_has_agent(ctx: &Ctx, name: &str) -> bool {
     dir_has_agent(&ctx.sys.home().join(".claude/agents"), name)
 }
 

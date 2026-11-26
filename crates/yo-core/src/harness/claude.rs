@@ -90,7 +90,14 @@ impl Harness for Claude {
         flag("--model", &s.model);
         flag("--agent", &s.persona);
         flag("--append-system-prompt", &sysprompt);
-        flag("--name", &Some(s.name.clone()));
+        // A Remote Control name is the session's name too: otherwise Claude
+        // derives one from the directory, and that's what ListAgents,
+        // SendMessage and a worker's --from see.
+        flag(
+            "--name",
+            &Some(s.remote_control.clone().unwrap_or_else(|| s.name.clone())),
+        );
+        flag("--remote-control", &s.remote_control);
         flag("--session-id", &s.id);
         args.extend(message);
         Argv {

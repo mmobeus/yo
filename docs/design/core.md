@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`; PR #28). The ledger commands: `resume` (by name, id, prefix, directory, or an id only the harness's transcripts know), `resume-all`, `adopt`, `forget`, `title` (PR #29). `down` and `sweep`, with every refusal tested on the plan and sweep's verdicts tested against real git repos. Next: config writes and agents |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`; PR #28). The ledger commands: `resume` (by name, id, prefix, directory, or an id only the harness's transcripts know), `resume-all`, `adopt`, `forget`, `title` (PR #29). `down` and `sweep`, with every refusal tested on the plan and sweep's verdicts tested against real git repos (PR #30). `yo agent` and agents' homes, `config add-repo` and `config edit`: every command is ported. Next: the review rounds, the iTerm checklist and the switch (#21) |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -947,6 +947,11 @@ scaffolding for that one day. Instead:
     `YO_DRY_LAUNCH`, `down` doesn't close the tab it runs in (bash closed it)
   - sweep keeps a worktree whose `git status` can't be read (bash read it
     as clean), and warns about PR listings on stderr
+  - an agent's home in an untrusted repo gets no copied
+    `settings.local.json` or `mirror` files (bash copied them, trust or
+    not); a home's fetch happens while planning, before the agent check
+  - `config add-repo` and the clones yo makes don't stream git's output;
+    a failed clone says so in one line
   - a settings layer that can't be written stops the create, before the
     record and the launch, rather than launching without it
 
@@ -1045,6 +1050,7 @@ it.
 | the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
 | the core never prints | `clippy::print_stdout`, `clippy::print_stderr` and `clippy::dbg_macro` denied in `yo-core` |
 | every outside effect goes through `Sys` | `clippy::disallowed-methods` (`crates/yo-core/clippy.toml`) bans `std::process::Command::new`, the system clock, randomness, new uuids, reading the environment and `home_dir` in `yo-core` outside `sys.rs` |
+| the fake `Sys` is for tests | `cargo xtask arch` fails if a crate turns on `yo-core`'s `fake` feature other than as a dev-dependency |
 | a dry run changes nothing | each changing command (all have `--dry-run`, through plans) has a test that runs it dry against the fake `Sys`: the fake records no changing call (for sweep and `down`, no worktree removal or branch deletion), and its temporary `HOME` is byte-identical afterwards. sweep and `down` also have one dry run against a real temporary repo, with its worktrees and branches compared afterwards |
 | Claude-specific, not Claude-assumed | the command tests run with a fake harness that has no optional capabilities, as well as with Claude |
 

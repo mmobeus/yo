@@ -238,6 +238,10 @@ fn action(a: &Action) -> String {
                 .unwrap_or_default()
         ),
         Action::CloseOwnTab { .. } => "close this tab".to_string(),
+        Action::RefreshHome { path, remote, base } => format!(
+            "move {} to {remote}/{base}, if it has no uncommitted changes",
+            path.display()
+        ),
         Action::Focus {
             pid, tty, message, ..
         } => format!(
@@ -273,6 +277,7 @@ fn branch_words(b: &BranchSpec) -> String {
             format!("{branch} (new local branch tracking {start})")
         }
         BranchSpec::New { branch, start } => format!("{branch} (new, from {start})"),
+        BranchSpec::Detached(start) => format!("no branch (detached at {start})"),
     }
 }
 
@@ -305,6 +310,11 @@ impl Report for Progress<'_> {
     fn doing(&mut self, a: &Action) {
         let s = match a {
             Action::Fetch { what, .. } => format!("==> fetching {what}\n"),
+            Action::AddWorktree {
+                path,
+                branch: BranchSpec::Detached(start),
+                ..
+            } => format!("==> worktree add --detach {} {start}\n", path.display()),
             Action::AddWorktree { path, branch, .. } => format!(
                 "==> creating worktree: {}\n        branch: {}\n",
                 path.display(),
@@ -331,7 +341,13 @@ impl Report for Progress<'_> {
                 };
                 line("codename:", &r.codename);
                 line("session:", &r.session_id);
-                line("agent:", &r.agent);
+                line(
+                    "agent:",
+                    &r.agent.as_ref().map(|a| match &r.remote_control {
+                        Some(rc) => format!("{a} (Remote Control: {rc})"),
+                        None => a.clone(),
+                    }),
+                );
                 line("brief:", &r.brief);
                 s
             }
@@ -341,7 +357,8 @@ impl Report for Progress<'_> {
             | Action::RemoveWorktree { .. }
             | Action::PruneWorktrees { .. }
             | Action::SweepWorktree { .. }
-            | Action::CloseOwnTab { .. } => String::new(),
+            | Action::CloseOwnTab { .. }
+            | Action::RefreshHome { .. } => String::new(),
         };
         self.put(&s);
     }

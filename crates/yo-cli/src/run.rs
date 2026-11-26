@@ -60,21 +60,32 @@ fn go(
         Some(Command::Title { title }) => {
             return ledger_cmds::title(&Ctx::load(sys, cwd)?, title.as_deref(), cwd, out);
         }
+        Some(Command::Agent(a)) => return agent(&Ctx::load(sys, cwd)?, a, out),
+        Some(Command::Config {
+            command:
+                Some(ConfigCmd::AddRepo {
+                    target,
+                    profile,
+                    key,
+                }),
+        }) => {
+            let mut ctx = Ctx::load(sys, cwd)?;
+            let notes = place::add_repo(&mut ctx, cwd, target, profile.as_deref(), key.as_deref())?;
+            say(out, &notes);
+            return Ok(0);
+        }
+        Some(Command::Config {
+            command: Some(ConfigCmd::Edit),
+        }) => return config_edit(&Ctx::load(sys, cwd)?, out),
         Some(Command::Down(d)) => return teardown::down(&Ctx::load(sys, cwd)?, d, cwd, out),
         Some(Command::Sweep(s)) => {
             return teardown::sweep(&Ctx::load(sys, cwd)?, s, cwd, out, err);
         }
         Some(_) => {}
     }
+    // `_session-hook` is run before this (main reads its payload).
     let Some(name) = read_only(cli.command.as_ref()) else {
-        if let Some(c) = &cli.command {
-            writeln!(
-                err,
-                "yo: `yo {}` isn't in the Rust yo yet; scripts/yo still has it",
-                subcommand_name(c)
-            )?;
-        }
-        return Ok(1);
+        return Ok(0);
     };
     let ctx = Ctx::load(sys, cwd)?;
     let text = match name {
@@ -148,10 +159,13 @@ fn up(
     let (plan, ready) = match found {
         Resolved::New => return create(up, &mut ctx, cwd, out),
         Resolved::Agent(n) => {
-            return Err(format!(
-                "{n} is an agent; `yo agent` isn't in the Rust yo yet (scripts/yo still has it)"
-            )
-            .into());
+            let a = crate::cli::Agent {
+                name: Some(n),
+                message,
+                model: None,
+                window: Window::default(),
+            };
+            return agent(&ctx, &a, out);
         }
         Resolved::Live(l) => {
             let name = &up.args[0];
@@ -217,6 +231,78 @@ fn up(
         }
     };
     run_plan(&ctx, &plan, up.dry_run, ready, out)
+}
+
+/// `yo agent [NAME] [MESSAGE]`: lists the agents, or starts or reaches one's
+/// home.
+fn agent(
+    ctx: &Ctx,
+    a: &crate::cli::Agent,
+    out: &mut dyn Write,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let Some(name) = &a.name else {
+        let all = yo_core::agent::list(ctx);
+        if all.is_empty() {
+            writeln!(
+                out,
+                "no agents registered; add one under \"agents\" in {}",
+                ctx.paths.config.display()
+            )?;
+            return Ok(0);
+        }
+        writeln!(out, "{:<14} {:<12} HOME", "AGENT", "REPO")?;
+        for l in all {
+            let home = l.home.map_or_else(
+                || format!("?-worktrees/agent-{}", l.name),
+                |h| h.display().to_string(),
+            );
+            writeln!(out, "{:<14} {:<12} {home}", l.name, l.repo)?;
+        }
+        return Ok(0);
+    };
+    let plan = yo_core::agent::plan_home(
+        ctx,
+        name,
+        &ResumeOpts {
+            message: a.message.clone(),
+            model: a.model.clone(),
+            window: window(&a.window),
+        },
+    )?;
+    let launches = plan
+        .actions
+        .iter()
+        .any(|x| matches!(x, yo_core::plan::Action::Launch(_)));
+    run_plan(ctx, &plan, false, launches, out)
+}
+
+/// `yo config edit`: the config in `$EDITOR` (made first if there's none),
+/// then checked.
+fn config_edit(ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Box<dyn std::error::Error>> {
+    let cfg = &ctx.paths.config;
+    if !cfg.is_file() {
+        if let Some(d) = cfg.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(cfg, "{}\n")?;
+    }
+    let editor = ctx
+        .sys
+        .env_nonempty("EDITOR")
+        .unwrap_or_else(|| "vi".into());
+    // EDITOR may carry arguments (`code -w`), as the shell would split it.
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(cfg)
+        .status()?;
+    if !status.success() {
+        return Err(format!("{editor} exited with {status}").into());
+    }
+    yo_core::config::Config::load(cfg)?;
+    writeln!(out, "==> {} is valid", cfg.display())?;
+    Ok(0)
 }
 
 /// Prints notes as progress does.
@@ -429,29 +515,6 @@ fn read_only(c: Option<&Command>) -> Option<ReadOnly> {
         } => Some(ReadOnly::ConfigPath),
         Command::Sessions => Some(ReadOnly::Sessions),
         _ => None,
-    }
-}
-
-fn subcommand_name(c: &Command) -> &'static str {
-    match c {
-        Command::Help => "help",
-        Command::Config {
-            command: Some(ConfigCmd::Edit),
-        } => "config edit",
-        Command::Config {
-            command: Some(ConfigCmd::AddRepo { .. }),
-        } => "config add-repo",
-        Command::Config { .. } => "config",
-        Command::Sessions => "sessions",
-        Command::Resume(_) => "resume",
-        Command::ResumeAll(_) => "resume-all",
-        Command::Down(_) => "down",
-        Command::Sweep(_) => "sweep",
-        Command::Adopt(_) => "adopt",
-        Command::Title { .. } => "title",
-        Command::Forget { .. } => "forget",
-        Command::Agent(_) => "agent",
-        Command::SessionHook => "_session-hook",
     }
 }
 

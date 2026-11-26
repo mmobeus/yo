@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+pub mod agent;
 pub mod config;
 pub mod create;
 pub mod down;

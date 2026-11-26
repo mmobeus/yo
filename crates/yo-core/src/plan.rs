@@ -88,6 +88,13 @@ pub enum Action {
         key: Key,
         delete_branch: Option<String>,
     },
+    /// Moves an agent's home to the newest `<remote>/<base>`, unless it has
+    /// uncommitted changes (then it stays where it is).
+    RefreshHome {
+        path: PathBuf,
+        remote: String,
+        base: String,
+    },
     /// Closes the tab yo runs in (iTerm's `session` id), which ends the
     /// session in it. `None`: not in one.
     CloseOwnTab {
@@ -116,6 +123,8 @@ pub enum BranchSpec {
     Track { branch: String, start: String },
     /// A new branch from `start`.
     New { branch: String, start: String },
+    /// No branch: a detached checkout of `start` (an agent's home).
+    Detached(String),
 }
 
 impl BranchSpec {
@@ -124,6 +133,7 @@ impl BranchSpec {
             BranchSpec::Existing(b)
             | BranchSpec::Track { branch: b, .. }
             | BranchSpec::New { branch: b, .. } => b,
+            BranchSpec::Detached(_) => "",
         }
     }
 }
@@ -167,6 +177,9 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     )?,
                     BranchSpec::New { branch, start } => {
                         git::git_do(sys, repo, &["worktree", "add", "-b", branch, &p, start])?;
+                    }
+                    BranchSpec::Detached(start) => {
+                        git::git_do(sys, repo, &["worktree", "add", "--quiet", "--detach", &p, start])?;
                     }
                 }
             }
@@ -249,6 +262,29 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     // base, so -d refuses it. The reflog still has its tip.
                     if git::git(sys, repo, &["branch", "-D", b]).is_some() {
                         out.note(&Note::Detail(format!("deleted branch {b}")));
+                    }
+                }
+            }
+            Action::RefreshHome { path, remote, base } => {
+                let at = format!("{remote}/{base}");
+                let dirty = git::git_lines(sys, path, &["status", "--porcelain"])
+                    .is_some_and(|l| !l.is_empty());
+                if dirty {
+                    out.note(&Note::Info(format!(
+                        "note: {} has uncommitted changes; left at its current commit",
+                        path.display()
+                    )));
+                } else {
+                    let _ = git::git(sys, path, &["fetch", "--quiet", remote, base]);
+                    if git::git(sys, path, &["checkout", "--quiet", "--detach", &at]).is_some() {
+                        let sha = git::git(sys, path, &["rev-parse", "--short", "HEAD"])
+                            .unwrap_or_default();
+                        out.note(&Note::Info(format!("home at {at} ({sha})")));
+                    } else {
+                        out.note(&Note::Info(format!(
+                            "note: couldn't move {} to {at}; left at its current commit",
+                            path.display()
+                        )));
                     }
                 }
             }
