@@ -45,6 +45,12 @@ script's own summary plus the repos, profiles and agents it can see.
 `yo <repo> [INPUT] [message]` and `yo <profile> [INPUT] [message]` pick the
 repo or profile positionally.
 
+Claude is told its codename at the end of the first message. When that
+message is a slash command (it starts with `/`, as a PR session's
+`<reviewCmd> <url>` does), everything after the command is its arguments,
+so yo leaves the message as it is and passes the codename with
+`--append-system-prompt` instead.
+
 ### `yo sweep` verdicts
 
 | verdict | meaning | removed by `--apply` |
