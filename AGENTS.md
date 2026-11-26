@@ -40,7 +40,10 @@ reference describe it. A change to its behavior updates them.
 
 ## After opening it
 
-Run the review: `/review-pr` in Claude Code. With any other harness, follow
+Run the review from the main checkout, on an up-to-date, clean `main`, not
+from the PR's branch: `/review-pr <number>` in Claude Code. (Run from the
+PR's branch, the PR's own edited reviewer would review it.) With any other
+harness, follow
 `.claude/skills/review-pr/SKILL.md` by hand: it's plain markdown, and the
 reviewers' rules are in [`docs/dev/review.md`](docs/dev/review.md). It posts
 one comment with blocking and non-blocking findings, and sets the
@@ -73,7 +76,8 @@ Don't weaken a check to get a PR green. That includes:
   (outside `sys.rs` for `yo-core`'s banned calls)
 - `deny.toml`: a license, a duplicate skipped, a source, or a bans rule
 - `crates/yo-core/clippy.toml`, or the forbidden dependencies in `xtask`
-- deleting, skipping or `#[ignore]`-ing a test, or an `accepted.diff` entry
+- deleting, skipping or `#[ignore]`-ing a test, or relaxing its assertions,
+  or an `accepted.diff` entry
   that hides a change in effects
 - the review skills' test cases
 

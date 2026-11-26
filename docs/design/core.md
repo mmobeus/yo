@@ -1039,14 +1039,16 @@ to run before opening a PR.
 - **`review-pr`** runs the three, each as a separate agent. An agent sees the
   diff, the code at that commit and this doc, but not the author's
   explanation (the PR description, commits, the issue), so it can't simply
-  agree with it. The reviewer agent has only read tools, so it can't go
-  looking for them. It posts one PR comment with blocking and non-blocking
+  agree with it. The prompt keeps it to those, and the reviewer agent has
+  only read tools, so it can't run `gh` or `git` to fetch them. It posts one PR comment with blocking and non-blocking
   findings and the commit it reviewed, and sets the `yo-review` status on
   that commit.
-- **The rules come from the base branch.** The checklists, the skills and
-  `AGENTS.md` are read from the branch the PR targets, so a PR can't be
-  reviewed by its own edited reviewers. The code and this doc are read as
-  the PR changes them.
+- **The rules come from the base branch.** `review-pr` runs from a clean
+  checkout of the branch the PR targets, never the PR's own branch, because
+  the skill and the reviewer agent are loaded from the session's checkout.
+  It reads the checklists, the area skills and `AGENTS.md` from the base
+  too, so a PR can't be reviewed by its own edited reviewers. The code and
+  this doc are read as the PR changes them.
 
 `yo-review` records that review ran on that commit, so its state is always
 `success`, and its description gives the counts of findings. It doesn't

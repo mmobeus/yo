@@ -27,8 +27,8 @@ fixing, now or in a follow-up.
 - **Deterministic and sandboxed.** Tests use fakes (`Sys`, the shims, local
   bare repos). No network, no real `HOME`, no iTerm, no real harness. They
   don't sleep to wait for something. They pass on Linux.
-- **No weakened tests.** Nothing is deleted, skipped or `#[ignore]`d to get
-  green without the maintainer's approval in the PR (see `AGENTS.md`).
+- **No weakened tests.** Nothing is deleted, skipped, `#[ignore]`d or has
+  its assertions relaxed to get green without the maintainer's approval in the PR (see `AGENTS.md`).
 
 ## Non-blocking (unless it's serious)
 

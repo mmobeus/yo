@@ -1,7 +1,7 @@
 ---
 name: review-pr
-description: Run yo's three review skills (architecture, security, tests) on a pull request, each as a separate reviewer that sees only the diff and the design. Posts one PR comment with the findings and sets the yo-review commit status on the commit reviewed.
-argument-hint: "[PR number]"
+description: Run yo's three review skills (architecture, security, tests) on a pull request, each as a separate reviewer that sees only the diff, the code and the design. Run from a clean checkout of the base branch, never the PR's. Posts one PR comment with the findings and sets the yo-review commit status on the commit reviewed.
+argument-hint: "<PR number>"
 disable-model-invocation: true
 ---
 
@@ -10,16 +10,32 @@ disable-model-invocation: true
 Run by hand, on a PR. The rules every reviewer follows are in
 `docs/dev/review.md`.
 
+## 0. Run from the base branch, never the PR's
+
+This skill and the `yo-reviewer` agent (with its tool list) are loaded from
+the session's checkout. Run from the PR's branch, they'd be the PR's own,
+possibly edited, versions. So check first:
+
+```sh
+git status --porcelain
+git rev-parse --abbrev-ref HEAD
+```
+
+If the tree isn't clean, or the branch isn't the PR's base (normally
+`main`, up to date with `origin`), stop. Tell the user to run `/review-pr`
+from a clean checkout of the base, such as the main checkout.
+
 ## 1. The PR and the commit
 
-The argument is a PR number. If it's anything else, stop and ask for one.
+The argument is a PR number. If there's none, or it's anything else, stop
+and ask for one.
 
 ```sh
 gh pr view "<number>" --json number,headRefOid,baseRefName,url
 ```
 
-With no argument, leave the number out: that's the current branch's PR. Note the number `N`, the
-head commit `SHA` and the base branch `BASE`. The review is of `SHA`, even if
+Note the number `N`, the head commit `SHA` and the base branch `BASE`. If
+`BASE` isn't the branch from step 0, stop. The review is of `SHA`, even if
 the PR moves on while it runs.
 
 ## 2. Checkouts and the diff
@@ -36,8 +52,6 @@ echo "$dir"
 Note the directory `mktemp` printed, and use that literal path from here on.
 A shell variable may not survive to later commands.
 
-**If the base has no review skills yet** (the PR that adds them), read the
-rules from the checkout under review instead, and say so in the comment.
 ## 3. Three reviewers
 
 Start three `yo-reviewer` agents, in parallel, in one message, one for each

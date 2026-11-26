@@ -13,9 +13,11 @@ the `review-*` skills in `.claude/skills/`, and `review-pr` runs all three.
 - **Run by itself**, a reviewer reviews the current branch's change:
   `git diff $(git merge-base origin/main HEAD)`, which includes uncommitted
   changes, plus untracked files from `git status`.
-- **Rules from the base, code from the change.** The checklists, the review
-  skills and `AGENTS.md` are read from the base checkout. A PR doesn't get
-  reviewed by its own edited reviewer. Everything else, including
+- **Rules from the base, code from the change.** `review-pr` runs from a
+  clean checkout of the base branch, since the harness loads the skill and
+  the reviewer agent from there. The checklists, the review skills and
+  `AGENTS.md` are read from the base checkout. A PR doesn't get reviewed by
+  its own edited reviewer. Everything else, including
   `docs/design/core.md` as changed, is read from the checkout under review.
   Run by itself, both are the current directory.
 
