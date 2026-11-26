@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #SWITCH): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
+| 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
