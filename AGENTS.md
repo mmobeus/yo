@@ -51,6 +51,11 @@ one comment with blocking and non-blocking findings, and sets the
 Deal with the blocking findings, or say in the PR why one is wrong. The
 built-in `/code-review` covers general correctness, and is worth running too.
 
+If a bug turns up after merging that review should have caught, file an
+issue labeled `review-miss`. `tune-review-skills` (run at the end of a
+phase, or after a miss) turns misses into cases and better skills; see
+[`docs/dev/review-tuning.md`](docs/dev/review-tuning.md).
+
 The reviewers don't read the PR description. A reason they need to see
 (why an output changed, why a check is the way it is) goes in the code or
 beside the entry, not only in the PR.
@@ -79,7 +84,7 @@ Don't weaken a check to get a PR green. That includes:
 - deleting, skipping or `#[ignore]`-ing a test, or relaxing its assertions,
   or an `accepted.diff` entry
   that hides a change in effects
-- the review skills' test cases
+- the review skills' example cases (`cases/`)
 
 If a change really needs one of these, do it in its own commit and list it
 under "Gates loosened" in the PR. The maintainer approves it explicitly in

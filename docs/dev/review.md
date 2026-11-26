@@ -40,7 +40,8 @@ knows the author's explanation, it doesn't pass it on.
 
 ## Findings
 
-- **Concrete:** the file and line (in the new version), what's wrong, the
+- **Concrete:** the file and line (in the new version, as a path relative
+  to the checkout, not the temporary directory it's in), what's wrong, the
   rule it breaks (a checklist item or a design section), and what would fix
   it.
 - **Blocking or not:** as the checklist puts it. If you're unsure whether

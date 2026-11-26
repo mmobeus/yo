@@ -1,0 +1,13 @@
+diff --git a/docs/guide.md b/docs/guide.md
+index 9eebf53..cff3a98 100644
+--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -6,6 +6,8 @@ at a time; each part opens with when you'd want it, so stop wherever yo already
+ does what you need. For every command, flag and config key in one place, see
+ the [reference](reference.md).
+ 
++If something here is unclear, the [reference](reference.md) lists every command and flag.
++
+ 1. [Start here](#1-start-here): install, your first session, ending it
+ 2. [Everyday sessions](#2-everyday-sessions): PRs, issues, titles, models
+ 3. [Coming back to sessions](#3-coming-back-to-sessions): resume, restarts, cleanup

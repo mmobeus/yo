@@ -1,0 +1,27 @@
+diff --git a/crates/yo-core/src/lib.rs b/crates/yo-core/src/lib.rs
+index a1d6782..bc985c2 100644
+--- a/crates/yo-core/src/lib.rs
++++ b/crates/yo-core/src/lib.rs
+@@ -8,3 +8,4 @@
+ #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
+ 
+ pub mod sys;
++pub mod naming;
+diff --git a/crates/yo-core/src/naming.rs b/crates/yo-core/src/naming.rs
+new file mode 100644
+index 0000000..6baaf45
+--- /dev/null
++++ b/crates/yo-core/src/naming.rs
+@@ -0,0 +1,12 @@
++//! Codenames, titles and truncation.
++
++/// Shortens `title` to at most `max` characters, ending with "…" when cut.
++pub fn truncate_title(title: &str, max: usize) -> String {
++    if title.chars().count() <= max {
++        return title.to_string();
++    }
++    let keep = max.saturating_sub(1);
++    let mut out: String = title.chars().take(keep).collect();
++    out.push('…');
++    out
++}
