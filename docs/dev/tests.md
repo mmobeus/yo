@@ -36,7 +36,8 @@ fixing, now or in a follow-up.
   it's implemented.
 - **Don't test the tests.** A test whose job is to check that another test,
   lint or gate is set up right is noise. When a new gate goes in, check by
-  hand once that it catches what it should, and say so in the PR. Not
+  hand once that it catches what it should, and say so in the PR, for the
+  maintainer (the reviewers don't see it, and don't check it). Not
   catching everything is fine. A wall of guards against obvious, reviewable
   mistakes isn't.
 - **Fakes stay honest.** A fake behaves like the real thing in the ways the
