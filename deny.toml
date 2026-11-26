@@ -18,6 +18,8 @@ confidence-threshold = 0.9
 allow = [
   "Apache-2.0",
   "MIT",
+  # unicode-ident's Unicode data tables (proc-macro2, so every derive macro)
+  "Unicode-3.0",
 ]
 
 [licenses.private]
@@ -43,12 +45,20 @@ allow = [
   "yo-proto",
   "yo-tui",
 
-  # serde_json, for xtask's `cargo metadata`
+  # serde_json: xtask's `cargo metadata`, and yo-core's config and ledger
   "itoa",
   "memchr",
   "serde_core",
   "serde_json",
   "zmij",
+
+  # serde's derive, for yo-core's config, ledger and machine id types
+  "proc-macro2",
+  "quote",
+  "serde",
+  "serde_derive",
+  "syn",
+  "unicode-ident",
 ]
 
 [sources]

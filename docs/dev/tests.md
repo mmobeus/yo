@@ -8,16 +8,27 @@ fixing, now or in a follow-up.
 
 ## Blocking
 
-- **Changed behavior has a test**, at the right layer:
+- **Changed behavior has a test**, at the right layer. "Behavior" is what a
+  user, a command or a later step relies on: a rule (precedence, a lookup's
+  order, what's refused), an effect, an error a user sees. Not every branch
+  or helper needs its own test; a missing one is blocking only when a real
+  rule could break unnoticed.
   - **Logic** (resolution, precedence, sweep's rules, naming, status, plans):
     unit tests in `yo-core`, with a fake `Sys`.
-  - **What a command does** (its effects and output): unit tests in
-    `yo-core` on the plan it builds, and on running that plan against the
-    fake `Sys` under a temporary `HOME`. A new command or flag gets tests
-    for its error paths too.
+  - **What a command does** (its effects): unit tests in `yo-core` on the
+    plan it builds, and on running that plan against the fake `Sys` under a
+    temporary `HOME`. A new command or flag gets tests for its error paths
+    too.
+  - **What a command prints:** `yo-cli` tests that render its result
+    against the fake `Sys` and assert on the text. The core never prints,
+    so its tests can't check output.
   - **A security rule:** the matching security test (quoting, paths,
     destructive operations, the daemon, the hook, the event log).
 - **A bug fix adds a test** that fails without the fix.
+- **Changed output is documented.** A port or change that makes a command
+  print something different from `scripts/yo` updates the reference
+  (`docs/reference.md`) in the same diff, where reviewers can see that it's
+  deliberate.
 - **Dry runs:** a command that changes things has a test that runs it with
   `--dry-run`: it runs no command that changes anything, and its temporary
   `HOME` is unchanged afterwards.

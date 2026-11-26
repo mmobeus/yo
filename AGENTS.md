@@ -52,11 +52,15 @@ harness, follow
 reviewers' rules are in [`docs/dev/review.md`](docs/dev/review.md). It posts
 one comment with blocking and non-blocking findings, and sets the
 `yo-review` status on the commit it reviewed, so a new push has no
-`yo-review` until it's reviewed again. Deal with the blocking findings, or
-say in the PR why one is wrong. Fixes that only address the review's
-findings don't need a new review: the maintainer may merge past the missing
-`yo-review` with an admin bypass. That's the maintainer's call, not the
-author's. The
+`yo-review` until it's reviewed again.
+
+The findings are a second opinion, not a ruling: the reviewers are guessing
+as much as you are. Fix the ones you agree with. For one you don't, say in a
+line on the PR why not. Leave most non-blocking findings for later. Don't
+ask for another review: fixes that only address the review's findings don't
+need one, and the maintainer may merge past the missing `yo-review` with an
+admin bypass. Another review, and what must change before merging, are the
+maintainer's call. The
 built-in `/code-review` covers general correctness, and is worth running too.
 
 If a bug turns up after merging that review should have caught, file an
