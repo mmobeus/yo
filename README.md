@@ -8,7 +8,7 @@ scripts/yo              iTerm2 work-session launcher (git worktrees, or in place
 config/yo.config.example.sh   starting point for your own config
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
-claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt)
+claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt, yo-title)
 install.sh              wires it all up
 ```
 
@@ -44,6 +44,10 @@ yo my-fix                         # worktree + branch <prefix>/my-fix, off the b
 yo https://github.com/o/r/pull/7  # worktree at the PR's head, review seeded
 yo --repo=backend -  'look into the flaky test'
 yo --here - 'read HANDOFF.md'     # no worktree: this directory, as checked out
+yo --title='Fix flaky retry' my-fix   # your own tab / Session Status title
+yo --from=<session> my-fix 'brief'    # report back to that Claude session when done
+yo --model=sonnet my-fix          # this session only; your default is untouched
+yo title 'new title'              # retitle the session you're in (or /yo-title in claude)
 yo down                           # tear the session down
 yo sessions                       # what yo knows about, and what's running
 yo resume-all                     # after a restart: bring them all back
@@ -63,6 +67,7 @@ session, and a hook in the session's settings layer follows it through
 ```sh
 yo sessions              # running, ready to resume, or gone
 yo resume my-fix         # one session, by name, session id or directory
+yo resume --model=opus my-fix   # ...switching its model on the way back
 yo resume-all --dry-run  # every session that was live
 ```
 
@@ -157,6 +162,49 @@ tree is whatever was last checked out, not the PR's head or a fresh base.
 
 In such a session `yo down` only forgets the session and closes the tab;
 there is no worktree to remove, and the directory is left exactly as it is.
+
+### Agents
+
+A repo's merged agents (its `.claude/agents/`) can run a session as
+themselves, with their own instructions:
+
+```sh
+yo --agent=cindy https://github.com/acme/backend/issues/123   # work an issue as Cindy
+yo --agent=cindy unit-time 'cut the test time'                 # a named session as Cindy
+yo agent cindy            # Cindy's home: a long-lived checkout of the base branch
+yo cindy 'how is the queue today?'   # reach the home: start, resume, or type into it
+yo agent                  # the agents registered in the config
+```
+
+- Only agents merged on the repo's base branch (or installed in
+  `~/.claude/agents`) are accepted, checked before anything is created.
+- The ledger records the agent, so `resume` and `resume-all` bring a session
+  back as the same agent. Tabs and codenames lead with its name
+  ("Cindy · Plucky Gary"); `yo sessions` has an AGENT column.
+- An agent's home (`<clone>-worktrees/agent-<name>`) reads and coordinates. It
+  runs with Remote Control on and is named `<name>-home`, so workers it starts
+  with `yo --agent=<name> --from=<name>-home ...` can report back to it by
+  `SendMessage`. Each start moves a clean home to the newest base branch.
+  `yo down` and `yo sweep` never remove it; quit it with `/exit`.
+- `yo_agent` in the config gives an agent a default repo and a display name.
+  Unregistered merged agents still work with `--agent` and a repo.
+
+### Reaching a session by name
+
+```sh
+yo cindy 'how is the queue today?'   # a registered agent's home
+yo cindy-home 'status?'              # a live session by its Claude name (statusline, ListAgents)
+yo my-fix 'rebase on main'           # a session in yo's ledger: yo name, session id or id prefix
+```
+
+With no flags, `yo NAME ['message']` looks for a registered agent, then a live
+session whose Claude name is NAME (a Remote Control name like `cindy-home`
+counts), then a session in yo's ledger. A running one has its iTerm tab
+brought forward and the message typed in and submitted (its pane is found by
+the tty of its `claude` process); a stopped one is resumed with the message as
+its first prompt. A name that matches nothing creates a session as before. A
+repo or profile name keeps its own meaning (`yo <repo>`), and any flag makes it
+an ordinary new session (`yo --repo=backend cindy`).
 
 ## Profiles
 
@@ -269,6 +317,11 @@ the work in a worktree:
 yo yo tweak-the-installer     # worktree + session, this checkout untouched
 ../yo-worktrees/tweak-the-installer/scripts/yo help   # test by path
 ```
+
+To exercise `yo` without opening iTerm, set `YO_DRY_LAUNCH=1`: it prints the
+tab title, directory and `claude` command instead of launching. Point `HOME`,
+`XDG_STATE_HOME` and `YO_CONFIG` at a throwaway directory as well, so the test
+leaves your ledger and `~/.claude.json` alone.
 
 Merge to `main` and the installed symlinks pick it up with nothing to re-run.
 `install.sh` is only needed again when a *new* file needs linking.

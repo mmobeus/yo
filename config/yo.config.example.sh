@@ -106,6 +106,22 @@
 #yo_repos_in "$HOME/src/github.com/acme"
 #yo_repos_in "$HOME/src/scratch" --mode=here
 
+# --- agents -------------------------------------------------------------------
+#
+#   yo_agent <name> --repo=<key> [--title=T]
+#
+#     <name>        the agent's `name:` in its .claude/agents/*.md, merged on the
+#                   repo's base branch. `yo --agent=<name>` works for any merged
+#                   agent; registering one adds two things.
+#     --repo=KEY    (required) the repo its sessions default to, and where
+#                   `yo agent <name>` keeps its home checkout
+#                   (<clone>-worktrees/agent-<name>).
+#     --title=T     the name its tabs and codenames lead with. Default: <name>
+#                   with a capital first letter.
+#
+# `yo agent` lists these; `yo agent <name>` starts or brings back the home.
+#yo_agent cindy --repo=backend --title=Cindy
+
 # --- settings -----------------------------------------------------------------
 
 # Prefix for branches yo creates: <prefix>/<session-name>. Default: $USER.
