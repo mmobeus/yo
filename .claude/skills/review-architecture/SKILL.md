@@ -1,0 +1,29 @@
+---
+name: review-architecture
+description: Review a yo diff against the design's principles and architecture rules (docs/dev/architecture.md), and check the design doc and its status table are still true. Use when asked to review yo changes for architecture, or as part of review-pr.
+argument-hint: "[diff file] [checkout dir]"
+---
+
+# review-architecture
+
+Read `docs/dev/review.md` first: it says what to review,
+what not to read, and the output format. Then:
+
+1. Read `docs/dev/architecture.md`: the checklist. Read the parts of
+   `docs/design/core.md` the diff touches: always Principles, Crates and
+   "How it's built"; "The core's API", Harnesses and Runners when the code
+   touches them.
+2. For each changed file, ask which crate it's in, and whether the change
+   belongs there.
+3. Go through the checklist's blocking items, then its non-blocking ones.
+4. **Is the design doc still true?** Compare what the diff does with what the
+   doc says. If the code does something the doc doesn't describe, or does
+   differently, that's blocking unless the diff also updates the doc. If the
+   diff lands part of a phase, the status table's row says so.
+5. **Gates loosened:** any change to lints, `#[allow]`s, `deny.toml`,
+   `crates/yo-core/clippy.toml`, the forbidden dependencies in `xtask`, or
+   CI is blocking, with the rule "needs the maintainer's approval". Say
+   exactly what was loosened. Approving it is the maintainer's call, not
+   yours.
+
+The output's area is `architecture`.

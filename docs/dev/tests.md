@@ -19,7 +19,8 @@ fixing, now or in a follow-up.
     destructive operations, the daemon, the hook, the event log).
 - **A bug fix adds a test** that fails without the fix.
 - **`accepted.diff` entries** are only for output (stdout, stderr), never for
-  effects. Each one is a deliberate change, explained in the PR. An entry
+  effects. Each one is a deliberate change, and says why beside the entry,
+  where the reviewers see it (they don't read the PR description). An entry
   that no longer happens is removed.
 - **Dry runs:** a scenario for a command that changes things also runs with
   `--dry-run`, and the sandbox is unchanged afterwards.

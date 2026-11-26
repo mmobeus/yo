@@ -38,6 +38,20 @@ reference describe it. A change to its behavior updates them.
 4. Go through the three checklists in `docs/dev/` for your diff.
 5. Fill in the PR template.
 
+## After opening it
+
+Run the review: `/review-pr` in Claude Code. With any other harness, follow
+`.claude/skills/review-pr/SKILL.md` by hand: it's plain markdown, and the
+reviewers' rules are in [`docs/dev/review.md`](docs/dev/review.md). It posts
+one comment with blocking and non-blocking findings, and sets the
+`yo-review` status on the commit it reviewed. A new push needs a new review.
+Deal with the blocking findings, or say in the PR why one is wrong. The
+built-in `/code-review` covers general correctness, and is worth running too.
+
+The reviewers don't read the PR description. A reason they need to see
+(why an output changed, why a check is the way it is) goes in the code or
+beside the entry, not only in the PR.
+
 ## The design doc stays true
 
 A PR that changes what the design says, or lands part of a phase, updates
