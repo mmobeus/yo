@@ -7,7 +7,7 @@
 //! clone.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::plan::Note;
@@ -79,30 +79,8 @@ pub fn clone_path(ctx: &Ctx, owner_repo: &str) -> PathBuf {
     ctx.registry.defaults.clone_root.join(owner_repo)
 }
 
-/// Clones `owner_repo` (unless it's already at its place under the clone
-/// root) and registers it for this run where `to` says: the profile that
-/// claims its owner wins over `to`. Returns its key, and what it did.
-pub fn place(ctx: &mut Ctx, owner_repo: &str, to: &PlaceTo) -> Result<(String, Vec<Note>)> {
-    let (owner, repo) = owner_repo
-        .split_once('/')
-        .filter(|(o, r)| valid_key(o) && valid_key(r) && !o.starts_with('.') && !r.starts_with('.'))
-        .ok_or_else(|| {
-            Error::Refused(format!(
-                "can't use '{owner_repo}': unexpected characters in the repo name"
-            ))
-        })?;
-    let mut notes = Vec::new();
-    let claimed = claimed_by(ctx, owner_repo);
-    let to = match &claimed {
-        Some(p) => {
-            notes.push(Note::Info(format!(
-                "{owner_repo} belongs to profile '{p}' (it claims {owner})"
-            )));
-            PlaceTo::Profile(p.clone())
-        }
-        None => to.clone(),
-    };
-
+/// `owner_repo`'s clone under the clone root: the one there, else cloned.
+pub fn ensure_clone(ctx: &Ctx, owner_repo: &str, notes: &mut Vec<Note>) -> Result<PathBuf> {
     let path = clone_path(ctx, owner_repo);
     if path.exists() {
         if !path.join(".git").exists() {
@@ -138,6 +116,149 @@ pub fn place(ctx: &mut Ctx, owner_repo: &str, to: &PlaceTo) -> Result<(String, V
             )));
         }
     }
+
+    Ok(path)
+}
+
+/// Checks an `owner/repo` before it becomes a path and a clone URL.
+fn split(owner_repo: &str) -> Result<(&str, &str)> {
+    owner_repo
+        .split_once('/')
+        .filter(|(o, r)| valid_key(o) && valid_key(r) && !o.starts_with('.') && !r.starts_with('.'))
+        .ok_or_else(|| {
+            Error::Refused(format!(
+                "can't use '{owner_repo}': unexpected characters in the repo name"
+            ))
+        })
+}
+
+/// `yo config add-repo TARGET`: registers a clone where it is (a
+/// directory), or a GitHub repo (a URL, or `owner/repo`) cloned under the
+/// clone root first unless it's there, saving it to the config.
+pub fn add_repo(
+    ctx: &mut Ctx,
+    cwd: &Path,
+    target: &str,
+    profile: Option<&str>,
+    key: Option<&str>,
+) -> Result<Vec<Note>> {
+    let mut notes = Vec::new();
+    if let Some(p) = profile
+        && ctx.registry.profile(p).is_none()
+    {
+        let names: Vec<&str> = ctx
+            .registry
+            .profiles()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        return Err(Error::Refused(format!(
+            "no profile '{p}' (profiles: {})",
+            names.join(" ")
+        )));
+    }
+    let dir = cwd.join(target);
+    let (path, gh, url_key) = if dir.is_dir() {
+        let path = fs::canonicalize(&dir).map_err(|e| Error::io(&dir, e))?;
+        if !path.join(".git").exists() {
+            return Err(Error::Refused(format!(
+                "{} isn't a git clone",
+                path.display()
+            )));
+        }
+        let gh = ["upstream", "origin"].iter().find_map(|r| {
+            crate::git::remote_url(&*ctx.sys, &path, r)
+                .and_then(|u| crate::github::owner_repo_from_url(&u))
+        });
+        (path, gh, None)
+    } else {
+        let gh = if target.contains("github.com") {
+            crate::github::owner_repo_from_url(target)
+                .ok_or_else(|| Error::Refused(format!("not a github repo URL: {target}")))?
+        } else if target.contains('/') {
+            target.strip_suffix(".git").unwrap_or(target).to_string()
+        } else {
+            return Err(Error::Refused(format!(
+                "not a directory, URL or owner/repo: {target}"
+            )));
+        };
+        let (owner, repo) = split(&gh)?;
+        if let Some(r) = ctx
+            .registry
+            .repo_for_url(&*ctx.sys, &format!("https://github.com/{gh}"))
+        {
+            notes.push(Note::Info(format!(
+                "{gh} is already registered as '{}' ({})",
+                r.key,
+                r.path.display()
+            )));
+            return Ok(notes);
+        }
+        let path = ensure_clone(ctx, &gh, &mut notes)?;
+        let k = if ctx.registry.repo(repo).is_some() {
+            format!("{owner}-{repo}")
+        } else {
+            repo.to_string()
+        };
+        (path, Some(gh), Some(k))
+    };
+    let auto = ctx.registry.autoregistered.clone();
+    if let Some(r) = ctx.registry.repo_at(&path)
+        && Some(&r.key) != auto.as_ref()
+    {
+        notes.push(Note::Info(format!(
+            "{} is already registered as '{}'",
+            path.display(),
+            r.key
+        )));
+        return Ok(notes);
+    }
+    let key = key.map(str::to_string).or(url_key).unwrap_or_else(|| {
+        path.file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    });
+    if !valid_key(&key) {
+        return Err(Error::Refused(format!(
+            "key may only contain letters, digits, . _ - (got: '{key}')"
+        )));
+    }
+    if ctx.registry.repo(&key).is_some() && Some(&key) != auto.as_ref() {
+        return Err(Error::Refused(format!(
+            "there's already a repo called '{key}'; pick another with --key=K"
+        )));
+    }
+    let cfg = ctx.paths.config.clone();
+    Config::add_repo(&cfg, &ctx.sys.home(), profile, &key, &path, gh.as_deref())?;
+    notes.push(Note::Info(format!(
+        "added '{key}' ({}){} in {}",
+        path.display(),
+        profile
+            .map(|p| format!(" to profile '{p}'"))
+            .unwrap_or_default(),
+        cfg.display()
+    )));
+    Ok(notes)
+}
+
+/// Clones `owner_repo` (unless it's already at its place under the clone
+/// root) and registers it for this run where `to` says: the profile that
+/// claims its owner wins over `to`. Returns its key, and what it did.
+pub fn place(ctx: &mut Ctx, owner_repo: &str, to: &PlaceTo) -> Result<(String, Vec<Note>)> {
+    let (owner, repo) = split(owner_repo)?;
+    let mut notes = Vec::new();
+    let claimed = claimed_by(ctx, owner_repo);
+    let to = match &claimed {
+        Some(p) => {
+            notes.push(Note::Info(format!(
+                "{owner_repo} belongs to profile '{p}' (it claims {owner})"
+            )));
+            PlaceTo::Profile(p.clone())
+        }
+        None => to.clone(),
+    };
+
+    let path = ensure_clone(ctx, owner_repo, &mut notes)?;
 
     let key = if ctx.registry.repo(repo).is_some() {
         format!("{owner}-{repo}")
@@ -359,5 +480,101 @@ mod tests {
             (Some("u"), None)
         );
         assert_eq!(c.registry.guest.as_deref(), Some("v"));
+    }
+}
+
+#[cfg(test)]
+mod add_repo_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::fake::{FakeSys, TempDir, ok};
+
+    fn ctx(t: &TempDir) -> (Ctx, Arc<FakeSys>) {
+        let home = fs::canonicalize(t.path()).unwrap();
+        let cfg = home.join("c.json");
+        fs::write(
+            &cfg,
+            format!(
+                r#"{{"profiles": {{"p": {{}}}}, "repos": {{"api": {{"path": "{}/src/api"}}}}}}"#,
+                home.display()
+            ),
+        )
+        .unwrap();
+        let sys = Arc::new(FakeSys::new(&home));
+        sys.set_env("YO_CONFIG", &cfg.to_string_lossy());
+        sys.set_env("YO_CLONE_ROOT", &home.join("gh").to_string_lossy());
+        (Ctx::load(sys.clone(), &home).unwrap(), sys)
+    }
+
+    #[test]
+    fn a_directory_an_url_and_owner_repo() {
+        let t = TempDir::new().unwrap();
+        let (mut c, sys) = ctx(&t);
+        let home = fs::canonicalize(t.path()).unwrap();
+        let web = home.join("src/web");
+        fs::create_dir_all(web.join(".git")).unwrap();
+        sys.answer(
+            "git",
+            &["-C", &web.to_string_lossy(), "remote", "get-url", "origin"],
+            ok("git@github.com:acme/web.git\n"),
+        );
+        let n = add_repo(&mut c, &home, "src/web", Some("p"), None).unwrap();
+        assert!(
+            matches!(&n[0], Note::Info(s) if s.starts_with("added 'web'") && s.contains("to profile 'p'"))
+        );
+        let again = Ctx::load(sys.clone(), &home).unwrap();
+        let r = again.registry.repo("web").unwrap();
+        assert_eq!(
+            (r.github.as_deref(), r.profile.as_deref()),
+            (Some("acme/web"), Some("p"))
+        );
+
+        // A URL whose clone is already under the clone root; `api` is taken.
+        fs::create_dir_all(home.join("gh/other/api/.git")).unwrap();
+        let mut c = Ctx::load(sys.clone(), &home).unwrap();
+        add_repo(
+            &mut c,
+            &home,
+            "https://github.com/other/api/pull/3",
+            None,
+            None,
+        )
+        .unwrap();
+        let again = Ctx::load(sys.clone(), &home).unwrap();
+        assert_eq!(
+            again.registry.repo("other-api").unwrap().github.as_deref(),
+            Some("other/api")
+        );
+
+        // owner/repo, already registered: said, nothing written.
+        let mut c = Ctx::load(sys.clone(), &home).unwrap();
+        let before = fs::read_to_string(&c.paths.config).unwrap();
+        let n = add_repo(&mut c, &home, "other/api", None, None).unwrap();
+        assert!(matches!(&n[0], Note::Info(s) if s.contains("already registered as 'other-api'")));
+        assert_eq!(fs::read_to_string(&c.paths.config).unwrap(), before);
+    }
+
+    #[test]
+    fn refusals() {
+        let t = TempDir::new().unwrap();
+        let (mut c, _) = ctx(&t);
+        let home = fs::canonicalize(t.path()).unwrap();
+        fs::create_dir_all(home.join("plain")).unwrap();
+        fs::create_dir_all(home.join("x/api/.git")).unwrap();
+        for (target, profile, key, want) in [
+            ("plain", None, None, "isn't a git clone"),
+            ("word", None, None, "not a directory, URL or owner/repo"),
+            ("https://github.com/x", None, None, "not a github repo URL"),
+            ("x/api", Some("nope"), None, "no profile 'nope'"),
+            ("x/api", None, None, "there's already a repo called 'api'"),
+            ("x/api", None, Some("a b"), "key may only contain"),
+            ("../evil/..", None, None, "unexpected characters"),
+        ] {
+            match add_repo(&mut c, &home, target, profile, key) {
+                Err(Error::Refused(m)) => assert!(m.contains(want), "{target}: {m}"),
+                other => panic!("{target}: {other:?}"),
+            }
+        }
     }
 }

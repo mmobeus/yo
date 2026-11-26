@@ -385,6 +385,154 @@ impl Ledger {
     }
 }
 
+/// A session recorded from inside it (`yo adopt`).
+#[derive(Clone, Debug)]
+pub struct Adopt {
+    pub dir: PathBuf,
+    pub id: String,
+    pub title: String,
+    /// The title was given (`--title`), so it replaces what's recorded.
+    pub title_given: bool,
+    pub repo: Option<String>,
+    pub name: String,
+    pub profile: Option<String>,
+    pub mode: Mode,
+    pub harness: Option<String>,
+}
+
+impl Ledger {
+    /// The record for `q`: its id or directory, else an id prefix of 8 or
+    /// more, else its yo name. `Err` holds the matches when there's more
+    /// than one.
+    pub fn get(&self, q: &str) -> std::result::Result<Option<Entry>, Vec<Entry>> {
+        let q = crate::paths::strip_trailing_slash(q);
+        let all = self.all();
+        let pick = |f: &dyn Fn(&Entry) -> bool| -> Vec<Entry> {
+            all.iter().filter(|e| f(e)).cloned().collect()
+        };
+        let mut hits = pick(&|e| {
+            e.record.session_id.as_deref() == Some(q) || e.record.worktree == Path::new(q)
+        });
+        if hits.is_empty() && q.len() >= 8 {
+            hits = pick(&|e| {
+                e.record
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with(q))
+            });
+        }
+        if hits.is_empty() {
+            hits = pick(&|e| e.record.name.as_deref() == Some(q));
+        }
+        match hits.len() {
+            0 => Ok(None),
+            1 => Ok(hits.pop()),
+            _ => Err(hits),
+        }
+    }
+
+    /// Records a session from inside it. One the ledger already holds by its
+    /// id (even under an older id's key, after a `/clear`) keeps its record;
+    /// a worktree's record keeps what yo wrote when it created it. Either
+    /// way it's no longer ended.
+    pub fn adopt(&self, a: &Adopt) -> Result<Key> {
+        let all = self.all();
+        let mut e = if let Some(held) = all
+            .iter()
+            .find(|e| e.record.session_id.as_deref() == Some(a.id.as_str()))
+        {
+            let mut e = held.clone();
+            if a.title_given {
+                e.record.title = Some(a.title.clone());
+            }
+            e
+        } else {
+            let key = match a.mode {
+                Mode::Here => Key::for_id(&a.id),
+                Mode::Worktree => Key::for_worktree(&self.sys.home(), &a.dir),
+            };
+            let nonempty = |s: &Option<String>| s.clone().filter(|v| !v.is_empty());
+            let mut rec = Record {
+                worktree: a.dir.clone(),
+                session_id: Some(a.id.clone()),
+                title: Some(a.title.clone()).filter(|t| !t.is_empty()),
+                repo: nonempty(&a.repo),
+                name: Some(a.name.clone()).filter(|n| !n.is_empty()),
+                profile: nonempty(&a.profile),
+                mode: Some(a.mode),
+                by_id: a.mode == Mode::Here,
+                harness: a.harness.clone(),
+                created_at: Some(self.sys.unix_now()),
+                ..Record::default()
+            };
+            if let Some(old) = all.iter().find(|e| e.key == key) {
+                let o = &old.record;
+                let keep = |new: &mut Option<String>, old: &Option<String>| {
+                    if let Some(v) = old.clone().filter(|v| !v.is_empty()) {
+                        *new = Some(v);
+                    }
+                };
+                if o.created_at.is_some_and(|t| t != 0) {
+                    rec.created_at = o.created_at;
+                }
+                keep(&mut rec.profile, &o.profile);
+                keep(&mut rec.guest, &o.guest);
+                keep(&mut rec.agent, &o.agent);
+                keep(&mut rec.remote_control, &o.remote_control);
+                keep(&mut rec.codename, &o.codename);
+                keep(&mut rec.brief, &o.brief);
+                rec.home = rec.home || o.home;
+                if !a.title_given {
+                    keep(&mut rec.title, &o.title);
+                }
+            }
+            Entry { key, record: rec }
+        };
+        e.record.ended_at = None;
+        self.write(&mut e)?;
+        Ok(e.key)
+    }
+
+    /// Sets the title of record `key`, else the one holding session `id`,
+    /// else every worktree record holding `cwd` (a plain shell in a yo
+    /// worktree). `false` when none matched.
+    pub fn retitle(
+        &self,
+        key: Option<&str>,
+        id: Option<&str>,
+        cwd: &Path,
+        title: &str,
+    ) -> Result<bool> {
+        let all = self.all();
+        let mut hit: Vec<Entry> = all
+            .iter()
+            .filter(|e| key.is_some_and(|k| !k.is_empty() && e.key.0 == k))
+            .cloned()
+            .collect();
+        if hit.is_empty() {
+            hit = all
+                .iter()
+                .filter(|e| {
+                    id.is_some_and(|i| !i.is_empty() && e.record.session_id.as_deref() == Some(i))
+                })
+                .cloned()
+                .collect();
+        }
+        if hit.is_empty() {
+            hit = all
+                .iter()
+                .filter(|e| !e.record.by_id && owns(&e.record.worktree, cwd))
+                .cloned()
+                .collect();
+        }
+        for e in &mut hit {
+            e.record.title = Some(title.to_string());
+            self.write(e)?;
+        }
+        Ok(!hit.is_empty())
+    }
+}
+
 /// Whether `cwd` is `wt` or inside it.
 fn owns(wt: &Path, cwd: &Path) -> bool {
     !wt.as_os_str().is_empty() && cwd.starts_with(wt)
@@ -717,5 +865,149 @@ mod tests {
         assert!(t.ledger.all().iter().all(|e| !e.key.0.contains("..")));
         // Nothing new the second time.
         assert!(t.ledger.sync(&clones, &l).unwrap().is_empty());
+    }
+
+    fn adopt_req(t: &T, wt: &str, id: &str, title: &str, given: bool, mode: Mode) -> Adopt {
+        Adopt {
+            dir: t.worktree(wt),
+            id: id.into(),
+            title: title.into(),
+            title_given: given,
+            repo: Some("api".into()),
+            name: wt.into(),
+            profile: None,
+            mode,
+            harness: Some("claude".into()),
+        }
+    }
+
+    #[test]
+    fn adopt_new_known_and_after_a_clear() {
+        let t = setup();
+        // New, in place: keyed by its id.
+        let k = t
+            .ledger
+            .adopt(&adopt_req(&t, "x", "id1", "X", false, Mode::Here))
+            .unwrap();
+        assert_eq!(k.0, "id-id1");
+        assert!(t.get("id-id1").by_id);
+
+        // A worktree's record keeps what yo wrote when it created it, and is
+        // no longer ended.
+        let wt = t.worktree("feat");
+        let key = Key::for_worktree(&t.home, &wt);
+        t.put(
+            &key.0,
+            Record {
+                worktree: wt.clone(),
+                session_id: Some("old".into()),
+                title: Some("[api] feat".into()),
+                agent: Some("cindy".into()),
+                codename: Some("Plucky Gary".into()),
+                created_at: Some(5),
+                ended_at: Some(9),
+                ..Record::default()
+            },
+        );
+        let k = t
+            .ledger
+            .adopt(&adopt_req(
+                &t,
+                "feat",
+                "new",
+                "derived",
+                false,
+                Mode::Worktree,
+            ))
+            .unwrap();
+        let r = t.get(&k.0);
+        assert_eq!(r.session_id.as_deref(), Some("new"));
+        assert_eq!(r.title.as_deref(), Some("[api] feat"));
+        assert_eq!(
+            (r.agent.as_deref(), r.codename.as_deref()),
+            (Some("cindy"), Some("Plucky Gary"))
+        );
+        assert_eq!((r.created_at, r.ended_at), (Some(5), None));
+
+        // Already held by id: its record stays, with a given title.
+        t.ledger
+            .adopt(&adopt_req(
+                &t,
+                "elsewhere",
+                "new",
+                "Given",
+                true,
+                Mode::Here,
+            ))
+            .unwrap();
+        assert_eq!(t.get(&k.0).title.as_deref(), Some("Given"));
+        assert_eq!(t.ledger.all().len(), 2);
+    }
+
+    #[test]
+    fn get_by_id_dir_prefix_and_name() {
+        let t = setup();
+        let rec = |id: &str, name: &str, wt: &str| Record {
+            worktree: t.worktree(wt),
+            session_id: Some(id.into()),
+            name: Some(name.into()),
+            ..Record::default()
+        };
+        t.put("a", rec("abcdef12-aaaa", "one", "one"));
+        t.put("b", rec("abcdef12-bbbb", "two", "two"));
+        let key = |r: Result<Option<Entry>, Vec<Entry>>| r.unwrap().map(|e| e.key.0);
+        assert_eq!(key(t.ledger.get("abcdef12-aaaa")).as_deref(), Some("a"));
+        let dir = format!("{}/", t.worktree("two").display());
+        assert_eq!(key(t.ledger.get(&dir)).as_deref(), Some("b"));
+        assert_eq!(key(t.ledger.get("abcdef12-b")).as_deref(), Some("b"));
+        assert_eq!(key(t.ledger.get("one")).as_deref(), Some("a"));
+        assert_eq!(t.ledger.get("abcdef12").unwrap_err().len(), 2);
+        assert_eq!(key(t.ledger.get("abc")), None);
+    }
+
+    #[test]
+    fn retitle_by_key_id_or_worktree() {
+        let t = setup();
+        let wt = t.worktree("feat");
+        t.put(
+            "w",
+            Record {
+                worktree: wt.clone(),
+                session_id: Some("s1".into()),
+                ..Record::default()
+            },
+        );
+        t.put(
+            "h",
+            Record {
+                worktree: wt.clone(),
+                session_id: Some("s2".into()),
+                by_id: true,
+                ..Record::default()
+            },
+        );
+        assert!(
+            t.ledger
+                .retitle(Some("h"), None, Path::new("/"), "A")
+                .unwrap()
+        );
+        assert_eq!(t.get("h").title.as_deref(), Some("A"));
+        assert!(
+            t.ledger
+                .retitle(None, Some("s1"), Path::new("/"), "B")
+                .unwrap()
+        );
+        assert_eq!(t.get("w").title.as_deref(), Some("B"));
+        // A shell in the worktree: its worktree record, not the in-place one.
+        assert!(t.ledger.retitle(None, None, &wt.join("sub"), "C").unwrap());
+        assert_eq!(
+            (t.get("w").title.as_deref(), t.get("h").title.as_deref()),
+            (Some("C"), Some("A"))
+        );
+        assert!(
+            !t.ledger
+                .retitle(Some(""), Some(""), Path::new("/nowhere"), "D")
+                .unwrap()
+        );
     }
 }

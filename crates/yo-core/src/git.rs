@@ -14,6 +14,23 @@ pub fn git(sys: &dyn Sys, dir: &Path, args: &[&str]) -> Option<String> {
     out.success().then(|| out.text())
 }
 
+/// `git -C dir args...`'s output lines as git wrote them (no trimming, so
+/// `status --porcelain`'s leading spaces survive), when it succeeds.
+pub fn git_lines(sys: &dyn Sys, dir: &Path, args: &[&str]) -> Option<Vec<String>> {
+    let spec = CommandSpec::new("git")
+        .arg("-C")
+        .arg(dir.to_string_lossy())
+        .args(args.iter().copied());
+    let out = sys.cmd().run(&spec).ok()?;
+    out.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+}
+
 /// Whether `git -C dir args...` succeeds.
 fn git_ok(sys: &dyn Sys, dir: &Path, args: &[&str]) -> bool {
     git(sys, dir, args).is_some()

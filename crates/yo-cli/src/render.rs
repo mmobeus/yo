@@ -214,6 +214,34 @@ fn action(a: &Action) -> String {
         Action::WriteFile { path, .. } => format!("write the settings layer {}", path.display()),
         Action::Prepare(p) => prep(p).to_string(),
         Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
+        Action::DropRecord(k) => format!("forget the ledger record {}", k.0),
+        Action::RemoveWorktree { path, force, .. } => format!(
+            "remove worktree {}{}",
+            path.display(),
+            if *force {
+                " (forced: losing its changes)"
+            } else {
+                ""
+            }
+        ),
+        Action::PruneWorktrees { repo } => format!("prune {}'s worktrees", repo.display()),
+        Action::SweepWorktree {
+            path,
+            delete_branch,
+            ..
+        } => format!(
+            "remove worktree {}{}",
+            path.display(),
+            delete_branch
+                .as_deref()
+                .map(|b| format!(" and branch {b}"))
+                .unwrap_or_default()
+        ),
+        Action::CloseOwnTab { .. } => "close this tab".to_string(),
+        Action::RefreshHome { path, remote, base } => format!(
+            "move {} to {remote}/{base}, if it has no uncommitted changes",
+            path.display()
+        ),
         Action::Focus {
             pid, tty, message, ..
         } => format!(
@@ -249,6 +277,7 @@ fn branch_words(b: &BranchSpec) -> String {
             format!("{branch} (new local branch tracking {start})")
         }
         BranchSpec::New { branch, start } => format!("{branch} (new, from {start})"),
+        BranchSpec::Detached(start) => format!("no branch (detached at {start})"),
     }
 }
 
@@ -281,6 +310,11 @@ impl Report for Progress<'_> {
     fn doing(&mut self, a: &Action) {
         let s = match a {
             Action::Fetch { what, .. } => format!("==> fetching {what}\n"),
+            Action::AddWorktree {
+                path,
+                branch: BranchSpec::Detached(start),
+                ..
+            } => format!("==> worktree add --detach {} {start}\n", path.display()),
             Action::AddWorktree { path, branch, .. } => format!(
                 "==> creating worktree: {}\n        branch: {}\n",
                 path.display(),
@@ -307,11 +341,24 @@ impl Report for Progress<'_> {
                 };
                 line("codename:", &r.codename);
                 line("session:", &r.session_id);
-                line("agent:", &r.agent);
+                line(
+                    "agent:",
+                    &r.agent.as_ref().map(|a| match &r.remote_control {
+                        Some(rc) => format!("{a} (Remote Control: {rc})"),
+                        None => a.clone(),
+                    }),
+                );
                 line("brief:", &r.brief);
                 s
             }
-            Action::Launch(_) | Action::Focus { .. } => String::new(),
+            Action::Launch(_)
+            | Action::Focus { .. }
+            | Action::DropRecord(_)
+            | Action::RemoveWorktree { .. }
+            | Action::PruneWorktrees { .. }
+            | Action::SweepWorktree { .. }
+            | Action::CloseOwnTab { .. }
+            | Action::RefreshHome { .. } => String::new(),
         };
         self.put(&s);
     }

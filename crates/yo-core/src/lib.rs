@@ -11,8 +11,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+pub mod agent;
 pub mod config;
 pub mod create;
+pub mod down;
 pub mod error;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
@@ -30,6 +32,8 @@ pub mod reach;
 pub mod registry;
 pub mod resolve;
 pub mod runner;
+pub mod session;
+pub mod sweep;
 pub mod sys;
 
 pub use error::{Error, Result};

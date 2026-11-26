@@ -220,15 +220,14 @@ fn sessions_lists_and_adopts() {
 }
 
 #[test]
-fn commands_not_ported_yet_say_so() {
+fn refusals_write_nothing() {
     let (t, sys) = sandbox(None);
-    let out = yo(&sys, t.path(), &["down", "--yes"]);
-    assert_eq!(
-        (out.code, out.err.as_str()),
-        (
-            1,
-            "yo: `yo down` isn't in the Rust yo yet; scripts/yo still has it\n"
-        )
+    let out = yo(&sys, t.path(), &["agent", "cindy"]);
+    assert_eq!(out.code, 1);
+    assert!(
+        out.err.starts_with("yo: unknown agent 'cindy'"),
+        "{}",
+        out.err
     );
     // Creating with no repo to work in refuses before anything is created.
     let out = yo(&sys, t.path(), &["some-name", "a message"]);
@@ -423,4 +422,136 @@ fn yo_name_resumes_a_ready_session_and_refuses_an_ambiguous_one() {
             .iter()
             .any(|c| c.args.iter().any(|a| a == "worktree"))
     );
+}
+
+/// A ledger with one ready session, `feat`, and a transcript for an id the
+/// ledger doesn't have.
+fn with_session() -> (
+    TempDir,
+    Arc<FakeSys>,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let (t, sys, api) = with_clone();
+    sys.set_env("YO_DRY_LAUNCH", "1");
+    let wt = api.with_file_name("api-worktrees").join("feat");
+    fs::create_dir_all(&wt).unwrap();
+    let ledger = t.path().join(".local/state/yo/sessions");
+    fs::create_dir_all(&ledger).unwrap();
+    fs::write(
+        ledger.join("src__api-worktrees__feat.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "abcdef12-0000-4000-8000-000000000000", "name": "feat", "repo": "api", "title": "feat"}}"#,
+            wt.display()
+        ),
+    )
+    .unwrap();
+    let proj = t.path().join(".claude/projects/-x");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(
+        proj.join("11111111-2222-4333-8444-555555555555.jsonl"),
+        format!("{{\"cwd\": \"{}\"}}\n", api.display()),
+    )
+    .unwrap();
+    (t, sys, api, wt)
+}
+
+#[test]
+fn resume_by_name_prefix_and_transcript() {
+    let (t, sys, api, wt) = with_session();
+    for q in ["feat", "abcdef12", &wt.display().to_string()] {
+        let out = yo(&sys, &api, &["resume", q]);
+        assert_eq!(out.code, 0, "{q}: {}", out.err);
+        assert!(
+            out.out
+                .contains("--resume abcdef12-0000-4000-8000-000000000000\n"),
+            "{}",
+            out.out
+        );
+        assert!(out.out.ends_with("==> ready.\n"));
+    }
+    // Known only from its transcript: recorded, then resumed.
+    let out = yo(
+        &sys,
+        &api,
+        &["resume", "11111111-2222-4333-8444-555555555555"],
+    );
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        t.path()
+            .join(".local/state/yo/sessions/id-11111111-2222-4333-8444-555555555555.json")
+            .is_file()
+    );
+    let out = yo(&sys, &api, &["resume", "nosuch"]);
+    assert_eq!(
+        out.err,
+        "yo: no session matches 'nosuch' (yo sessions lists them)\n"
+    );
+    fs::remove_dir_all(&wt).unwrap();
+    let out = yo(&sys, &api, &["resume", "feat"]);
+    assert!(
+        out.err.starts_with("yo: feat's directory is gone"),
+        "{}",
+        out.err
+    );
+}
+
+#[test]
+fn resume_all_dry_and_not() {
+    let (_t, sys, api, _wt) = with_session();
+    let out = yo(&sys, &api, &["resume-all", "--dry-run"]);
+    assert!(
+        out.out
+            .starts_with("would resume: feat (abcdef12-0000-4000-8000-000000000000) in ")
+    );
+    assert!(out.out.ends_with("==> 1 session(s) would be resumed\n"));
+    assert!(sys.calls().iter().all(|c| c.program != "osascript"));
+    let out = yo(&sys, &api, &["resume-all"]);
+    assert!(out.out.contains("dry launch: [feat]"), "{}", out.out);
+    assert!(out.out.ends_with("==> resumed 1 session(s)\n"));
+}
+
+#[test]
+fn adopt_forget_and_title() {
+    let (t, sys, api, _wt) = with_session();
+    let out = yo(&sys, &api, &["adopt"]);
+    assert!(out.err.starts_with("yo: no session id"), "{}", out.err);
+    sys.set_env(
+        "CLAUDE_CODE_SESSION_ID",
+        "11111111-2222-4333-8444-555555555555",
+    );
+    let out = yo(&sys, &api, &["adopt", "--title", "Mine"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .starts_with("==> recorded: Mine\n        session: 11111111")
+    );
+    let rec = fs::read_to_string(
+        t.path()
+            .join(".local/state/yo/sessions/id-11111111-2222-4333-8444-555555555555.json"),
+    )
+    .unwrap();
+    assert!(rec.contains(r#""title": "Mine""#), "{rec}");
+
+    let out = yo(&sys, &api, &["forget", "feat"]);
+    assert_eq!(
+        out.out,
+        "forgot feat (abcdef12-0000-4000-8000-000000000000); its transcript and directory are untouched\n"
+    );
+    assert!(
+        yo(&sys, &api, &["forget", "feat"])
+            .err
+            .starts_with("yo: no single session")
+    );
+
+    let out = yo(&sys, &api, &["title", "x"]);
+    assert_eq!(
+        out.err,
+        "yo: not inside an iTerm2 session — no tab to retitle\n"
+    );
+    sys.set_env("ITERM_SESSION_ID", "w0t1p0:UUID");
+    let out = yo(&sys, &api, &["title", "x"]);
+    assert_eq!(out.err, "yo: couldn't find this session's iTerm tab\n");
+    let c = sys.calls().into_iter().last().unwrap();
+    assert_eq!(c.args, ["-", "UUID", "x"]);
 }

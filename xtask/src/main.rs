@@ -226,6 +226,23 @@ fn arch(root: &Path) -> Result<(), String> {
             }
         }
     }
+    // yo-core's fake Sys is for tests: a crate may turn on its `fake`
+    // feature only as a dev-dependency.
+    for p in meta["packages"].as_array().into_iter().flatten() {
+        for d in p["dependencies"].as_array().into_iter().flatten() {
+            let fake = d["features"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|f| f.as_str() == Some("fake"));
+            if d["name"].as_str() == Some("yo-core") && fake && d["kind"].as_str() != Some("dev") {
+                errors.push(format!(
+                    "{} -> yo-core with `fake` (the fake Sys is for tests: use it only as a dev-dependency)",
+                    p["name"].as_str().unwrap_or("?")
+                ));
+            }
+        }
+    }
     if errors.is_empty() {
         Ok(())
     } else {

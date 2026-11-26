@@ -6,8 +6,10 @@ use clap::Parser;
 use yo_core::sys::RealSys;
 
 mod cli;
+mod ledger_cmds;
 mod render;
 mod run;
+mod teardown;
 
 #[cfg(test)]
 mod tests;

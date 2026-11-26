@@ -28,6 +28,10 @@ pub trait Runner {
     /// types `message` into it, if given. `Focused::NotFound` when no tab
     /// of this runner's has that terminal.
     fn focus(&self, sys: &dyn Sys, tty: &str, message: Option<&str>) -> Result<Focused>;
+    /// Closes the tab holding `session`, the one yo runs in (which ends the
+    /// session in it, and may end yo too). `false`: nothing was closed (a
+    /// dry run).
+    fn close_own_tab(&self, sys: &dyn Sys, session: &str) -> bool;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,5 +98,9 @@ impl Runner for DryLaunch {
         Ok(Focused::Dry {
             tty: tty.to_string(),
         })
+    }
+
+    fn close_own_tab(&self, _sys: &dyn Sys, _session: &str) -> bool {
+        false
     }
 }

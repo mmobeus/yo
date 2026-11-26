@@ -27,6 +27,11 @@ pub trait Harness: Send + Sync {
     /// The command that reopens session `id` in its TUI, with
     /// `s.first_message` (if any) as its next prompt, as it is.
     fn resume_command(&self, id: &str, s: &SessionSpec) -> Argv;
+    /// Where session `id` ran, from the harness's own records (running or
+    /// not): what resuming it needs. `None` when it has no such record.
+    fn session_cwd(&self, _sys: &dyn Sys, _id: &str) -> Option<PathBuf> {
+        None
+    }
     /// Its own setup for a session, before launch: for Claude, the settings
     /// layer, memory and trust. Nothing, for a harness with none.
     fn prepare(&self, _ctx: &Ctx, _p: &PrepareAsk<'_>) -> Result<Prepared> {
