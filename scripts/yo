@@ -1739,10 +1739,13 @@ mirror_repo_files() {
 #     sessions started some other way (by hand, or before yo kept a ledger).
 
 # Every op is best-effort JSON wrangling, so it all lives in one python3 helper.
-#   put DIR SID TITLE REPO NAME PROFILE MODE GUEST [AGENT [HOME [RC]]]
+#   put DIR SID TITLE REPO NAME PROFILE MODE GUEST [AGENT [HOME [RC [CODENAME
+#       [BRIEF]]]]]
 #                                create/replace a record; prints its key.
 #                                HOME=1 marks an agent's home; RC is its
-#                                Remote Control name
+#                                Remote Control name; CODENAME and BRIEF are
+#                                the session's codename and what it was asked
+#                                to do (its first message, minus the codename)
 #   hook                         SessionStart/SessionEnd payload in
 #                                $YO_HOOK_INPUT; never fails
 #   drop KEY                     forget one record
@@ -1850,12 +1853,12 @@ def row(rec, live):
               rec["worktree"], rec.get("title") or rec.get("name"),
               rec.get("_key"), rec.get("profile"), mode, rec.get("guest"),
               rec.get("agent"), "home" if rec.get("home") else "",
-              rec.get("remoteControl")]
+              rec.get("remoteControl"), rec.get("codename")]
     print("\t".join(f or "-" for f in fields))
 
 if op == "put":
     d, sid, title, repo, name, profile, mode, guest = args[:8]
-    agent, is_home, rc = (args[8:] + ["", "", ""])[:3]
+    agent, is_home, rc, codename, brief = (args[8:] + [""] * 5)[:5]
     rec = {"worktree": d, "sessionId": sid, "title": title, "repo": repo,
            "name": name, "profile": profile, "mode": mode,
            "createdAt": int(time.time())}
@@ -1867,6 +1870,10 @@ if op == "put":
         rec["home"] = True
     if rc:
         rec["remoteControl"] = rc
+    if codename:
+        rec["codename"] = codename
+    if brief:
+        rec["brief"] = brief
     if mode == "here":
         rec["byId"] = True
         rec["_key"] = "id-" + sid
@@ -1930,7 +1937,7 @@ elif op == "adopt":
                 # what yo recorded at create time, including the agent it
                 # runs as and whether it is an agent's home
                 for k in ("createdAt", "profile", "guest", "agent", "home",
-                          "remoteControl") + \
+                          "remoteControl", "codename", "brief") + \
                         (("title",) if title_given != "1" else ()):
                     if old.get(k):
                         rec[k] = old[k]
@@ -2338,7 +2345,7 @@ _yo_sync_ledger() {
 # Splits one `_yo_state` TSV row into the R_* globals.
 _yo_read_row() {
   IFS="$_YO_TAB" read -r R_STATUS R_PID R_NAME R_REPO R_SID R_WT R_TITLE R_KEY \
-    R_PROFILE R_MODE R_GUEST R_AGENT R_HOME R_RC <<EOF
+    R_PROFILE R_MODE R_GUEST R_AGENT R_HOME R_RC R_CODENAME <<EOF
 $1
 EOF
   [ "$R_PID" = "-" ] && R_PID=""
@@ -2349,6 +2356,7 @@ EOF
   [ "${R_AGENT:-}" = "-" ] && R_AGENT=""
   [ "${R_HOME:-}" = "-" ] && R_HOME=""
   [ "${R_RC:-}" = "-" ] && R_RC=""
+  [ "${R_CODENAME:-}" = "-" ] && R_CODENAME=""
   return 0
 }
 
@@ -2443,8 +2451,8 @@ _yo_model_arg() {
   printf ' --model %s' "$(shell_single_quote "$1")"
 }
 
-# Builds a session's first message into COMPOSED_MSG (and its codename into
-# COMPOSED_PERSONA): the mode's own message, then [extra], then the report-back
+# Builds a session's first message into COMPOSED_MSG (its codename into
+# COMPOSED_PERSONA, and the message without the codename into COMPOSED_BRIEF): the mode's own message, then [extra], then the report-back
 # instruction (--from), then the codename. One line — the command is written
 # into the pane as a single shell line, so no embedded newlines.
 _yo_compose_message() {
@@ -2459,6 +2467,7 @@ _yo_compose_message() {
   # partly so sessions can identify themselves in notes and messages.
   # An agent's sessions lead with its name ("Cindy · Plucky Gary"), so several
   # of them stay apart in ListAgents, tabs and the notes they sign.
+  COMPOSED_BRIEF="$msg"
   COMPOSED_PERSONA="${fixed_persona:-$(fun_session_title)}"
   [ -n "$agent_display" ] && [ -z "$fixed_persona" ] \
     && COMPOSED_PERSONA="${agent_display} · ${COMPOSED_PERSONA}"
@@ -2657,7 +2666,7 @@ cmd_up() {
   local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
   local explicit_branch="" unnamed=0 persona="" force_new_window=-1
   local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir="" add_to=""
-  local title_override="" report_to="" model="" agent="" agent_repo="" agent_display=""
+  local title_override="" report_to="" model="" agent="" agent_repo="" agent_display="" brief=""
 
   # Flags may appear anywhere; strip them out of the positional args.
   local args=() a
@@ -2806,7 +2815,7 @@ cmd_up() {
   fi
 
   _yo_compose_message "$initial_msg" "$extra_msg" "$report_to" "$agent_display"
-  initial_msg="$COMPOSED_MSG"; persona="$COMPOSED_PERSONA"
+  initial_msg="$COMPOSED_MSG"; persona="$COMPOSED_PERSONA"; brief="$COMPOSED_BRIEF"
 
   case "$name" in
     *[!A-Za-z0-9._/-]*) die "name may only contain letters, digits, . _ / - (got: '$name')" ;;
@@ -2884,7 +2893,8 @@ cmd_up() {
   [ -n "$repo_key" ] && [ "$repo_key" = "$YO_GUEST_REPO" ] \
     && guest=$(_yo_github_for "$repo_key")
   session_key=$(_yo_state put "$wt_path" "$session_id" "$win_title" "$repo_key" \
-    "$name" "$(profile_for "$repo_key")" "$(mode_word "$here")" "$guest" "$agent") \
+    "$name" "$(profile_for "$repo_key")" "$(mode_word "$here")" "$guest" "$agent" \
+    "" "" "$persona" "$brief") \
     || { session_key=""; echo "yo: couldn't record the session in $YO_STATE_DIR (resume-all won't know about it)"; }
 
   # Seed the left-pane claude with an initial message when we have one (PR/issue
@@ -3104,12 +3114,15 @@ cmd_sessions() {
     echo "no sessions in the ledger ($YO_STATE_DIR)"
     return 0
   fi
-  local st pid name repo sid wt title key prof mode guest agent home rc where
+  local st pid name repo sid wt title key prof mode guest agent home rc codename where
   printf '%-8s %-7s %-12s %-10s %-36s %s\n' STATUS PID REPO AGENT SESSION NAME
-  while IFS="$_YO_TAB" read -r st pid name repo sid wt title key prof mode guest agent home rc; do
+  while IFS="$_YO_TAB" read -r st pid name repo sid wt title key prof mode guest agent home rc codename; do
     where="$repo"
     [ "$where" = "-" ] && [ "$prof" != "-" ] && where="($prof)"
     [ "$title" != "$name" ] && name="$name — $title"
+    if [ -n "$codename" ] && [ "$codename" != "-" ]; then
+      case "$name" in *"$codename"*) : ;; *) name="$name ($codename)" ;; esac
+    fi
     [ "$mode" = "here" ] && name="$name  (in place)"
     if [ "$home" = "home" ]; then
       case "$name" in *"(home)"*) : ;; *) name="$name  (home)" ;; esac
@@ -3469,7 +3482,8 @@ cmd_agent() {
   local initial_msg="$COMPOSED_MSG" session_id session_key label claude_cmd
   session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
   session_key=$(_yo_state put "$wt_path" "$session_id" "$title" "$repo_key" \
-    "agent-${name}" "$(profile_for "$repo_key")" worktree "" "$name" 1 "$rc_name") \
+    "agent-${name}" "$(profile_for "$repo_key")" worktree "" "$name" 1 "$rc_name" \
+    "$COMPOSED_PERSONA" "$COMPOSED_BRIEF") \
     || { session_key=""; echo "yo: couldn't record the session in $YO_STATE_DIR (resume-all won't know about it)"; }
   label=$(session_label "$repo_key" "$wt_path")
   prepare_claude_cmd "$repo_key" "$label" "$session_key"
@@ -3488,13 +3502,13 @@ cmd_agent() {
 # session id claude exports to its tools, else the one in-place record for this
 # directory. Empty when none or several match.
 _yo_here_session_key() {
-  local dir="$1" rows st pid name repo sid wt title k prof mode guest agent home rc
+  local dir="$1" rows st pid name repo sid wt title k prof mode guest agent home rc codename
   local by_id="" by_dir="" n=0
   if [ -n "${YO_SESSION_KEY:-}" ]; then
     printf '%s' "$YO_SESSION_KEY"; return 0
   fi
   rows=$(_yo_state list) || return 0
-  while IFS="$_YO_TAB" read -r st pid name repo sid wt title k prof mode guest agent home rc; do
+  while IFS="$_YO_TAB" read -r st pid name repo sid wt title k prof mode guest agent home rc codename; do
     [ -n "$k" ] || continue
     [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ "$sid" = "$CLAUDE_CODE_SESSION_ID" ] \
       && by_id="$k"
