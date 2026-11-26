@@ -11,8 +11,7 @@ use super::{
 };
 use crate::ledger::HookEvent;
 use crate::ojson::OValue;
-use crate::plan::{Action, Note};
-use crate::registry::Mode;
+use crate::plan::Action;
 use crate::sys::Sys;
 use crate::{Ctx, Error, Result};
 
@@ -101,6 +100,38 @@ impl Harness for Claude {
         }
     }
 
+    /// `<command> [--settings F] [--model M] [--agent A] --name NAME
+    /// [--remote-control NAME] --resume ID [MESSAGE]`. The agent and Remote
+    /// Control name come from the ledger: nothing says `claude --resume`
+    /// restores either on its own.
+    fn resume_command(&self, id: &str, s: &SessionSpec) -> Argv {
+        let mut args = Vec::new();
+        let mut flag = |f: &str, v: Option<String>| {
+            if let Some(v) = v {
+                args.push(f.to_string());
+                args.push(v);
+            }
+        };
+        flag(
+            "--settings",
+            s.settings
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+        );
+        flag("--model", s.model.clone());
+        flag("--agent", s.persona.clone());
+        let name = s.remote_control.clone().unwrap_or_else(|| s.name.clone());
+        flag("--name", Some(name));
+        flag("--remote-control", s.remote_control.clone());
+        flag("--resume", Some(id.to_string()));
+        args.extend(s.first_message.clone().filter(|m| !m.is_empty()));
+        Argv {
+            env: Vec::new(),
+            command: s.command.clone(),
+            args,
+        }
+    }
+
     /// The settings layer (yo's base layer, the profile's settings, the
     /// ledger hooks, the memory directory), the memory directory itself, and
     /// for a trusted worktree: trust in `~/.claude.json` and the clone's
@@ -120,11 +151,6 @@ impl Harness for Claude {
                     clone: clone.to_path_buf(),
                     mcp: p.repo.map(|r| r.mcp.clone()).unwrap_or_default(),
                 })));
-        } else if let (Some(r), Mode::Worktree) = (p.repo, p.mode) {
-            out.notes.push(Note::Info(format!(
-                "not pre-trusting the worktree ({} isn't a trusted repo) — Claude will ask",
-                r.key
-            )));
         }
 
         let memory = reg.memory_dir(p.repo, p.picked);
@@ -558,6 +584,7 @@ mod tests {
             codename: "Plucky Gary".into(),
             first_message: msg.map(str::to_string),
             settings: None,
+            remote_control: None,
         }
     }
 
@@ -651,6 +678,33 @@ mod tests {
         local_settings(&w2, &t.path().join("none"), &[]).unwrap();
         assert!(!w2.join(".claude/settings.local.json").exists());
         assert!(w2.join(".claude").is_dir());
+    }
+
+    #[test]
+    fn resume_commands() {
+        let mut s = spec(Some("carry on"));
+        s.persona = Some("cindy".into());
+        let a = Claude.resume_command("abc", &s);
+        assert_eq!(
+            a.args,
+            [
+                "--agent", "cindy", "--name", "issue_7", "--resume", "abc", "carry on"
+            ]
+        );
+        s.remote_control = Some("cindy-home".into());
+        s.first_message = None;
+        let a = Claude.resume_command("abc", &s);
+        assert_eq!(
+            a.args[2..],
+            [
+                "--name",
+                "cindy-home",
+                "--remote-control",
+                "cindy-home",
+                "--resume",
+                "abc"
+            ]
+        );
     }
 
     #[test]

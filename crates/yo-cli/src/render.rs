@@ -214,6 +214,16 @@ fn action(a: &Action) -> String {
         Action::WriteFile { path, .. } => format!("write the settings layer {}", path.display()),
         Action::Prepare(p) => prep(p).to_string(),
         Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
+        Action::Focus {
+            pid, tty, message, ..
+        } => format!(
+            "bring forward the tab of pid {pid} ({}){}",
+            tty.as_deref().unwrap_or("no terminal"),
+            message
+                .as_deref()
+                .map(|m| format!(", then type: {m}"))
+                .unwrap_or_default()
+        ),
         Action::Launch(l) => format!(
             "open [{}] in {}\n      {}",
             l.title,
@@ -301,7 +311,7 @@ impl Report for Progress<'_> {
                 line("brief:", &r.brief);
                 s
             }
-            Action::Launch(_) => String::new(),
+            Action::Launch(_) | Action::Focus { .. } => String::new(),
         };
         self.put(&s);
     }

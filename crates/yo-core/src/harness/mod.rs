@@ -24,6 +24,9 @@ pub trait Harness: Send + Sync {
     fn capabilities(&self) -> Capabilities;
     /// The command that starts its TUI for a new session.
     fn tui_command(&self, s: &SessionSpec) -> Argv;
+    /// The command that reopens session `id` in its TUI, with
+    /// `s.first_message` (if any) as its next prompt, as it is.
+    fn resume_command(&self, id: &str, s: &SessionSpec) -> Argv;
     /// Its own setup for a session, before launch: for Claude, the settings
     /// layer, memory and trust. Nothing, for a harness with none.
     fn prepare(&self, _ctx: &Ctx, _p: &PrepareAsk<'_>) -> Result<Prepared> {
@@ -73,6 +76,9 @@ pub struct SessionSpec {
     pub first_message: Option<String>,
     /// A settings layer [`Harness::prepare`] composed for it.
     pub settings: Option<PathBuf>,
+    /// A Remote Control name (an agent's home), which the session takes as
+    /// its name too.
+    pub remote_control: Option<String>,
 }
 
 /// What a harness's setup is for.

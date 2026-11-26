@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::harness::Prep;
 use crate::ledger::Entry;
-use crate::runner::{LaunchSpec, Launched, Runner};
+use crate::runner::{Focused, LaunchSpec, Launched, Runner};
 use crate::{Ctx, Error, Result, git};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -69,6 +69,17 @@ pub enum Action {
     Prepare(Prep),
     PutRecord(Box<Entry>),
     Launch(LaunchSpec),
+    /// A running session (process `pid`, on terminal `tty` if it has one):
+    /// its tab brought forward, and `message` typed in.
+    Focus {
+        pid: u32,
+        tty: Option<String>,
+        /// What the progress calls it.
+        label: String,
+        /// Its Remote Control name, for when there's no tab to reach.
+        remote_control: Option<String>,
+        message: Option<String>,
+    },
 }
 
 /// The branch a new worktree checks out.
@@ -177,6 +188,52 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
             Action::Launch(spec) => {
                 let l = runner.launch(sys, spec)?;
                 out.launched(spec, &l);
+            }
+            Action::Focus {
+                pid,
+                tty,
+                label,
+                remote_control,
+                message,
+            } => {
+                let got = match tty {
+                    Some(t) => runner.focus(sys, t, message.as_deref())?,
+                    None => Focused::NotFound,
+                };
+                let typed = if message.is_some() {
+                    " and typed your message"
+                } else {
+                    ""
+                };
+                match got {
+                    Focused::Yes => out.note(&Note::Info(format!(
+                        "{label} is running (pid {pid}): brought its tab forward{typed}"
+                    ))),
+                    Focused::Dry { tty } => out.note(&Note::Info(format!(
+                        "dry focus: {tty}{}",
+                        message
+                            .as_deref()
+                            .map(|m| format!(", then type: {m}"))
+                            .unwrap_or_default()
+                    ))),
+                    Focused::NotFound => {
+                        let rc = remote_control
+                            .as_deref()
+                            .map(|r| format!("by Remote Control as {r}, or "))
+                            .unwrap_or_default();
+                        let lost = if message.is_some() {
+                            " (your message was not delivered)"
+                        } else {
+                            ""
+                        };
+                        out.note(&Note::Info(format!(
+                            "{label} is running (pid {pid}), but not in an iTerm tab yo can find;"
+                        )));
+                        out.note(&Note::Detail(format!(
+                            "reach it {rc}with SendMessage from another session{lost}"
+                        )));
+                    }
+                }
             }
         }
     }
