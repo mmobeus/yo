@@ -1,5 +1,5 @@
-//! What the read-only commands print. Same text as `scripts/yo` prints
-//! today, from the core's data.
+//! What the read-only commands print, from the core's data. The text is
+//! what the bash `yo` printed.
 
 use std::fmt::Write as _;
 

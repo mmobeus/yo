@@ -2,17 +2,19 @@
 
 ## Status
 
-> **None of this is built yet.** This is a design for review. The `yo` that
-> runs today is the bash script, `scripts/yo`, and the [guide](../guide.md)
-> and [reference](../reference.md) describe it. Nothing below, including the
-> Rust core, harnesses other than Claude, ACP sessions, the relay, the daemon,
-> `yo status`, `yo tui` and `yo app`, exists until its phase lands.
+> **Phase 1 is done:** `yo` is the Rust binary (`yo-cli` over `yo-core`),
+> with one harness (Claude) and one runner (iTerm). The bash script it
+> replaced, `scripts/yo`, is gone; git history has it. The
+> [guide](../guide.md) and [reference](../reference.md) describe the Rust
+> `yo`. Nothing from phase 2 on, including harnesses other than Claude, ACP
+> sessions, the relay, the daemon, `yo status`, `yo tui` and `yo app`,
+> exists until its phase lands.
 
 | phase | what | status |
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes (PR #27). Create is ported. `yo NAME`: the lookup (`resolve.rs`), focusing a running session and resuming a stopped one with the message (`reach.rs`; PR #28). The ledger commands: `resume` (by name, id, prefix, directory, or an id only the harness's transcripts know), `resume-all`, `adopt`, `forget`, `title` (PR #29). `down` and `sweep`, with every refusal tested on the plan and sweep's verdicts tested against real git repos (PR #30). `yo agent` and agents' homes, `config add-repo` and `config edit`: every command is ported. Next: the review rounds, the iTerm checklist and the switch (#21) |
+| 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #SWITCH): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -60,7 +62,7 @@ the port is tested. No code comes with it; phase 1 builds against it.
 | messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
 | app | a Tauri app (`yo app`): one web UI, wrapped by Tauri, talking to the daemon over its Unix socket. The app holds no yo logic. The same UI can be served over the daemon's opt-in HTTP, for a phone or for UI development. Not Wails |
 | compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
-| the port | it keeps today's *effects* (ledger, config, git, files written, commands launched); output may change, deliberately. Each command is tested by `yo-core` unit tests on its plan, with a fake `Sys`, and compared with `scripts/yo` by hand while porting, since bash `yo` goes about a day after the Rust one runs. See [testing the port](#testing-the-port) |
+| the port | it keeps today's *effects* (ledger, config, git, files written, commands launched); output may change, deliberately. Each command is tested by `yo-core` unit tests on its plan, with a fake `Sys`, and was compared with `scripts/yo` by hand while porting, since bash `yo` went about a day after the Rust one ran. See [testing the port](#testing-the-port) |
 | daemon | optional for the CLI and the TUI; started on demand by what needs it (`yo app`, background sessions, the relay). Listens only on a Unix socket unless TCP is turned on. A launchd agent can come later |
 | how it's built | gates cheapest first, everything CI runs can run locally (`cargo xtask`), review skills by hand, and only the maintainer loosens a gate; see [how it's built](#how-its-built) |
 | "latest focus" | raw: the last prompt and the last tool used. A summary can come later |
@@ -894,9 +896,9 @@ This replaces the phase list in #9. Each phase is useful on its own.
 
 ## Testing the port
 
-bash `yo` is retired about a day after the Rust `yo` can run (#21, the
-switch), so there's no harness running the two side by side: it would be
-scaffolding for that one day. Instead:
+bash `yo` was retired about a day after the Rust `yo` could run (#21, the
+switch), so there was no harness running the two side by side: it would have
+been scaffolding for that one day. Instead:
 
 - **What a command does is tested in `yo-core`, on its plan.** A test builds
   a registry, a ledger and live sessions, gives a fake `Sys` its answers
@@ -904,15 +906,18 @@ scaffolding for that one day. Instead:
   plan the command builds. Executing a plan against the fake, under a
   temporary `HOME`, shows the commands it ran and the files it wrote. These
   tests stay as the regression suite after the switch.
-- **The port is compared with `scripts/yo` by hand,** command by command as
-  it's ported, in a throwaway sandbox: `HOME`, `XDG_STATE_HOME` and
+- **The port was compared with `scripts/yo` by hand,** command by command as
+  it was ported, in a throwaway sandbox: `HOME`, `XDG_STATE_HOME` and
   `YO_CONFIG` pointed at a temporary directory, and `YO_DRY_LAUNCH=1` (the
   README's "Making changes"). Effects (the ledger, config, git, files written,
-  commands launched) should match. Output may change, but only deliberately,
-  and the list below says how. Each PR says what it compared.
+  commands launched) had to match. Output could change, but only
+  deliberately, and the list below says how. Each PR said what it compared.
+  With the script gone, the plan tests are what keep the effects.
 - **The CLI follows common CLI idioms, not bash's quirks.** Effects are what
-  must match; how arguments are parsed and how errors read needn't. So far
-  the Rust `yo` differs from `scripts/yo` in these ways:
+  must match; how arguments are parsed and how errors read needn't. The
+  Rust `yo` differs from `scripts/yo` in these ways (the
+  [reference](../reference.md#changes-from-the-bash-yo) lists the ones a
+  user notices):
   - arguments are parsed by clap: `--flag value` works as well as
     `--flag=value`, and usage errors are clap's (with `yo --help` and
     `yo <command> --help`); `yo help` still prints the guide and the
@@ -922,7 +927,6 @@ scaffolding for that one day. Instead:
   - `--discard` needs `--yes`, and `--here` and `--worktree` can't both be
     given
   - a bad config's error is serde's: the key and where it is in the file
-  - commands not ported yet say so and change nothing
   - creating a session has `--dry-run`, which prints the plan and changes
     nothing; `YO_DRY_LAUNCH` keeps its meaning (everything but opening the tab)
   - create's progress reads a little differently: `==> fetching origin/main`
@@ -941,7 +945,6 @@ scaffolding for that one day. Instead:
     its clone: with `--dry-run`, yo says where it would go and stops there
   - `yo NAME` takes `--dry-run` too (it doesn't count as a flag, so the
     lookup still runs); a resumed session is passed `--name` like a new one
-  - `yo AGENT` says `yo agent` isn't ported yet, until area 4
   - `down --yes` with uncommitted work refuses with the changes in the
     error, rather than after printing the whole summary; under
     `YO_DRY_LAUNCH`, `down` doesn't close the tab it runs in (bash closed it)
@@ -954,10 +957,11 @@ scaffolding for that one day. Instead:
     a failed clone says so in one line
   - a settings layer that can't be written stops the create, before the
     record and the launch, rather than launching without it
-
-  The reference is updated to match at the switch (#21).
+  - yo is a binary that `install.sh` builds with cargo, so installing needs
+    Rust (rustup); python3 is needed only for the installer's iTerm2
+    workgroup step
 - **Fakes can't prove the AppleScript drives iTerm correctly.** A short manual
-  checklist covers that, run once before the switch: start, start in a new
+  checklist covered that, run once before the switch: start, start in a new
   window, reach with a message, title, down, resume-all.
 
 What the tests cover, area by area, plus the error paths each command has

@@ -5,8 +5,8 @@ in the yo repo. What follows is the summary.
 
 Configuration:
   Every site-specific thing (which repos exist, where their clones live, the
-  branch prefix, window size) lives in a JSON config file — this script
-  itself is generic. yo reads, in order:
+  branch prefix, window size) lives in a JSON config file — yo itself is
+  generic. yo reads, in order:
       $YO_CONFIG
       ${XDG_CONFIG_HOME:-~/.config}/yo/config.json
   The file holds "defaults" (global settings), "profiles" (each with its own
@@ -144,7 +144,7 @@ Usage:
 
   yo down [--dry-run] [--yes [--discard]]
                        Tear down the session you're currently in
-                       (aliases: rm, teardown, -d). In a --here session there
+                       (aliases: rm, teardown). In a --here session there
                        is no worktree to remove, so it only forgets the
                        session and closes the tab. --yes skips the prompt so
                        it can run from inside claude (the /yo-down skill); it
@@ -192,8 +192,8 @@ Usage:
   yo resume <name|session-id|dir> [--model=M] [--new-window|--tab]
                        Reopen one session in a tab of its shared window and
                        `claude --resume` it there, under the same repo,
-                       profile and settings layer it started with (alias:
-                       --resume). Any session id works, even one yo didn't
+                       profile and settings layer it started with. Any
+                       session id works, even one yo didn't
                        start: its directory is read from the transcript.
   yo title ["T"]       Retitle the session this runs in (tab, Session Status
                        and the ledger; the /yo-title skill). Bare `yo title`

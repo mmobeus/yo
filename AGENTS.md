@@ -6,8 +6,8 @@ coding agents, so every change clears the same gates, whoever wrote it.
 ## Read first
 
 - [`docs/design/core.md`](docs/design/core.md): the plan for moving yo from
-  the bash script to a Rust core. Its status table says what's built. Read
-  its principles and "How it's built" before changing anything in `crates/`.
+  a bash script to a Rust core and beyond. Its status table says what's
+  built. Read its principles and "How it's built" before changing anything in `crates/`.
 - [`docs/dev/`](docs/dev/): how to run the gates
   ([`env.md`](docs/dev/env.md)), and the checklists every change is reviewed
   against: [architecture](docs/dev/architecture.md),
@@ -16,31 +16,31 @@ coding agents, so every change clears the same gates, whoever wrote it.
 ## Layout
 
 ```
-scripts/yo        the yo that runs today (bash); the reference for the port
-crates/           the Rust workspace (see "Crates" in the design)
+crates/           the Rust workspace (see "Crates" in the design); yo-cli is
+                  the `yo` binary
 xtask/            the gates: cargo xtask <gate>
 claude/           Claude Code files yo installs for its users (skills, settings)
 .claude/          Claude Code files for working on this repo
 docs/             the user guide, the reference, the design, docs/dev/
 ```
 
-Until phase 1 lands, `scripts/yo` is what users run, and the guide and
-reference describe it. A change to its behavior updates them.
+`install.sh` builds `yo` and links it into `~/.local/bin`. The guide and
+the reference describe it: a change to what a command does or prints
+updates them in the same PR.
 
 ## Before opening a PR
 
 1. `cargo xtask ci` passes. It runs exactly what CI runs.
 2. If you added or changed a dependency: every new crate is in `bans.allow`
    in `deny.toml`, and `cargo xtask advisories` passes.
-3. If you changed `scripts/yo`: no gate covers it yet. Try it in a sandbox
-   (`YO_DRY_LAUNCH=1`, with `HOME`, `XDG_STATE_HOME` and `YO_CONFIG` pointed
-   at a throwaway directory; see the README's "Making changes").
-4. If you ported a command: compare it with `scripts/yo` by hand in the
-   same kind of sandbox, and say in the PR what you compared and what
-   output changed. Effects should match. See "Testing the port" in the
-   design.
-5. Go through the three checklists in `docs/dev/` for your diff.
-6. Fill in the PR template.
+3. If you changed what a command does: try it by path
+   (`target/debug/yo`) in a sandbox (`YO_DRY_LAUNCH=1`, with `HOME`,
+   `XDG_STATE_HOME` and `YO_CONFIG` pointed at a throwaway directory; see
+   the README's "Making changes"), and say in the PR what you tried. If you
+   changed `install.sh`, try it with `--bin`, `--claude-dir`,
+   `--config-dir` and `--no-iterm` pointed at a throwaway directory.
+4. Go through the three checklists in `docs/dev/` for your diff.
+5. Fill in the PR template.
 
 ## After opening it
 

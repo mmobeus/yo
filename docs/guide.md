@@ -26,8 +26,10 @@ git clone git@github.com:mmobeus/yo.git && cd yo
 ./install.sh
 ```
 
-This puts `yo` in `~/.local/bin`, plus a few skills and settings described
-later. You need git, jq, python3, and iTerm2 on macOS.
+This builds `yo` (with cargo) and puts it in `~/.local/bin`, plus a few
+skills and settings described later. You need git, jq, Rust
+([rustup](https://rustup.rs)), and iTerm2 on macOS; the installer also uses
+python3 to set up iTerm2's workgroup.
 
 ### Your first session
 
@@ -406,7 +408,10 @@ with no argument restores every yo tab's name.
 **`yo` says the config failed to load.** The message names the bad key or the
 JSON error. `yo config edit` checks the file when you save.
 
-**Testing yo itself.** Run the script by path with `YO_DRY_LAUNCH=1` to print
-the launch instead of opening iTerm. yo still records the session before
-launching, so point `HOME`, `XDG_STATE_HOME` and `YO_CONFIG` at a throwaway
-directory too.
+**Seeing what yo would do.** `--dry-run` (on starting a session, `yo NAME`,
+`down` and `resume-all`) prints the plan and changes nothing.
+
+**Testing yo itself.** Build it (`cargo build`) and run `target/debug/yo` by
+path with `YO_DRY_LAUNCH=1` to print the launch instead of opening iTerm. yo
+still records the session before launching, so point `HOME`,
+`XDG_STATE_HOME` and `YO_CONFIG` at a throwaway directory too.

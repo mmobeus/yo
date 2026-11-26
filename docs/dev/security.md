@@ -8,8 +8,8 @@ tests that back these up.
 **Blocking** means the PR shouldn't merge as is. **Non-blocking** means worth
 fixing, now or in a follow-up.
 
-During the port, the bar is `scripts/yo`: behavior that's the same as bash's
-today isn't a finding. A diff that makes something less safe than bash is.
+Behavior the diff doesn't change isn't a finding. A diff that makes
+something less safe than it was is.
 
 ## Blocking
 

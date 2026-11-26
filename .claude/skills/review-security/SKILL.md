@@ -21,8 +21,9 @@ what not to read, and the output format. Then:
 3. **Destructive operations:** for anything that removes, overwrites or
    kills, check what stops it hitting the wrong target. Read the code
    around it, not just the diff.
-4. Go through the rest of the checklist. What `scripts/yo` already does the
-   same way isn't a finding, unless the diff makes it worse.
+4. Go through the rest of the checklist. What the code already did the
+   same way before the diff isn't a finding, unless the diff makes it
+   worse.
 5. **Inventory.** Whatever you find, list what the diff adds:
    - outside commands (programs run, and with what)
    - new inputs (where outside data now enters)
