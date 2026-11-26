@@ -19,15 +19,16 @@ fixing, now or in a follow-up.
     destructive operations, the daemon, the hook, the event log).
 - **A bug fix adds a test** that fails without the fix.
 - **`accepted.diff` entries** are only for output (stdout, stderr), never for
-  effects. Each one is a deliberate change, explained in the PR. An entry
+  effects. Each one is a deliberate change, and says why beside the entry,
+  where the reviewers see it (they don't read the PR description). An entry
   that no longer happens is removed.
 - **Dry runs:** a scenario for a command that changes things also runs with
   `--dry-run`, and the sandbox is unchanged afterwards.
 - **Deterministic and sandboxed.** Tests use fakes (`Sys`, the shims, local
   bare repos). No network, no real `HOME`, no iTerm, no real harness. They
   don't sleep to wait for something. They pass on Linux.
-- **No weakened tests.** Nothing is deleted, skipped or `#[ignore]`d to get
-  green without the maintainer's approval in the PR (see `AGENTS.md`).
+- **No weakened tests.** Nothing is deleted, skipped, `#[ignore]`d or has
+  its assertions relaxed to get green without the maintainer's approval in the PR (see `AGENTS.md`).
 
 ## Non-blocking (unless it's serious)
 
@@ -35,7 +36,8 @@ fixing, now or in a follow-up.
   it's implemented.
 - **Don't test the tests.** A test whose job is to check that another test,
   lint or gate is set up right is noise. When a new gate goes in, check by
-  hand once that it catches what it should, and say so in the PR. Not
+  hand once that it catches what it should, and say so in the PR, for the
+  maintainer (the reviewers don't see it, and don't check it). Not
   catching everything is fine. A wall of guards against obvious, reviewable
   mistakes isn't.
 - **Fakes stay honest.** A fake behaves like the real thing in the ways the

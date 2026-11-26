@@ -11,7 +11,7 @@
 | phase | what | status |
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
-| before 1 | the gates: CI, lints, review skills, skill tuning | in progress (#11): workspace, `xtask`, CI, `AGENTS.md` and checklists done |
+| before 1 | the gates: CI, lints, review skills, skill tuning | in progress (#11): workspace, `xtask`, CI, `AGENTS.md`, checklists and review skills done |
 | 1 | Rust core with CLI parity | not started |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
@@ -1036,14 +1036,26 @@ to run before opening a PR.
   places that accept input, and new dependencies.
 - **`review-tests`:** tests at the right layer for each change; parity
   scenarios and `accepted.diff` entries justified.
-- **`review-pr`** runs the three, each as a separate agent that sees only the
-  diff and this doc, not the author's explanation, so it can't simply agree
-  with it. It posts one PR comment with blocking and non-blocking findings and
-  the commit it reviewed, and sets the `yo-review` status on that commit.
+- **`review-pr`** runs the three, each as a separate agent. An agent sees the
+  diff, the code at that commit and this doc, but not the author's
+  explanation (the PR description, commits, the issue), so it can't simply
+  agree with it. The prompt keeps it to those, and the reviewer agent has
+  only read tools, so it can't run `gh` or `git` to fetch them. It posts one PR comment with blocking and non-blocking
+  findings and the commit it reviewed, and sets the `yo-review` status on
+  that commit.
+- **The rules come from the base branch.** `review-pr` runs from a clean
+  checkout of the branch the PR targets, never the PR's own branch, because
+  the skill and the reviewer agent are loaded from the session's checkout.
+  It reads the checklists, the area skills and `AGENTS.md` from the base
+  too, so a PR can't be reviewed by its own edited reviewers. The code and
+  this doc are read as the PR changes them.
 
-`yo-review` records that review ran on that commit. It doesn't prove the
-blocking findings were dealt with, and anyone who can run the skill can set
-it. Checking the findings before merging stays the maintainer's job.
+`yo-review` records that review ran on that commit, so its state is always
+`success`, and its description gives the counts of findings. It doesn't
+prove the blocking findings were dealt with, and anyone who can run the
+skill can set it. Checking the findings before merging stays the
+maintainer's job. The rules for a review, for any harness, are in
+`docs/dev/review.md`.
 
 They focus on yo's own rules. General correctness is the built-in
 `/code-review`'s job.
