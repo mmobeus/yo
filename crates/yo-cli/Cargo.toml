@@ -12,6 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 yo-core.workspace = true
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+yo-core = { workspace = true, features = ["fake"] }
 
 [lints]
 workspace = true

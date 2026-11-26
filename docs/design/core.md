@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22). In `yo-core`: `Sys` and its fake, config and the registry with precedence, the ledger (reading and writing, liveness, the hook, sync), Claude's live sessions. Next: `yo-cli` and the read-only commands |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Next: the commands that change things (#20) |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -898,7 +898,22 @@ scaffolding for that one day. Instead:
   `YO_CONFIG` pointed at a temporary directory, and `YO_DRY_LAUNCH=1` (the
   README's "Making changes"). Effects (the ledger, config, git, files written,
   commands launched) should match. Output may change, but only deliberately,
-  and the reference says what it is now. Each PR says what it compared.
+  and the list below says how. Each PR says what it compared.
+- **The CLI follows common CLI idioms, not bash's quirks.** Effects are what
+  must match; how arguments are parsed and how errors read needn't. So far
+  the Rust `yo` differs from `scripts/yo` in these ways:
+  - arguments are parsed by clap: `--flag value` works as well as
+    `--flag=value`, and usage errors are clap's (with `yo --help` and
+    `yo <command> --help`); `yo help` still prints the guide and the
+    registry
+  - the `-d` and `--resume` spellings of `down` and `resume` are gone;
+    `ls`, `rm` and `teardown` stay
+  - `--discard` needs `--yes`, and `--here` and `--worktree` can't both be
+    given
+  - a bad config's error is serde's: the key and where it is in the file
+  - commands not ported yet say so and change nothing
+
+  The reference is updated to match at the switch (#21).
 - **Fakes can't prove the AppleScript drives iTerm correctly.** A short manual
   checklist covers that, run once before the switch: start, start in a new
   window, reach with a message, title, down, resume-all.

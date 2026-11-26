@@ -25,10 +25,10 @@ fixing, now or in a follow-up.
   - **A security rule:** the matching security test (quoting, paths,
     destructive operations, the daemon, the hook, the event log).
 - **A bug fix adds a test** that fails without the fix.
-- **Changed output is documented.** A port or change that makes a command
-  print something different from `scripts/yo` updates the reference
-  (`docs/reference.md`) in the same diff, where reviewers can see that it's
-  deliberate.
+- **Changed output is documented.** A port that makes a command behave or
+  print differently from `scripts/yo` adds it to the list in "Testing the
+  port" in the design, in the same diff, where reviewers can see that it's
+  deliberate. (The reference describes `scripts/yo` until the switch.)
 - **Dry runs:** a command that changes things has a test that runs it with
   `--dry-run`: it runs no command that changes anything, and its temporary
   `HOME` is unchanged afterwards.
