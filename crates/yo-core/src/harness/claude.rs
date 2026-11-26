@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{Capabilities, Harness, LiveSession, valid_session_id};
+use super::{Argv, Capabilities, Harness, LiveSession, SessionSpec, valid_session_id};
 use crate::ledger::HookEvent;
 use crate::sys::Sys;
 
@@ -62,6 +62,32 @@ impl Harness for Claude {
         }
     }
 
+    /// `<command> [--model M] [--agent A] [--append-system-prompt P]
+    /// --name NAME --session-id ID [MESSAGE]`. The codename goes at the end
+    /// of the first message, or into the system prompt when the message is a
+    /// slash command (whose arguments it would otherwise join).
+    fn tui_command(&self, s: &SessionSpec) -> Argv {
+        let (message, sysprompt) = first_message(s.first_message.as_deref(), &s.codename);
+        let mut args = Vec::new();
+        let mut flag = |f: &str, v: &Option<String>| {
+            if let Some(v) = v {
+                args.push(f.to_string());
+                args.push(v.clone());
+            }
+        };
+        flag("--model", &s.model);
+        flag("--agent", &s.persona);
+        flag("--append-system-prompt", &sysprompt);
+        flag("--name", &Some(s.name.clone()));
+        flag("--session-id", &s.id);
+        args.extend(message);
+        Argv {
+            env: Vec::new(),
+            command: s.command.clone(),
+            args,
+        }
+    }
+
     /// `SessionStart` and `SessionEnd` payloads (a missing event name is a
     /// start, as bash takes it). Only `/exit` and ctrl-d
     /// (`prompt_input_exit`) end a session deliberately; a closed tab
@@ -84,6 +110,32 @@ impl Harness for Claude {
 }
 
 /// One session file, if it's an interactive session with an id and a pid.
+/// The first message and the system-prompt addition that tell a session its
+/// codename.
+fn first_message(brief: Option<&str>, codename: &str) -> (Option<String>, Option<String>) {
+    let use_it = "use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.";
+    match brief.filter(|b| !b.is_empty()) {
+        Some(b) if b.starts_with('/') => (
+            Some(b.to_string()),
+            Some(format!(
+                "Your codename for this session is \"{codename}\". Introduce yourself with it, and {use_it}"
+            )),
+        ),
+        Some(b) => (
+            Some(format!(
+                "{b} (FYI, your codename for this session is \"{codename}\" — introduce yourself with it and {use_it})"
+            )),
+            None,
+        ),
+        None => (
+            Some(format!(
+                "Your codename for this session is \"{codename}\". Briefly introduce yourself by codename, then wait for instructions."
+            )),
+            None,
+        ),
+    }
+}
+
 fn session(d: &Value) -> Option<LiveSession> {
     let pid = match &d["pid"] {
         Value::Number(n) => u32::try_from(n.as_u64()?).ok()?,
@@ -226,6 +278,46 @@ mod tests {
                 id: "s".into(),
                 cwd: "".into()
             })
+        );
+    }
+
+    fn spec(msg: Option<&str>) -> SessionSpec {
+        SessionSpec {
+            command: "claude --permission-mode auto".into(),
+            dir: "/w".into(),
+            name: "issue_7".into(),
+            id: Some("abc".into()),
+            model: None,
+            persona: None,
+            codename: "Plucky Gary".into(),
+            first_message: msg.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tui_commands() {
+        let a = Claude.tui_command(&spec(Some("fix it")));
+        assert_eq!(a.command, "claude --permission-mode auto");
+        assert_eq!(a.args[..4], ["--name", "issue_7", "--session-id", "abc"]);
+        assert!(
+            a.args[4].starts_with("fix it (FYI, your codename for this session is \"Plucky Gary\"")
+        );
+
+        let mut s = spec(Some("/code-review https://x"));
+        s.model = Some("opus".into());
+        s.persona = Some("cindy".into());
+        let a = Claude.tui_command(&s);
+        assert_eq!(a.args[..4], ["--model", "opus", "--agent", "cindy"]);
+        assert_eq!(a.args[4], "--append-system-prompt");
+        assert!(a.args[5].starts_with("Your codename for this session is \"Plucky Gary\"."));
+        assert_eq!(a.args.last().unwrap(), "/code-review https://x");
+
+        let a = Claude.tui_command(&spec(None));
+        assert!(
+            a.args
+                .last()
+                .unwrap()
+                .ends_with("then wait for instructions.")
         );
     }
 

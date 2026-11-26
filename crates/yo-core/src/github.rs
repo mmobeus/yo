@@ -1,5 +1,68 @@
-//! GitHub names out of URLs and checkout paths. Pure; the gh CLI comes with
-//! the commands that use it.
+//! GitHub names out of URLs and checkout paths, and the gh CLI for PR and
+//! issue titles.
+
+use crate::sys::{CommandSpec, Sys};
+
+/// A PR or an issue, as a URL names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GhRef {
+    pub kind: GhKind,
+    pub owner_repo: String,
+    pub number: u64,
+    /// The canonical URL: anything after the number (`/files`, an anchor) dropped.
+    pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GhKind {
+    Pr,
+    Issue,
+}
+
+/// A `github.com/<owner>/<repo>/(pull|issues)/<n>` URL, anywhere in `s`.
+pub fn parse_ref(s: &str) -> Option<GhRef> {
+    let (_, rest) = s.split_once("github.com/")?;
+    let mut parts = rest.splitn(4, '/');
+    let (owner, repo, seg) = (parts.next()?, parts.next()?, parts.next()?);
+    let tail = parts.next()?;
+    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    let number: u64 = digits.parse().ok()?;
+    let kind = match seg {
+        "pull" => GhKind::Pr,
+        "issues" => GhKind::Issue,
+        _ => return None,
+    };
+    if !(name_ok(owner) && name_ok(repo)) {
+        return None;
+    }
+    Some(GhRef {
+        kind,
+        owner_repo: format!("{owner}/{repo}"),
+        number,
+        url: format!("https://github.com/{owner}/{repo}/{seg}/{number}"),
+    })
+}
+
+/// The PR's or issue's title, from gh. `None` when gh isn't there or fails.
+pub fn title(sys: &dyn Sys, r: &GhRef) -> Option<String> {
+    let what = match r.kind {
+        GhKind::Pr => "pr",
+        GhKind::Issue => "issue",
+    };
+    let spec = CommandSpec::new("gh").args([
+        what,
+        "view",
+        &r.number.to_string(),
+        "--repo",
+        &r.owner_repo,
+        "--json",
+        "title",
+        "--jq",
+        ".title",
+    ]);
+    let out = sys.cmd().run(&spec).ok()?;
+    out.success().then(|| out.text()).filter(|t| !t.is_empty())
+}
 
 /// `owner/repo` out of any GitHub remote or web URL (its first two path
 /// segments, without `.git`). Exact, so `foo/bar` can't match `foo/bar-baz`.
@@ -59,6 +122,21 @@ mod tests {
         ] {
             assert_eq!(owner_repo_from_url(url).as_deref(), want, "{url}");
         }
+    }
+
+    #[test]
+    fn refs() {
+        let r = parse_ref("https://github.com/acme/api/pull/12/files#x").unwrap();
+        assert_eq!(r.kind, GhKind::Pr);
+        assert_eq!(r.owner_repo, "acme/api");
+        assert_eq!(r.number, 12);
+        assert_eq!(r.url, "https://github.com/acme/api/pull/12");
+        let r = parse_ref("github.com/acme/api/issues/7").unwrap();
+        assert_eq!((r.kind, r.number), (GhKind::Issue, 7));
+        assert_eq!(parse_ref("https://github.com/acme/api/tree/main"), None);
+        assert_eq!(parse_ref("https://github.com/acme/api/pull/x"), None);
+        assert_eq!(parse_ref("https://github.com/../api/pull/1"), None);
+        assert_eq!(parse_ref("issue_7"), None);
     }
 
     #[test]

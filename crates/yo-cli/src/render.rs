@@ -6,7 +6,9 @@ use std::fmt::Write as _;
 use yo_core::Ctx;
 use yo_core::harness::LiveSession;
 use yo_core::ledger::{Entry, State, state_of};
+use yo_core::plan::{Action, BranchSpec, Note, Plan, Report};
 use yo_core::registry::Mode;
+use yo_core::runner::{LaunchSpec, Launched};
 
 /// `yo help`: the guide, then what yo can see.
 pub fn help(ctx: &Ctx) -> String {
@@ -159,4 +161,133 @@ pub fn sessions(ctx: &Ctx, entries: &[Entry], live: &[LiveSession]) -> String {
         "(yo resume <name> still reopens it; resume-all skips it); gone = directory removed\n",
     );
     s
+}
+
+/// A plan, for `--dry-run`: what was found, then each step.
+pub fn dry_run(plan: &Plan) -> String {
+    let mut s = String::new();
+    for n in &plan.notes {
+        note(&mut s, n);
+    }
+    s.push_str("dry run: would\n");
+    for a in &plan.actions {
+        let _ = writeln!(s, "  - {}", action(a));
+    }
+    s.push_str("dry run: nothing changed.\n");
+    s
+}
+
+fn note(s: &mut String, n: &Note) {
+    let _ = match n {
+        Note::Info(t) => writeln!(s, "==> {t}"),
+        Note::Detail(t) => writeln!(s, "        {t}"),
+        Note::Warn(t) => writeln!(s, "yo: {t}"),
+    };
+}
+
+/// One step, in words.
+fn action(a: &Action) -> String {
+    match a {
+        Action::Fetch { what, .. } => format!("fetch {what}"),
+        Action::AddWorktree { path, branch, .. } => {
+            format!(
+                "create worktree {} on {}",
+                path.display(),
+                branch_words(branch)
+            )
+        }
+        Action::SetUpstream {
+            remote,
+            merge,
+            branch,
+            ..
+        } => {
+            format!("set {branch} to pull {remote} {merge}")
+        }
+        Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
+        Action::Launch(l) => format!(
+            "open [{}] in {}\n      {}",
+            l.title,
+            l.dir.display(),
+            l.argv.line()
+        ),
+    }
+}
+
+fn branch_words(b: &BranchSpec) -> String {
+    match b {
+        BranchSpec::Existing(b) => format!("{b} (REUSING existing local branch, as-is)"),
+        BranchSpec::Track { branch, start } => {
+            format!("{branch} (new local branch tracking {start})")
+        }
+        BranchSpec::New { branch, start } => format!("{branch} (new, from {start})"),
+    }
+}
+
+/// Progress as a plan runs, in bash's words where it had them.
+pub struct Progress<'a> {
+    out: &'a mut dyn std::io::Write,
+}
+
+impl<'a> Progress<'a> {
+    pub fn new(out: &'a mut dyn std::io::Write) -> Self {
+        Progress { out }
+    }
+
+    fn put(&mut self, s: &str) {
+        let _ = self.out.write_all(s.as_bytes());
+    }
+
+    pub fn finish(&mut self) -> std::io::Result<()> {
+        self.out.write_all(b"==> ready.\n")
+    }
+}
+
+impl Report for Progress<'_> {
+    fn note(&mut self, n: &Note) {
+        let mut s = String::new();
+        note(&mut s, n);
+        self.put(&s);
+    }
+
+    fn doing(&mut self, a: &Action) {
+        let s = match a {
+            Action::Fetch { what, .. } => format!("==> fetching {what}\n"),
+            Action::AddWorktree { path, branch, .. } => format!(
+                "==> creating worktree: {}\n        branch: {}\n",
+                path.display(),
+                branch_words(branch)
+            ),
+            Action::SetUpstream { remote, merge, .. } => {
+                format!("        tracking {remote} {merge} — git pull refreshes the PR\n")
+            }
+            Action::PutRecord(e) => {
+                let r = &e.record;
+                let mut s = String::new();
+                let mut line = |k: &str, v: &Option<String>| {
+                    if let Some(v) = v {
+                        let _ = writeln!(s, "        {k:<10}{v}");
+                    }
+                };
+                line("codename:", &r.codename);
+                line("session:", &r.session_id);
+                line("agent:", &r.agent);
+                line("brief:", &r.brief);
+                s
+            }
+            Action::Launch(_) => String::new(),
+        };
+        self.put(&s);
+    }
+
+    fn launched(&mut self, spec: &LaunchSpec, l: &Launched) {
+        let s = match l {
+            Launched::Dry { line } => format!(
+                "dry launch: [{}] in {}\n  {line}\n",
+                spec.title,
+                spec.dir.display()
+            ),
+        };
+        self.put(&s);
+    }
 }

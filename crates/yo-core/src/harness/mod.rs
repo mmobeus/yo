@@ -2,9 +2,9 @@
 //! What's specific to one lives in its module; the core asks through
 //! [`Harness`].
 //!
-//! The trait holds what's ported so far. Launching and resuming
-//! (`tui_command`, `resume_command`), preparing a session and the rest of
-//! the design's trait arrive with the commands that use them.
+//! The trait holds what's ported so far: launching (`tui_command`) came
+//! with create. Resuming, preparing a session and the rest of the design's
+//! trait arrive with the commands that use them.
 
 use std::path::PathBuf;
 
@@ -19,6 +19,8 @@ pub trait Harness: Send + Sync {
     /// Its sessions that are running now.
     fn live(&self, sys: &dyn Sys) -> Vec<LiveSession>;
     fn capabilities(&self) -> Capabilities;
+    /// The command that starts its TUI for a new session.
+    fn tui_command(&self, s: &SessionSpec) -> Argv;
     /// Its ledger hook's payload as a start or an end, for a harness with
     /// `ledger_hooks`. `None` for anything it doesn't recognize.
     fn hook_event(&self, _payload: &str) -> Option<HookEvent> {
@@ -42,6 +44,68 @@ pub struct Capabilities {
     pub remote_control: bool,
     /// `--model`
     pub models: bool,
+}
+
+/// What a harness needs to start a session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSpec {
+    /// The harness's command, as configured: shell words, not one program
+    /// (`claude --permission-mode auto`).
+    pub command: String,
+    pub dir: PathBuf,
+    /// yo's name for the session, passed on so others can address it.
+    pub name: String,
+    /// The session id, when the harness lets yo pick it.
+    pub id: Option<String>,
+    pub model: Option<String>,
+    pub persona: Option<String>,
+    /// "Plucky Gary": yo picks it; the harness decides how the session is told.
+    pub codename: String,
+    /// What the session is asked to do, without the codename.
+    pub first_message: Option<String>,
+}
+
+/// A command to run in a terminal: variables, the configured command (shell
+/// words, used as they are), then arguments (each quoted when it's written
+/// out when it needs it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Argv {
+    pub env: Vec<(String, String)>,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+impl Argv {
+    /// The single shell line a terminal runs: `K='v' command 'arg' ...`.
+    pub fn line(&self) -> String {
+        let mut words: Vec<String> = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={}", single_quote(v)))
+            .collect();
+        words.push(self.command.clone());
+        words.extend(self.args.iter().map(|a| shell_word(a)));
+        words.join(" ")
+    }
+}
+
+/// `s` as one shell word: as it is when it's only characters no shell
+/// treats specially, else [`single_quote`]d.
+pub fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+    if plain {
+        s.to_string()
+    } else {
+        single_quote(s)
+    }
+}
+
+/// `s` in single quotes, with each `'` as `'\''`: safe on a shell line and
+/// still readable there (unlike `printf %q`'s backslashes).
+pub fn single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// A session a harness says is running.
@@ -74,4 +138,50 @@ pub fn valid_session_id(id: &str) -> bool {
 /// Every harness yo has.
 pub fn all() -> Vec<Box<dyn Harness>> {
     vec![Box::new(claude::Claude)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sys::{CommandSpec, RealSys, Sys};
+
+    #[test]
+    fn quoting_survives_the_shell() {
+        // Through a real `sh`: what goes in comes back out.
+        for s in [
+            "",
+            "plain",
+            "it's",
+            "'",
+            "''",
+            "a b\tc",
+            "$HOME `id` $(id) \\ \" ! * ? ~ #",
+            "line\nbreak",
+            "é ✓",
+            "--flag=v",
+            "~",
+            "a,b",
+        ] {
+            for word in [single_quote(s), shell_word(s)] {
+                let spec = CommandSpec::new("sh")
+                    .arg("-c")
+                    .arg(format!("printf %s {word}"));
+                let out = RealSys.cmd().run(&spec).unwrap();
+                assert_eq!(String::from_utf8(out.stdout).unwrap(), s, "{s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn lines() {
+        let a = Argv {
+            env: vec![("K".into(), "a b".into())],
+            command: "claude --permission-mode auto".into(),
+            args: vec!["--session-id".into(), "x".into(), "it's".into()],
+        };
+        assert_eq!(
+            a.line(),
+            "K='a b' claude --permission-mode auto --session-id x 'it'\\''s'"
+        );
+    }
 }

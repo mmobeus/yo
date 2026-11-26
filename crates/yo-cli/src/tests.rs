@@ -230,11 +230,100 @@ fn commands_not_ported_yet_say_so() {
             "yo: `yo down` isn't in the Rust yo yet; scripts/yo still has it\n"
         )
     );
+    // Creating works, but opening iTerm doesn't yet: without a dry launch
+    // it refuses before anything is created.
     let out = yo(&sys, t.path(), &["some-name", "a message"]);
-    assert_eq!(
-        out.err,
-        "yo: starting or reaching a session isn't in the Rust yo yet; scripts/yo still has it\n"
+    assert_eq!(out.code, 1);
+    assert!(
+        out.err
+            .starts_with("yo: launching in iTerm isn't in the Rust yo yet"),
+        "{}",
+        out.err
     );
     // Nothing was written.
     assert!(!t.path().join(".local").exists());
+}
+
+/// A sandbox with one clone, `api`, that `detect_repo` finds from inside it.
+fn with_clone() -> (TempDir, Arc<FakeSys>, std::path::PathBuf) {
+    let t = TempDir::new().unwrap();
+    let api = t.path().join("src/api");
+    fs::create_dir_all(api.join(".git")).unwrap();
+    let cfg = t.path().join(".config/yo");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::write(
+        cfg.join("config.json"),
+        format!(r#"{{"repos": {{"api": {{"path": "{}"}}}}}}"#, api.display()),
+    )
+    .unwrap();
+    let sys = Arc::new(FakeSys::new(t.path()));
+    let a = api.display().to_string();
+    sys.answer_ok("git", &["-C", &a, "rev-parse", "--show-toplevel"], &a);
+    sys.answer_ok("git", &["-C", &a, "rev-parse", "--git-common-dir"], ".git");
+    sys.push_ids(["11111111-2222-4333-8444-555555555555"]);
+    sys.push_picks([15, 24]);
+    (t, sys, api)
+}
+
+#[test]
+fn create_dry_run_shows_the_plan_and_changes_nothing() {
+    let (t, sys, api) = with_clone();
+    let out = yo(&sys, &api, &["--dry-run", "feat", "do it"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    let wt = api.with_file_name("api-worktrees").join("feat");
+    for want in [
+        "dry run: would\n".to_string(),
+        "  - fetch origin/main\n".to_string(),
+        format!(
+            "  - create worktree {} on feat (new, from origin/main)\n",
+            wt.display()
+        ),
+        "  - record the session in the ledger as src__api-worktrees__feat\n".to_string(),
+        format!("  - open [feat] in {}\n", wt.display()),
+        "      YO_SESSION_KEY='src__api-worktrees__feat' claude --permission-mode auto --name feat --session-id 11111111-2222-4333-8444-555555555555 'do it (FYI, your codename for this session is \"Plucky Gary\"".to_string(),
+        "dry run: nothing changed.\n".to_string(),
+    ] {
+        assert!(out.out.contains(&want), "missing {want:?} in:\n{}", out.out);
+    }
+    assert!(!t.path().join(".local").exists());
+    assert!(
+        !sys.calls()
+            .iter()
+            .any(|c| c.args.iter().any(|a| a == "fetch" || a == "worktree"))
+    );
+}
+
+#[test]
+fn create_with_a_dry_launch() {
+    let (_t, sys, api) = with_clone();
+    sys.set_env("YO_DRY_LAUNCH", "1");
+    let a = api.display().to_string();
+    let wt = api.with_file_name("api-worktrees").join("feat");
+    sys.answer_ok("git", &["-C", &a, "fetch", "origin", "main"], "");
+    sys.answer_ok(
+        "git",
+        &[
+            "-C",
+            &a,
+            "worktree",
+            "add",
+            "-b",
+            "feat",
+            &wt.to_string_lossy(),
+            "origin/main",
+        ],
+        "",
+    );
+    let out = yo(&sys, &api, &["feat"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .starts_with("==> fetching origin/main\n==> creating worktree: ")
+    );
+    assert!(out.out.contains("        codename: Plucky Gary\n"));
+    assert!(out.out.contains(&format!(
+        "dry launch: [feat] in {}\n  YO_SESSION_KEY=",
+        wt.display()
+    )));
+    assert!(out.out.ends_with("==> ready.\n"));
 }

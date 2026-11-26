@@ -115,6 +115,9 @@ pub struct Up {
     /// Run the session as agent NAME.
     #[arg(long, value_name = "NAME", value_parser = agent_name)]
     pub agent: Option<String>,
+    /// Say what would happen, and change nothing.
+    #[arg(long, short = 'n')]
+    pub dry_run: bool,
     /// `[REPO|PROFILE] [INPUT] [EXTRA]`: INPUT is a name, a branch, a PR or
     /// issue URL, or `-` for an unnamed session; EXTRA is a first message.
     #[arg(value_name = "ARGS", num_args = 0..=3)]
