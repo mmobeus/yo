@@ -8,7 +8,11 @@ fixing, now or in a follow-up.
 
 ## Blocking
 
-- **Changed behavior has a test**, at the right layer:
+- **Changed behavior has a test**, at the right layer. "Behavior" is what a
+  user, a command or a later step relies on: a rule (precedence, a lookup's
+  order, what's refused), an effect, an error a user sees. Not every branch
+  or helper needs its own test; a missing one is blocking only when a real
+  rule could break unnoticed.
   - **Logic** (resolution, precedence, sweep's rules, naming, status, plans):
     unit tests in `yo-core`, with a fake `Sys`.
   - **What a command does** (its effects): unit tests in `yo-core` on the

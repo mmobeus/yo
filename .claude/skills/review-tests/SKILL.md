@@ -16,8 +16,7 @@ what not to read, and the output format. Then:
    each one, at the layer the checklist gives. A behavior change with no
    test is blocking. Docs-only or gate-only changes need none.
 3. **Weakened tests:** anything deleted, skipped, `#[ignore]`d, or with its
-   assertions relaxed is blocking, with the rule "needs the maintainer's
-   approval".
+   assertions relaxed goes under "For the maintainer", not "Blocking".
 4. Go through the rest of the checklist. A test that only checks another
    test's, lint's or gate's setup is a non-blocking finding ("don't test the
    tests").

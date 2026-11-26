@@ -11,3 +11,4 @@ in. A finding that was wrong is noted in a reply on that PR's review comment.
 | date | PR | what changed |
 | --- | --- | --- |
 | 2026-11-26 | #16 | the first cases: one to flag and one to pass for each skill |
+| 2026-11-26 | #23 | a bar for findings, at most three non-blocking per area, re-reviews of only the new changes, gate loosening under "For the maintainer" (not blocking), one review per request, and findings framed as a second opinion. After #23's reviews kept growing (3 rounds, 15+ non-blocking each). Cases not rerun |
