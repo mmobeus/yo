@@ -22,10 +22,11 @@ cd yo
 ./install.sh
 ```
 
-Then point `yo` at your own clones (`yo config add-repo <clone|owner/repo>`; see
-the [guide](docs/guide.md#getting-started)). The
-installer creates `~/.config/yo/config.json` once, listing this checkout, and
-never touches it again: it names your repos, so it lives outside this one.
+That's enough to start: `cd` into any clone and run `yo my-fix 'what to do'`
+(see [Start here](docs/guide.md#1-start-here)). Register more repos when you
+want them (`yo config add-repo <clone|owner/repo>`). The installer creates
+`~/.config/yo/config.json` once, listing this checkout, and never touches it
+again: it names your repos, so it lives outside this one.
 
 | what | where it lands |
 | --- | --- |
@@ -57,10 +58,10 @@ yo config                                # what's configured
 
 ## Documentation
 
-- **[User guide](docs/guide.md):** how yo works and how to use it, task by
-  task: everyday sessions, working in place, restarts, coordinating sessions
-  (homes, `--from`, agents), profiles and the config, memory and skills,
-  iTerm2, troubleshooting.
+- **[User guide](docs/guide.md):** from the basics up: your first session,
+  everyday sessions, resuming and cleanup, more repos, working in place,
+  profiles, coordinating sessions (homes, `--from`, agents), what yo sets up
+  under the hood, and troubleshooting.
 - **[Reference](docs/reference.md):** every command, flag, config key,
   environment variable and file.
 - **`yo help`:** the script's own summary, plus the repos, profiles and agents
