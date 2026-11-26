@@ -11,7 +11,7 @@
 | phase | what | status |
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
-| before 1 | the gates: CI, lints, review skills, skill tuning | not started (#11) |
+| before 1 | the gates: CI, lints, review skills, skill tuning | in progress (#11): workspace, `xtask` and CI done |
 | 1 | Rust core with CLI parity | not started |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
@@ -946,8 +946,9 @@ Two rules shape it:
 - **One entry point: `cargo xtask`.** It's the usual Rust pattern: a small
   binary crate in the workspace, run with `cargo`, so it needs no extra tool.
   `cargo xtask ci` runs every gate CI runs, in the same order, and each gate
-  also has its own subcommand (`cargo xtask lint`, `cargo xtask test`,
-  `cargo xtask deny`, `cargo xtask parity`, ...).
+  also has its own subcommand (`cargo xtask lint`, `cargo xtask arch`,
+  `cargo xtask deny`, `cargo xtask test`, `cargo xtask parity`). How to run
+  them, and the tools they need, is in `docs/dev/env.md`.
 - **Workflows are thin.** A GitHub Actions job checks out the code, installs
   the toolchain, sets the environment, and calls `cargo xtask <gate>`. If a
   step does more than that, it moves into `xtask`.
@@ -959,10 +960,13 @@ Two rules shape it:
   two it's running in.
 - **The default gates need no secrets.** Build, lint, tests, `cargo-deny` and
   parity run offline, with fakes, so `cargo xtask ci` works on a fresh clone.
-  Anything that does need a secret or the network is its own subcommand, and
-  says which variables it needs when they're missing.
+  The one exception is cargo fetching crates. Anything else that needs a
+  secret or the network is its own subcommand, and says which variables it
+  needs when they're missing. So far that's `cargo xtask advisories`, which
+  downloads the RustSec database. CI runs it on every PR and weekly.
 - **Linux as well as macOS.** `osascript`, `ps` and the harnesses are faked,
-  so the default gates don't need a Mac, and CI can use Linux runners. `yo-app`
+  so the default gates don't need a Mac. CI runs only on Linux, because
+  macOS runners cost too much, especially for Rust builds. `yo-app`
   stays an empty crate without Tauri until phase 6, so the workspace builds
   without WebKit's system libraries until then.
 - **The review skills already run locally,** and so does setting the
@@ -973,8 +977,10 @@ Two rules shape it:
 | gate | what it catches | runs |
 | --- | --- | --- |
 | the compiler, `cargo fmt`, `cargo clippy -D warnings` | type errors, unhandled cases, lint rules | `cargo xtask lint`: locally, and every PR in CI |
+| architecture rules over `cargo metadata` | forbidden dependencies (below) | `cargo xtask arch`: locally, and every PR in CI |
 | tests: unit, parity, architecture, security | behavior, and the rules below | `cargo xtask test`, `cargo xtask parity`: locally, and every PR in CI |
-| `cargo-deny` | licenses, advisories, duplicate crates, new dependencies | `cargo xtask deny`: locally, and every PR in CI |
+| `cargo-deny` | licenses, duplicate crates, new dependencies (`bans.allow` in `deny.toml` lists every crate allowed), sources | `cargo xtask deny`: locally, and every PR in CI |
+| `cargo-deny` advisories | known vulnerabilities, yanked crates | `cargo xtask advisories`: needs the network; every PR in CI, and weekly |
 | review skills (`review-pr`) | what can't be checked mechanically | by hand; sets the `yo-review` commit status |
 | the maintainer | everything else, and any loosened gate | before merging |
 
@@ -986,11 +992,11 @@ it.
 
 | rule | check |
 | --- | --- |
-| `yo-core` stays synchronous and light | a test over `cargo metadata` fails if `yo-core` depends on tokio, axum, the ACP crate or Tauri |
-| the app holds no yo logic | the same test fails if `yo-app` depends on `yo-core`, `yo-local` or `yo-daemon`; it may use only `yo-client` and `yo-proto` |
+| `yo-core` stays synchronous and light | `cargo xtask arch` fails if `yo-core` depends, other than for dev, on tokio, axum, the ACP crate, ratatui or Tauri, directly or not |
+| the app holds no yo logic | the same check fails if `yo-app` depends on `yo-core`, `yo-local` or `yo-daemon`, directly or not; it may use only `yo-client` and `yo-proto` |
 | the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
-| the core never prints | `clippy::print_stdout` and `clippy::print_stderr` denied in `yo-core` |
-| every outside effect goes through `Sys` | `clippy::disallowed-methods` bans `std::process::Command::new`, the system clock and randomness in `yo-core` outside `sys.rs` |
+| the core never prints | `clippy::print_stdout`, `clippy::print_stderr` and `clippy::dbg_macro` denied in `yo-core` |
+| every outside effect goes through `Sys` | `clippy::disallowed-methods` (`crates/yo-core/clippy.toml`) bans `std::process::Command::new`, the system clock, randomness, new uuids, reading the environment and `home_dir` in `yo-core` outside `sys.rs` |
 | a dry run changes nothing | every scenario also runs against the Rust version with `--dry-run` (which every changing command has there, through plans), and the sandbox must be byte-identical afterwards |
 | Claude-specific, not Claude-assumed | a fake harness with no optional capabilities runs the whole scenario suite |
 
