@@ -66,7 +66,7 @@ yo config                                # what's configured
   environment variable and file.
 - **`yo help`:** the script's own summary, plus the repos, profiles and agents
   it can see.
-- **[Core design](docs/design/core.md):** the plan for moving yo from bash to a
+- **[Core design](docs/design/core.md):** the plan (not built yet) for moving yo from bash to a
   Rust core with a CLI, a TUI, an app and pluggable runners.
 
 ## Making changes

@@ -1,11 +1,37 @@
 # yo core: design
 
+## Status
+
+> **None of this is built yet.** This is a design for review. The `yo` that
+> runs today is the bash script, `scripts/yo`, and the [guide](../guide.md)
+> and [reference](../reference.md) describe it. Nothing below, including the
+> Rust core, harnesses other than Claude, ACP sessions, the relay, the daemon,
+> `yo status`, `yo tui` and `yo app`, exists until its phase lands.
+
+| phase | what | status |
+| --- | --- | --- |
+| 0 | this design | in review (#8) |
+| 1 | Rust core with CLI parity | not started |
+| 2 | a second harness: Codex | not started |
+| 3 | status and events | not started |
+| 4 | `yo tui` | not started |
+| 5 | the daemon, ACP runner and relay | not started |
+| 6 | `yo app` | not started |
+| 7 | phone, hub and remote workers | not started |
+
+Each phase updates this table as it lands, and corrects anything below that
+turned out different in practice. The [phases](#phases) section says what
+each one includes; #9 tracks them.
+
+## About this doc
+
 Phase 0 of moving yo from a bash script to a core with a CLI, a TUI, an app and
 pluggable runners. This doc settles the language, sketches the core and its API,
 says how yo stays open to coding agents other than Claude Code, and lays out how
 the port is proven to behave like today's `yo`. No code comes with it; phase 1
 builds against it.
 
+- [Status](#status)
 - [Decisions](#decisions)
 - [Principles](#principles)
 - [Language: Rust](#language-rust)
