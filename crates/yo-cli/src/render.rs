@@ -313,6 +313,31 @@ impl Report for Progress<'_> {
                 spec.title,
                 spec.dir.display()
             ),
+            Launched::Opened {
+                new_window,
+                split,
+                warnings,
+            } => {
+                let mut s = String::new();
+                for w in warnings {
+                    let _ = writeln!(s, "yo: {w}");
+                }
+                let panes = if *split {
+                    "claude in left pane, shell in right"
+                } else {
+                    "claude alone; the shell is the workgroup's terminal peer"
+                };
+                let _ = if *new_window {
+                    writeln!(s, "==> opened iTerm2 window '{}' ({panes})", spec.title)
+                } else {
+                    writeln!(
+                        s,
+                        "==> opened iTerm2 tab '{}' in the '{}' window ({panes})",
+                        spec.title, spec.group
+                    )
+                };
+                s
+            }
         };
         self.put(&s);
     }

@@ -620,8 +620,9 @@ impl Report for Rec {
     fn note(&mut self, _: &Note) {}
     fn doing(&mut self, _: &Action) {}
     fn launched(&mut self, _: &LaunchSpec, l: &Launched) {
-        let Launched::Dry { line } = l;
-        self.launched.push(line.clone());
+        if let Launched::Dry { line } = l {
+            self.launched.push(line.clone());
+        }
     }
 }
 

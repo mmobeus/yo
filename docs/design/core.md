@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook`. Launching only with `YO_DRY_LAUNCH` so far. Next: the iTerm runner and `--add-to` |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness out of the plan (PR #22); in `yo-core`, `Sys` and its fake, config and the registry, the ledger, Claude's live sessions (PR #23); `yo-cli` on clap, parsing every command, with `help`, `config [show\|path]` and `sessions` working (the rest say they aren't ported yet). Porting the commands that change things (#20): plans (`Plan`, `Action`, `execute`, `--dry-run`) and create's core (every INPUT form but unknown URLs, `--here`/`--worktree`, branches and worktrees, title, codename and first message, the ledger record, `--name`; PR #25); Claude's settings layer, trust, memory, `mirror`, `mcp`, and `_session-hook` (PR #26); the iTerm runner, guest repos and `--add-to`, config writes. Create is ported. Next: `yo NAME` and reaching a session |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -248,7 +248,9 @@ yo-core/src/
   error.rs      yo-core's errors; the CLI renders them
   paths.rs      XDG dirs, config path, state dir, worktree roots
   machine.rs    this machine's id
-  config.rs     the config file: types (serde, deny_unknown_fields, the file's order kept), load; later write (add-repo)
+  config.rs     the config file: types (serde, deny_unknown_fields, the file's order kept), load, add-repo and add-profile
+  ojson.rs      JSON that keeps its key order, for files yo edits in place (the config, ~/.claude.json)
+  place.rs      an unregistered URL's repo: a profile's, --add-to's, asked, or a guest; cloned and registered
   registry.rs   resolved repos, profiles, agents, homes; precedence (flag > repo > profile > defaults, env beats file)
   git.rs        the git CLI: worktrees, branches, remotes, status, default branch
   github.rs     the gh CLI: PR and issue titles, PR listings for sweep; URL parsing
@@ -263,7 +265,7 @@ yo-core/src/
   events.rs     event types, append, read, tail
   status.rs     the status model: a fold over records, liveness and events
   harness/      the Harness trait; claude.rs (live sessions; later settings layer, trust, memory, hooks, agents), codex/
-  runner.rs     the Runner trait; later iterm.rs. The ACP runner's client side lives here; its processes live in the daemon
+  runner.rs     the Runner trait, the dry runner; iterm.rs (and its scripts in iterm/). The ACP runner's client side lives here; its processes live in the daemon
   message.rs    delivering a message: choosing a method, and the result
 ```
 
@@ -289,10 +291,12 @@ pub trait Sys: Send + Sync {
     fn procs(&self) -> &dyn ProcessTable;            // a pid's comm (None: not running), its tty
     fn hostname(&self) -> String;
     fn exe(&self) -> PathBuf;                        // this yo, for hooks that call it back
+    fn sleep(&self, d: Duration);                    // iTerm loading a profile yo just wrote
 }
 
 pub trait CommandRunner: Send + Sync {
     fn run(&self, cmd: &CommandSpec) -> io::Result<Output>;   // program, args, cwd, env, stdin
+    fn spawn(&self, cmd: &CommandSpec) -> io::Result<()>;     // left running after yo exits
 }
 ```
 
@@ -926,9 +930,13 @@ scaffolding for that one day. Instead:
   - a session name with an empty or dot-only part, or a part starting with
     `-`, is refused (bash let `..` climb out of the worktree root)
   - every argument on the launch line is quoted only where it needs to be
-  - `~/.claude.json`, settings layers and `settings.local.json` are written
-    with their keys sorted (serde_json's maps), where Python kept the file's
-    order; Claude reads them the same
+  - iTerm's Default profile is read through JXA (`osascript -l
+    JavaScript`, with `NSUserDefaults`) rather than `plutil` and Python, so
+    no plist parser is needed; the dynamic profile it writes has the same
+    keys and values (whole numbers written as `1`, not `1.0`). The progress
+    line says `opened iTerm2 tab ...` after the tab opens
+  - an unknown URL's repo is placed before planning, since the plan needs
+    its clone: with `--dry-run`, yo says where it would go and stops there
   - a settings layer that can't be written stops the create, before the
     record and the launch, rather than launching without it
 

@@ -15,7 +15,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Everything nondeterministic or outside yo-core.
 pub trait Sys: Send + Sync {
@@ -34,6 +34,8 @@ pub trait Sys: Send + Sync {
     fn hostname(&self) -> String;
     /// The yo binary that's running, for hooks that call yo back.
     fn exe(&self) -> PathBuf;
+    /// Waits (iTerm loading a profile yo just wrote).
+    fn sleep(&self, d: Duration);
 }
 
 impl dyn Sys + '_ {
@@ -54,6 +56,9 @@ impl dyn Sys + '_ {
 /// `Err`; one that runs and fails is an `Ok` with a failing status.
 pub trait CommandRunner: Send + Sync {
     fn run(&self, cmd: &CommandSpec) -> io::Result<Output>;
+    /// Starts a command and leaves it running after yo exits, its output
+    /// discarded.
+    fn spawn(&self, cmd: &CommandSpec) -> io::Result<()>;
 }
 
 /// What to run.
@@ -192,6 +197,10 @@ impl Sys for RealSys {
     fn exe(&self) -> PathBuf {
         RealSys::current_exe()
     }
+
+    fn sleep(&self, d: Duration) {
+        std::thread::sleep(d);
+    }
 }
 
 impl RealSys {
@@ -224,6 +233,27 @@ impl CommandRunner for RealSys {
             stdout: out.stdout,
             stderr: out.stderr,
         })
+    }
+
+    fn spawn(&self, spec: &CommandSpec) -> io::Result<()> {
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args);
+        if let Some(dir) = &spec.cwd {
+            cmd.current_dir(dir);
+        }
+        cmd.envs(spec.env.iter().map(|(k, v)| (k, v)));
+        cmd.stdin(if spec.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child = cmd.spawn()?;
+        if let (Some(input), Some(mut pipe)) = (&spec.stdin, child.stdin.take()) {
+            pipe.write_all(input)?;
+        }
+        // Not waited for: it outlives yo, as bash's `( ... ) & disown` did.
+        Ok(())
     }
 }
 

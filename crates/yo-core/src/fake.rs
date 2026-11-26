@@ -26,6 +26,7 @@ pub struct FakeSys {
     hostname: String,
     commands: FakeCommands,
     procs: FakeProcs,
+    slept: Mutex<Vec<Duration>>,
 }
 
 impl FakeSys {
@@ -40,6 +41,7 @@ impl FakeSys {
             hostname: "fakehost".to_string(),
             commands: FakeCommands::default(),
             procs: FakeProcs::default(),
+            slept: Mutex::new(Vec::new()),
         }
     }
 
@@ -73,6 +75,16 @@ impl FakeSys {
     /// Answers with success and this stdout.
     pub fn answer_ok(&self, program: &str, args: &[&str], stdout: &str) {
         self.answer(program, args, ok(stdout));
+    }
+
+    /// Every sleep asked for.
+    pub fn slept(&self) -> Vec<Duration> {
+        lock(&self.slept).clone()
+    }
+
+    /// Every command spawned (left running) so far.
+    pub fn spawned(&self) -> Vec<CommandSpec> {
+        lock(&self.commands.spawned).clone()
     }
 
     /// Every command run so far, in order.
@@ -144,6 +156,11 @@ impl Sys for FakeSys {
     fn exe(&self) -> PathBuf {
         PathBuf::from("/opt/yo/bin/yo")
     }
+
+    /// Doesn't wait; records how long it was asked to.
+    fn sleep(&self, d: Duration) {
+        lock(&self.slept).push(d);
+    }
 }
 
 struct Answer {
@@ -156,6 +173,7 @@ struct Answer {
 struct FakeCommands {
     answers: Mutex<Vec<Answer>>,
     calls: Mutex<Vec<CommandSpec>>,
+    spawned: Mutex<Vec<CommandSpec>>,
 }
 
 impl CommandRunner for FakeCommands {
@@ -175,6 +193,11 @@ impl CommandRunner for FakeCommands {
             },
             |a| a.out.clone(),
         ))
+    }
+
+    fn spawn(&self, cmd: &CommandSpec) -> io::Result<()> {
+        lock(&self.spawned).push(cmd.clone());
+        Ok(())
     }
 }
 

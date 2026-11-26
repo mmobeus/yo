@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use crate::error::{Error, Result};
+use crate::ojson::OValue;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,6 +113,118 @@ impl Config {
     }
 }
 
+/// Writing the config: each change keeps the file's order and everything
+/// else in it, and is checked to still load before it's written.
+impl Config {
+    /// Registers repo `key` at `repo_path` (under `profile`, if given), with
+    /// its GitHub `owner/repo`. A path under `home` is written as `~/...`.
+    pub fn add_repo(
+        path: &Path,
+        home: &Path,
+        profile: Option<&str>,
+        key: &str,
+        repo_path: &Path,
+        github: Option<&str>,
+    ) -> Result<()> {
+        let bad = |m: String| Error::Config {
+            path: path.to_path_buf(),
+            msg: m,
+        };
+        for k in std::iter::once(key).chain(profile) {
+            if !crate::registry::valid_key(k) {
+                return Err(bad(format!(
+                    "'{k}': names may only contain letters, digits, . _ -"
+                )));
+            }
+        }
+        if let Some(g) = github
+            && crate::github::owner_repo_from_url(&format!("https://github.com/{g}")).as_deref()
+                != Some(g)
+        {
+            return Err(bad(format!("'{g}' isn't a GitHub owner/repo")));
+        }
+        let mut d = read_ordered(path)?;
+        let shape = || bad("not the shape of a yo config".into());
+        let target = match profile {
+            Some(p) => d
+                .entry_object("profiles")
+                .and_then(|ps| ps.entry_object(p))
+                .and_then(|p| p.entry_object("repos")),
+            None => d.entry_object("repos"),
+        }
+        .ok_or_else(shape)?;
+        let mut entry = vec![("path".to_string(), OValue::String(tilde(home, repo_path)))];
+        if let Some(g) = github {
+            entry.push(("github".into(), OValue::String(g.to_string())));
+        }
+        target.insert(key, OValue::Object(entry));
+        write_checked(path, &d)
+    }
+
+    /// Adds profile `name`, claiming GitHub owner `owner`.
+    pub fn add_profile(path: &Path, name: &str, owner: &str) -> Result<()> {
+        let bad = |m: String| Error::Config {
+            path: path.to_path_buf(),
+            msg: m,
+        };
+        if !crate::registry::valid_key(name) || !crate::registry::valid_key(owner) {
+            return Err(bad(format!(
+                "'{name}': names may only contain letters, digits, . _ -"
+            )));
+        }
+        let mut d = read_ordered(path)?;
+        let profiles = d
+            .entry_object("profiles")
+            .ok_or_else(|| bad("not the shape of a yo config".into()))?;
+        if profiles.get(name).is_some() {
+            return Err(bad(format!("profile '{name}' already exists")));
+        }
+        profiles.insert(
+            name,
+            OValue::Object(vec![(
+                "owners".into(),
+                OValue::Array(vec![OValue::String(owner.to_string())]),
+            )]),
+        );
+        write_checked(path, &d)
+    }
+}
+
+fn read_ordered(path: &Path) -> Result<OValue> {
+    match fs::read_to_string(path) {
+        Ok(t) => OValue::parse(&t).map_err(|e| Error::Config {
+            path: path.to_path_buf(),
+            msg: e.to_string(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(OValue::object()),
+        Err(e) => Err(Error::io(path, e)),
+    }
+}
+
+/// Writes `d` only if it still loads as a config.
+fn write_checked(path: &Path, d: &OValue) -> Result<()> {
+    let text = d.to_pretty();
+    serde_json::from_str::<Config>(&text).map_err(|e| Error::Config {
+        path: path.to_path_buf(),
+        msg: format!("the change wouldn't load ({e}); not written"),
+    })?;
+    crate::write_atomic(path, text.as_bytes())
+}
+
+/// `~/rest` for a path under `home`.
+fn tilde(home: &Path, p: &Path) -> String {
+    match p.strip_prefix(home) {
+        Ok(rest) if !home.as_os_str().is_empty() && home != Path::new("/") => {
+            if rest.as_os_str().is_empty() {
+                "~".into()
+            } else {
+                format!("~/{}", rest.display())
+            }
+        }
+        _ => p.display().to_string(),
+    }
+}
+
 /// A scalar setting: a string, or a number or boolean taken as its text (as
 /// bash takes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,6 +307,69 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
             }
         }
         d.deserialize_map(V(PhantomData))
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use crate::fake::TempDir;
+
+    #[test]
+    fn add_repo_and_profile_keep_the_file() {
+        let t = TempDir::new().unwrap();
+        let f = t.path().join("c.json");
+        let h = Path::new("/h");
+        fs::write(&f, r#"{"repos": {"z": {"path": "/z"}, "a": {"path": "/a"}}, "defaults": {"mode": "here"}}"#).unwrap();
+        Config::add_repo(&f, h, None, "m", Path::new("/h/src/m"), Some("o/m")).unwrap();
+        Config::add_profile(&f, "o", "o").unwrap();
+        Config::add_repo(&f, h, Some("o"), "n", Path::new("/x/n"), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(&f).unwrap(),
+            r#"{
+  "repos": {
+    "z": {
+      "path": "/z"
+    },
+    "a": {
+      "path": "/a"
+    },
+    "m": {
+      "path": "~/src/m",
+      "github": "o/m"
+    }
+  },
+  "defaults": {
+    "mode": "here"
+  },
+  "profiles": {
+    "o": {
+      "owners": [
+        "o"
+      ],
+      "repos": {
+        "n": {
+          "path": "/x/n"
+        }
+      }
+    }
+  }
+}
+"#
+        );
+        assert!(Config::add_profile(&f, "o", "o").is_err());
+        // Bad keys, and a change that wouldn't load, are refused and not written.
+        let before = fs::read_to_string(&f).unwrap();
+        assert!(Config::add_repo(&f, h, None, "..", Path::new("/x"), None).is_err());
+        assert!(Config::add_repo(&f, h, Some("a b"), "k", Path::new("/x"), None).is_err());
+        assert!(Config::add_repo(&f, h, None, "k", Path::new("/x"), Some("a/b/c")).is_err());
+        fs::write(&f, r#"{"repos": []}"#).unwrap();
+        assert!(Config::add_repo(&f, h, None, "k", Path::new("/x"), None).is_err());
+        fs::write(&f, &before).unwrap();
+        // No file yet: one is made.
+        let g = t.path().join("new/c.json");
+        Config::add_repo(&g, h, None, "k", Path::new("/k"), None).unwrap();
+        assert!(Config::load(&g).unwrap().is_some());
     }
 }
 

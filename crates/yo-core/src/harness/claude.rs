@@ -3,13 +3,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 use super::{
     Argv, Capabilities, Harness, LiveSession, PrepareAsk, Prepared, SessionSpec, single_quote,
     valid_session_id,
 };
 use crate::ledger::HookEvent;
+use crate::ojson::OValue;
 use crate::plan::{Action, Note};
 use crate::registry::Mode;
 use crate::sys::Sys;
@@ -242,9 +243,9 @@ impl Prep {
     }
 }
 
-fn read_json(path: &Path) -> Result<Option<Value>> {
+fn read_json(path: &Path) -> Result<Option<OValue>> {
     match fs::read_to_string(path) {
-        Ok(t) => serde_json::from_str(&t)
+        Ok(t) => OValue::parse(&t)
             .map(Some)
             .map_err(|e| Error::Failed(format!("{}: {e}", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -252,46 +253,37 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
     }
 }
 
-fn to_text(v: &Value) -> Result<String> {
-    serde_json::to_string_pretty(v).map_err(|e| Error::Failed(e.to_string()))
+fn s(v: &str) -> OValue {
+    OValue::String(v.to_string())
 }
 
 fn trust(claude_json: &Path, worktree: &Path, clone: &Path) -> Result<()> {
-    let mut d = read_json(claude_json)?.unwrap_or_else(|| json!({}));
-    let Some(top) = d.as_object_mut() else {
-        return Err(Error::Failed(format!(
-            "{}: not an object",
+    let bad = || {
+        Error::Failed(format!(
+            "{}: not the shape Claude writes",
             claude_json.display()
-        )));
+        ))
     };
-    let projects = top
-        .entry("projects")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| Error::Failed("projects isn't an object".into()))?;
-    let base = projects
-        .get(&*clone.to_string_lossy())
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let mut d = read_json(claude_json)?.unwrap_or_else(OValue::object);
+    let projects = d.entry_object("projects").ok_or_else(bad)?;
+    let base = projects.get(&clone.to_string_lossy()).cloned();
     let ent = projects
-        .entry(worktree.to_string_lossy().into_owned())
-        .or_insert_with(|| json!({}));
-    let ent = ent
-        .as_object_mut()
-        .ok_or_else(|| Error::Failed("a project entry isn't an object".into()))?;
+        .entry_object(&worktree.to_string_lossy())
+        .ok_or_else(bad)?;
     for k in [
         "hasClaudeMdExternalIncludesApproved",
         "hasClaudeMdExternalIncludesWarningShown",
     ] {
-        if let Some(v) = base.get(k)
-            && !ent.contains_key(k)
+        if let Some(v) = base.as_ref().and_then(|b| b.get(k))
+            && ent.get(k).is_none()
         {
-            ent.insert(k.to_string(), v.clone());
+            ent.insert(k, v.clone());
         }
     }
-    ent.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
-    crate::write_atomic(claude_json, to_text(&d)?.as_bytes())
+    ent.insert("hasTrustDialogAccepted", OValue::Bool(true));
+    // json.dump wrote no final newline here.
+    let text = d.to_pretty();
+    crate::write_atomic(claude_json, text.trim_end().as_bytes())
 }
 
 fn local_settings(worktree: &Path, clone: &Path, mcp: &[String]) -> Result<()> {
@@ -306,27 +298,22 @@ fn local_settings(worktree: &Path, clone: &Path, mcp: &[String]) -> Result<()> {
     let mut d = read_json(&dst)
         .ok()
         .flatten()
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}));
-    let have: Vec<Value> = d
+        .filter(|v| matches!(v, OValue::Object(_)))
+        .unwrap_or_else(OValue::object);
+    let have: Vec<OValue> = d
         .get("enabledMcpjsonServers")
-        .and_then(Value::as_array)
+        .and_then(OValue::as_array)
         .cloned()
         .unwrap_or_default();
     let mut merged = have.clone();
     for m in mcp {
-        let v = Value::String(m.clone());
-        if !merged.contains(&v) {
-            merged.push(v);
+        if !merged.contains(&s(m)) {
+            merged.push(s(m));
         }
     }
-    if merged != have
-        && let Some(o) = d.as_object_mut()
-    {
-        o.insert("enabledMcpjsonServers".into(), Value::Array(merged));
-        let mut text = to_text(&d)?;
-        text.push('\n');
-        crate::write_atomic(&dst, text.as_bytes())?;
+    if merged != have {
+        d.insert("enabledMcpjsonServers", OValue::Array(merged));
+        crate::write_atomic(&dst, d.to_pretty().as_bytes())?;
     }
     Ok(())
 }
@@ -340,36 +327,41 @@ pub fn settings_layer(
     hook: &str,
     memory: Option<&Path>,
 ) -> Result<String> {
-    let mut d = Value::Object(Map::new());
+    let mut d = OValue::object();
     for path in layers.iter().flatten() {
         let v = read_json(path)?
             .ok_or_else(|| Error::Failed(format!("{}: missing", path.display())))?;
         merge(&mut d, v);
     }
-    let h = json!([{"hooks": [{"type": "command", "command": hook}]}]);
+    let h = OValue::Array(vec![OValue::Object(vec![(
+        "hooks".into(),
+        OValue::Array(vec![OValue::Object(vec![
+            ("type".into(), s("command")),
+            ("command".into(), s(hook)),
+        ])]),
+    )])]);
     merge(
         &mut d,
-        json!({"hooks": {"SessionStart": h.clone(), "SessionEnd": h}}),
+        OValue::Object(vec![(
+            "hooks".into(),
+            OValue::Object(vec![
+                ("SessionStart".into(), h.clone()),
+                ("SessionEnd".into(), h),
+            ]),
+        )]),
     );
-    if let (Some(m), Some(o)) = (memory, d.as_object_mut()) {
-        o.insert(
-            "autoMemoryDirectory".into(),
-            Value::String(m.to_string_lossy().into_owned()),
-        );
+    if let Some(m) = memory {
+        d.insert("autoMemoryDirectory", s(&m.to_string_lossy()));
     }
-    let mut text = to_text(&d)?;
-    text.push('\n');
-    Ok(text)
+    Ok(d.to_pretty())
 }
 
-fn merge(a: &mut Value, b: Value) {
-    let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) else {
-        return;
-    };
+fn merge(a: &mut OValue, b: OValue) {
+    let OValue::Object(b) = b else { return };
     for (k, v) in b {
         match (a.get_mut(&k), v) {
-            (Some(x @ Value::Object(_)), v @ Value::Object(_)) => merge(x, v),
-            (Some(Value::Array(x)), Value::Array(v)) => {
+            (Some(x @ OValue::Object(_)), v @ OValue::Object(_)) => merge(x, v),
+            (Some(OValue::Array(x)), OValue::Array(v)) => {
                 for item in v {
                     if !x.contains(&item) {
                         x.push(item);
@@ -377,7 +369,7 @@ fn merge(a: &mut Value, b: Value) {
                 }
             }
             (_, v) => {
-                a.insert(k, v);
+                a.insert(&k, v);
             }
         }
     }
@@ -440,6 +432,7 @@ fn session(d: &Value) -> Option<LiveSession> {
 mod tests {
     use super::*;
     use crate::fake::{FakeSys, TempDir};
+    use serde_json::json;
 
     fn write(home: &std::path::Path, pid: u32, json: &str) {
         let dir = home.join(".claude/sessions");
