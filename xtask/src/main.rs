@@ -22,7 +22,6 @@ default gates (cargo xtask ci runs these, in this order):
   arch        architecture rules over cargo metadata
   deny        cargo-deny: licenses, bans (duplicates, allowed crates), sources
   test        unit and integration tests (cargo nextest), doctests
-  parity      the parity suite against scripts/yo
 
 other gates (need the network):
   advisories  cargo-deny: the RustSec advisory database
@@ -35,7 +34,6 @@ const DEFAULT_GATES: &[(&str, Gate)] = &[
     ("arch", arch),
     ("deny", deny),
     ("test", test),
-    ("parity", parity),
 ];
 
 const OTHER_GATES: &[(&str, Gate)] = &[("advisories", advisories)];
@@ -117,29 +115,9 @@ fn test(root: &Path) -> Result<(), String> {
             "--workspace",
             "--locked",
             "--no-tests=warn",
-            "-E",
-            "not binary(parity)",
         ],
     )?;
     run(root, "cargo", &["test", "--workspace", "--locked", "--doc"])
-}
-
-fn parity(root: &Path) -> Result<(), String> {
-    need_tool(root, "nextest", "cargo install --locked cargo-nextest")?;
-    run(
-        root,
-        "cargo",
-        &[
-            "nextest",
-            "run",
-            "--package",
-            "yo-testkit",
-            "--locked",
-            "--no-tests=warn",
-            "-E",
-            "binary(parity)",
-        ],
-    )
 }
 
 fn deny(root: &Path) -> Result<(), String> {

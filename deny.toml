@@ -41,7 +41,6 @@ allow = [
   "yo-daemon",
   "yo-local",
   "yo-proto",
-  "yo-testkit",
   "yo-tui",
 
   # serde_json, for xtask's `cargo metadata`

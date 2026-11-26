@@ -15,7 +15,6 @@ yo-local = { path = "crates/yo-local" }
 yo-client = { path = "crates/yo-client" }
 yo-daemon = { path = "crates/yo-daemon" }
 yo-tui = { path = "crates/yo-tui" }
-yo-testkit = { path = "crates/yo-testkit" }
 
 serde_json = "1"
 

@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
-| 1 | Rust core with CLI parity | not started |
+| 1 | Rust core with CLI parity | in progress (#19): the parity harness taken out of the plan; testing is `yo-core` unit tests with a fake `Sys`, and comparing with bash by hand |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -28,9 +28,8 @@ each one includes; #9 tracks them.
 
 Phase 0 of moving yo from a bash script to a core with a CLI, a TUI, an app and
 pluggable runners. This doc settles the language, sketches the core and its API,
-says how yo stays open to coding agents other than Claude Code, and lays out how
-the port is proven to behave like today's `yo`. No code comes with it; phase 1
-builds against it.
+says how yo stays open to coding agents other than Claude Code, and says how
+the port is tested. No code comes with it; phase 1 builds against it.
 
 - [Status](#status)
 - [Decisions](#decisions)
@@ -47,7 +46,7 @@ builds against it.
 - [Events and status](#events-and-status)
 - [The daemon](#the-daemon)
 - [Phases](#phases)
-- [Parity test plan](#parity-test-plan)
+- [Testing the port](#testing-the-port)
 - [How it's built](#how-its-built)
 - [Open questions](#open-questions)
 
@@ -61,7 +60,7 @@ builds against it.
 | messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
 | app | a Tauri app (`yo app`): one web UI, wrapped by Tauri, talking to the daemon over its Unix socket. The app holds no yo logic. The same UI can be served over the daemon's opt-in HTTP, for a phone or for UI development. Not Wails |
 | compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
-| parity | the port must have today's *effects* exactly (ledger, config, git, files written, commands launched). Output text is compared too, but may change deliberately: every difference is recorded |
+| the port | it keeps today's *effects* (ledger, config, git, files written, commands launched); output may change, deliberately. Each command is tested by `yo-core` unit tests on its plan, with a fake `Sys`, and compared with `scripts/yo` by hand while porting, since bash `yo` goes about a day after the Rust one runs. See [testing the port](#testing-the-port) |
 | daemon | optional for the CLI and the TUI; started on demand by what needs it (`yo app`, background sessions, the relay). Listens only on a Unix socket unless TCP is turned on. A launchd agent can come later |
 | how it's built | gates cheapest first, everything CI runs can run locally (`cargo xtask`), review skills by hand, and only the maintainer loosens a gate; see [how it's built](#how-its-built) |
 | "latest focus" | raw: the last prompt and the last tool used. A summary can come later |
@@ -237,7 +236,6 @@ A Cargo workspace:
 | `yo-daemon` | lib, async | `yo serve`: the API, the event tailer, the ACP runner, the relay |
 | `yo-tui` | lib | `yo tui` |
 | `yo-app` | bin, Tauri | `yo app`: the Tauri shell around `web/`. Forwards to the daemon through `yo-client`; tray, notifications, shortcut, Keychain. No yo logic |
-| `yo-testkit` | lib, dev | sandboxes, fakes and the parity harness |
 | `xtask` | bin, dev | the gates, run the same way locally and in CI (`cargo xtask ci`); see [how it's built](#how-its-built) |
 | `web/` | not Rust | the web UI: inside `yo-app`, and served by the daemon's opt-in HTTP |
 
@@ -274,8 +272,9 @@ These signatures are the shape, not the final code: phase 1 may rename things.
 ### Effects go through `Sys`
 
 Everything that's nondeterministic or touches the outside goes through one
-trait object. The real one does what bash does today; tests use fakes. This
-is what makes the suite possible.
+trait object. The real one does what bash does today; tests use a fake
+(`yo-core`'s `fake` feature, so `yo-cli`'s tests can use it too). This is
+what makes the suite possible.
 
 ```rust
 pub trait Sys: Send + Sync {
@@ -728,8 +727,8 @@ pub enum EventKind {
 ```
 
 Phase 1 keeps today's hook entry point, `yo _session-hook`, for
-`SessionStart` and `SessionEnd` (today's ledger updates), so the composed
-settings compare exactly in the parity tests. Phase 3 renames it `yo _hook`,
+`SessionStart` and `SessionEnd` (today's ledger updates), so sessions started by
+either version call the same hook. Phase 3 renames it `yo _hook`,
 reading the event name from the payload, and adds Claude's
 `UserPromptSubmit`, `PostToolUse`, `Notification` and `Stop` to yo's settings
 layer. Events from ACP sessions use
@@ -803,7 +802,7 @@ This replaces the phase list in #9. Each phase is useful on its own.
    Then, before any Rust is written: **the gates** (#11), as described in
    [how it's built](#how-its-built).
 1. **Core with CLI parity:** port yo behind the same commands and effects, with
-   tests ([below](#parity-test-plan)). One harness (Claude) and one runner
+   tests ([below](#testing-the-port)). One harness (Claude) and one runner
    (iTerm), but both already behind their traits. `--name` is passed at launch.
 2. **A second harness:** Codex, in iTerm tabs. Launch, resume, the ledger
    with ids learned late, `--harness`, messages by typing. This is what proves
@@ -824,85 +823,32 @@ This replaces the phase list in #9. Each phase is useful on its own.
    the same UI over the daemon's opt-in HTTP on a tailnet), then the hub and
    remote workers.
 
-## Parity test plan
+## Testing the port
 
-The goal: prove the Rust `yo` does what `scripts/yo` does. Same effects
-exactly; output the same or deliberately different.
+bash `yo` is retired about a day after the Rust `yo` can run (#21, the
+switch), so there's no harness running the two side by side: it would be
+scaffolding for that one day. Instead:
 
-### The harness
+- **What a command does is tested in `yo-core`, on its plan.** A test builds
+  a registry, a ledger and live sessions, gives a fake `Sys` its answers
+  (git, gh, osascript, the process table, the clock, ids), and asserts on the
+  plan the command builds. Executing a plan against the fake, under a
+  temporary `HOME`, shows the commands it ran and the files it wrote. These
+  tests stay as the regression suite after the switch.
+- **The port is compared with `scripts/yo` by hand,** command by command as
+  it's ported, in a throwaway sandbox: `HOME`, `XDG_STATE_HOME` and
+  `YO_CONFIG` pointed at a temporary directory, and `YO_DRY_LAUNCH=1` (the
+  README's "Making changes"). Effects (the ledger, config, git, files written,
+  commands launched) should match. Output may change, but only deliberately,
+  and the reference says what it is now. Each PR says what it compared.
+- **Fakes can't prove the AppleScript drives iTerm correctly.** A short manual
+  checklist covers that, run once before the switch: start, start in a new
+  window, reach with a message, title, down, resume-all.
 
-`yo-testkit` runs each scenario twice, in two sandboxes that start
-identical: once with `scripts/yo` (the reference), once with the new binary.
-Then it compares the results. ("Harness" here means the test harness, not a
-coding agent.)
+What the tests cover, area by area, plus the error paths each command has
+today (unknown flag, unknown repo, bad name, ambiguous match):
 
-A sandbox is a temporary directory with:
-
-| piece | how |
-| --- | --- |
-| `HOME` | `<sandbox>/home`, so `~/.claude.json`, `~/.claude/sessions`, `~/Library/...` and memory land there |
-| `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `YO_CONFIG` | inside the sandbox; `YO_CONFIG` points at the scenario's config fixture |
-| `YO_DRY_LAUNCH` | unset, so the real launch path runs against the fakes below; set only for scenarios about dry launch itself |
-| git repos | built by the fixture: a bare repo as `origin` (and one as `upstream`, for forks), a clone, branches, merged and unmerged work |
-| remotes | `GIT_CONFIG_GLOBAL` with `url.<file path>.insteadOf` rules, so `git@github.com:owner/repo` and `https://github.com/...` URLs resolve to the local bare repos; nothing touches the network |
-| `PATH` | a shim directory first: fake `gh`, `osascript`, `ps`, `uuidgen`, `date` and `claude` (which later also answers `claude agents --json` from fixtures) |
-| live sessions | a long-running dummy process named `claude` (a copied `sleep`), with a matching `~/.claude/sessions/<pid>.json`, so the `kill -0` and `ps -o comm=` checks pass |
-
-The shims record each call (argv, stdin, cwd) to a log and answer from the
-scenario's fixtures:
-
-- **`gh`:** canned JSON for PR and issue titles and PR listings.
-- **`osascript`:** records the AppleScript it was given; answers `found` or
-  `notfound`, a screen size, a tab title.
-- **`ps`:** a tty for the dummy `claude`, so "bring the tab forward" can be
-  tested.
-- **`uuidgen`, `date`:** fixed sequences.
-
-### Two small changes to the bash script first
-
-Today's script calls `/usr/bin/osascript` by absolute path, and picks
-codenames with `$RANDOM`. Neither can be faked from outside. Before the
-harness can run, the bash version needs:
-
-1. `YO_OSASCRIPT`, defaulting to `/usr/bin/osascript`, used at every call site.
-2. `YO_CODENAME`, which when set is used instead of a random codename.
-
-There's also `time.time()` in the python helpers. Rather than faking that,
-the comparison normalizes timestamps (below).
-
-### What's compared
-
-| what | how |
-| --- | --- |
-| exit code | exactly |
-| ledger | every record, as JSON, with `createdAt`, `updatedAt` and `endedAt` replaced by `<ts>`, and the new `machine`, `harness` and `runner` fields ignored |
-| config | the file, byte for byte (`yo config add-repo` writes it) |
-| composed settings | `$XDG_STATE_HOME/yo/settings/*.json`, as JSON, with yo's own path in the hook command normalized (the script's path in one run, the binary's in the other) |
-| Claude's files | `~/.claude.json` (trust), each worktree's `.claude/settings.local.json`, mirrored files |
-| iTerm | the dynamic profile JSON, and the AppleScript sent to `osascript`, normalized for whitespace |
-| git | `git worktree list --porcelain` and every branch with its commit, for each fixture repo |
-| launched commands | the `claude` command line typed into the tab (from the `osascript` log), with the session id normalized, and `--name` (new) accepted as a difference |
-| stdout, stderr | after normalizing ids, timestamps and sandbox paths |
-
-The dates in session names (`sesh_<date>_<time>`) are fixed by the `date`
-shim and the Rust version's fake clock, so names compare exactly.
-
-### Accepted differences
-
-When the port deliberately changes output, the scenario records the
-difference in an `accepted.diff` file beside it. The test fails on any
-difference that isn't recorded, and on any recorded one that no longer
-happens. Every change to yo's output is then a choice someone made, in a
-diff someone reviewed. Effects (everything in the table but stdout and stderr)
-have no accepted differences, beyond the new fields and `--name` noted above:
-they must match.
-
-### Scenarios
-
-At least one per row, plus the error paths each command has today (unknown
-flag, unknown repo, bad name, ambiguous match):
-
-| area | scenarios |
+| area | cases |
 | --- | --- |
 | create | unnamed; a new branch; an existing branch, local and on origin only; a slashed name that isn't a branch; a PR URL; an issue URL; an issue in another repo; `--here` (cwd, a named repo, a profile's `dir`); `--worktree` over a `here` default; `--title`, `--model`, `--agent`, `--from`; `--new-window`, `--tab`; a profile's settings, memory and prefix; `mirror` and `mcp`; an unknown URL with `--add-to=profile` and `--add-to=guest` |
 | `yo NAME` | each step of the lookup winning: repo, profile, agent, live Claude name, ledger name, id, id prefix, home (running, ready, none), new; ambiguity; a flag skipping it all |
@@ -914,22 +860,9 @@ flag, unknown repo, bad name, ambiguous match):
 | config | no config (single-repo mode); `show`, `path`, `add-repo` from a directory, a URL and `owner/repo`; unknown keys; env overrides beating the file |
 | agents | `yo agent` bare, start, reach; an agent not merged on base |
 
-### After the switch
-
-The bash script is retired at the end of phase 1. Before it goes, the harness
-records each scenario's reference results as fixtures (`tests/golden/`), and
-from then on the Rust version runs against those. The same scenarios stay
-the regression suite, and `yo-core` has its own unit tests for resolution,
-precedence, sweep's rules and status.
-
-Later phases extend the same suite rather than starting new ones: a fake
-`codex` (phase 2), and a fake ACP agent that plays scripted `session/update`
-streams (phase 5), so the ACP runner and the relay's delivery check can be
-tested without a model.
-
-Fakes can't prove the AppleScript drives iTerm correctly. A short manual
-checklist covers that, run once before the switch: start, start in a new
-window, reach with a message, title, down, resume-all.
+Later phases extend the same tests: a fake `codex` (phase 2), and a fake ACP
+agent that plays scripted `session/update` streams (phase 5), so the ACP
+runner and the relay's delivery check can be tested without a model.
 
 ## How it's built
 
@@ -952,7 +885,7 @@ Two rules shape it:
   binary crate in the workspace, run with `cargo`, so it needs no extra tool.
   `cargo xtask ci` runs every gate CI runs, in the same order, and each gate
   also has its own subcommand (`cargo xtask lint`, `cargo xtask arch`,
-  `cargo xtask deny`, `cargo xtask test`, `cargo xtask parity`). How to run
+  `cargo xtask deny`, `cargo xtask test`). How to run
   them, and the tools they need, is in `docs/dev/env.md`.
 - **Workflows are thin.** A GitHub Actions job checks out the code, installs
   the toolchain, sets the environment, and calls `cargo xtask <gate>`. If a
@@ -963,8 +896,8 @@ Two rules shape it:
   from its secrets; locally they come from your shell, or from a gitignored
   `.env` that `xtask` loads if it's there. Nothing in `xtask` asks which of the
   two it's running in.
-- **The default gates need no secrets.** Build, lint, tests, `cargo-deny` and
-  parity run offline, with fakes, so `cargo xtask ci` works on a fresh clone.
+- **The default gates need no secrets.** Build, lint, tests and `cargo-deny`
+  run offline, with fakes, so `cargo xtask ci` works on a fresh clone.
   The one exception is cargo fetching crates. Anything else that needs a
   secret or the network is its own subcommand, and says which variables it
   needs when they're missing. So far that's `cargo xtask advisories`, which
@@ -983,7 +916,7 @@ Two rules shape it:
 | --- | --- | --- |
 | the compiler, `cargo fmt`, `cargo clippy -D warnings` | type errors, unhandled cases, lint rules | `cargo xtask lint`: locally, and every PR in CI |
 | architecture rules over `cargo metadata` | forbidden dependencies (below) | `cargo xtask arch`: locally, and every PR in CI |
-| tests: unit, parity, architecture, security | behavior, and the rules below | `cargo xtask test`, `cargo xtask parity`: locally, and every PR in CI |
+| tests: unit, architecture, security | behavior, and the rules below | `cargo xtask test`: locally, and every PR in CI |
 | `cargo-deny` | licenses, duplicate crates, new dependencies (`bans.allow` in `deny.toml` lists every crate allowed), sources | `cargo xtask deny`: locally, and every PR in CI |
 | `cargo-deny` advisories | known vulnerabilities, yanked crates | `cargo xtask advisories`: needs the network; every PR in CI, and weekly |
 | review skills (`review-pr`) | what can't be checked mechanically | by hand; sets the `yo-review` commit status |
@@ -1002,8 +935,8 @@ it.
 | the TUI and app don't care which yo API they have | the TUI's tests run against both `yo-local` and `yo-client` (with a test daemon), from phase 5 on |
 | the core never prints | `clippy::print_stdout`, `clippy::print_stderr` and `clippy::dbg_macro` denied in `yo-core` |
 | every outside effect goes through `Sys` | `clippy::disallowed-methods` (`crates/yo-core/clippy.toml`) bans `std::process::Command::new`, the system clock, randomness, new uuids, reading the environment and `home_dir` in `yo-core` outside `sys.rs` |
-| a dry run changes nothing | every scenario also runs against the Rust version with `--dry-run` (which every changing command has there, through plans), and the sandbox must be byte-identical afterwards |
-| Claude-specific, not Claude-assumed | a fake harness with no optional capabilities runs the whole scenario suite |
+| a dry run changes nothing | each changing command (all have `--dry-run`, through plans) has a test that runs it dry against the fake `Sys`: it runs no command that changes anything, and its temporary `HOME` is byte-identical afterwards |
+| Claude-specific, not Claude-assumed | the command tests run with a fake harness that has no optional capabilities, as well as with Claude |
 
 ### Security tests
 
@@ -1039,8 +972,8 @@ to run before opening a PR.
   Is the doc, and its status table, still true?
 - **`review-security`:** the points above, plus new outside commands, new
   places that accept input, and new dependencies.
-- **`review-tests`:** tests at the right layer for each change; parity
-  scenarios and `accepted.diff` entries justified.
+- **`review-tests`:** tests at the right layer for each change, dry runs,
+  nothing weakened.
 - **`review-pr`** runs the three, each as a separate agent. An agent sees the
   diff, the code at that commit and this doc, but not the author's
   explanation (the PR description, commits, the issue), so it can't simply

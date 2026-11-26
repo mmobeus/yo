@@ -35,8 +35,12 @@ reference describe it. A change to its behavior updates them.
 3. If you changed `scripts/yo`: no gate covers it yet. Try it in a sandbox
    (`YO_DRY_LAUNCH=1`, with `HOME`, `XDG_STATE_HOME` and `YO_CONFIG` pointed
    at a throwaway directory; see the README's "Making changes").
-4. Go through the three checklists in `docs/dev/` for your diff.
-5. Fill in the PR template.
+4. If you ported a command: compare it with `scripts/yo` by hand in the
+   same kind of sandbox, and say in the PR what you compared and what
+   output changed. Effects should match. See "Testing the port" in the
+   design.
+5. Go through the three checklists in `docs/dev/` for your diff.
+6. Fill in the PR template.
 
 ## After opening it
 
@@ -85,9 +89,7 @@ Don't weaken a check to get a PR green. That includes:
   (outside `sys.rs` for `yo-core`'s banned calls)
 - `deny.toml`: a license, a duplicate skipped, a source, or a bans rule
 - `crates/yo-core/clippy.toml`, or the forbidden dependencies in `xtask`
-- deleting, skipping or `#[ignore]`-ing a test, or relaxing its assertions,
-  or an `accepted.diff` entry
-  that hides a change in effects
+- deleting, skipping or `#[ignore]`-ing a test, or relaxing its assertions
 - the review skills' example cases (`cases/`)
 
 If a change really needs one of these, do it in its own commit and list it
