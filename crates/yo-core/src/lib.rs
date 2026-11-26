@@ -22,7 +22,9 @@ pub mod harness;
 pub mod ledger;
 pub mod machine;
 pub mod naming;
+pub mod ojson;
 pub mod paths;
+pub mod place;
 pub mod plan;
 pub mod registry;
 pub mod runner;
@@ -85,22 +87,51 @@ impl Ctx {
     }
 }
 
-/// Writes a file through a temporary file and a rename, so a reader never
-/// sees half of it. Makes the directory first.
+/// Writes a file through a temporary file beside it and a rename, so a
+/// reader never sees half of it. Makes the directory first. The temporary
+/// name is this process's own, so two writers can't share one, and a file
+/// that's there keeps its mode (a config, or `~/.claude.json`, may be
+/// private).
 pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
     }
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    fs::write(&tmp, data).map_err(|e| Error::io(path, e))?;
-    fs::rename(&tmp, path).map_err(|e| Error::io(path, e))
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    let done = fs::write(&tmp, data)
+        .and_then(|()| match fs::metadata(path) {
+            Ok(m) => fs::set_permissions(&tmp, m.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| fs::rename(&tmp, path));
+    if let Err(e) = done {
+        let _ = fs::remove_file(&tmp);
+        return Err(Error::io(path, e));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fake::{FakeSys, TempDir};
+
+    #[test]
+    fn atomic_writes_keep_the_mode_and_leave_no_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TempDir::new().unwrap();
+        let f = t.path().join("d/f.json");
+        write_atomic(&f, b"one").unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic(&f, b"two").unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "two");
+        assert_eq!(
+            fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read_dir(t.path().join("d")).unwrap().count(), 1);
+    }
 
     #[test]
     fn sync_clones_carry_prefixes_and_profiles() {

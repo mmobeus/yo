@@ -69,50 +69,12 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
             .collect::<Vec<_>>()
             .join(" | ")
     };
-    let mut repo_override = req.repo.clone();
-    if let Some(r) = &repo_override
-        && reg.repo(r).is_none()
-    {
-        return Err(Error::Refused(format!(
-            "--repo must be one of: {} (got: '{r}')",
-            repo_list()
-        )));
-    }
-    let mut picked = req.profile.clone();
-    if let Some(p) = &picked
-        && reg.profile(p).is_none()
-    {
-        let names: Vec<&str> = reg.profiles().iter().map(|p| p.name.as_str()).collect();
-        return Err(Error::Refused(format!(
-            "--profile must be one of: {} (got: '{p}')",
-            names.join(" | ")
-        )));
-    }
-
-    // `yo <repo> ...` and `yo <profile> ...`: a repo of that name wins.
-    let mut args: &[String] = &req.args;
-    if let Some(first) = args.first() {
-        if reg.repo(first).is_some() {
-            repo_override = Some(first.clone());
-            args = &args[1..];
-        } else if picked.is_none() && repo_override.is_none() && reg.profile(first).is_some() {
-            picked = Some(first.clone());
-            args = &args[1..];
-        }
-    }
-    if args.len() > 2 {
-        return Err(Error::Refused(
-            "usage: yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]".into(),
-        ));
-    }
-    let input = match args.first().map(String::as_str) {
-        None | Some("" | "-") => Input::Unnamed,
-        Some(s) => match github::parse_ref(s) {
-            Some(r) => Input::Url(r),
-            None => Input::Name(s.to_string()),
-        },
-    };
-    let extra = args.get(1).filter(|s| !s.is_empty()).cloned();
+    let Parsed {
+        repo_override,
+        picked,
+        input,
+        extra,
+    } = parse(ctx, req)?;
 
     let agent = req.agent.as_deref();
     let agent_cfg = agent.and_then(|a| reg.agent(a));
@@ -139,7 +101,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
                 .then(|| agent_repo.clone())
                 .flatten();
             if url_repo.is_none() && repo_override.is_none() && issue_repo.is_none() && !here_flag {
-                return Err(unknown_url_repo(ctx, &r.owner_repo, req.add_to.is_some()));
+                return Err(unknown_url_repo(ctx, &r.owner_repo));
             }
             repo_key = repo_override.clone().or(issue_repo).or(url_repo.clone());
             repo_named = repo_key.is_some();
@@ -224,7 +186,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         if let Some(r) = &gh {
             if pr_review {
                 let Some(u) = &url_repo else {
-                    return Err(unknown_url_repo(ctx, &r.owner_repo, false));
+                    return Err(unknown_url_repo(ctx, &r.owner_repo));
                 };
                 if repo_key.as_ref() != Some(u) {
                     return Err(Error::Refused(format!(
@@ -233,7 +195,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
                     )));
                 }
             } else if repo_key.is_none() {
-                return Err(unknown_url_repo(ctx, &r.owner_repo, false));
+                return Err(unknown_url_repo(ctx, &r.owner_repo));
             }
         }
         if repo.is_none() {
@@ -435,6 +397,9 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         profile: profile_name,
         mode: Some(mode),
         agent: agent.map(str::to_string),
+        guest: repo
+            .filter(|r| reg.guest.as_deref() == Some(r.key.as_str()))
+            .and_then(|r| reg.github_for(sys, r)),
         codename: Some(codename.clone()),
         brief: brief.clone(),
         by_id: mode == Mode::Here,
@@ -475,9 +440,108 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
     Ok(plan)
 }
 
-/// Whether yo pre-trusts `repo`'s worktrees: unless its own profile says
-/// `trust: false`.
+struct Parsed {
+    repo_override: Option<String>,
+    picked: Option<String>,
+    input: Input,
+    extra: Option<String>,
+}
+
+/// The flags and positional arguments, checked against the registry.
+fn parse(ctx: &Ctx, req: &CreateRequest) -> Result<Parsed> {
+    let reg = &ctx.registry;
+    let repo_list = || {
+        reg.repos()
+            .iter()
+            .map(|r| r.key.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let mut repo_override = req.repo.clone();
+    if let Some(r) = &repo_override
+        && reg.repo(r).is_none()
+    {
+        return Err(Error::Refused(format!(
+            "--repo must be one of: {} (got: '{r}')",
+            repo_list()
+        )));
+    }
+    let mut picked = req.profile.clone();
+    if let Some(p) = &picked
+        && reg.profile(p).is_none()
+    {
+        let names: Vec<&str> = reg.profiles().iter().map(|p| p.name.as_str()).collect();
+        return Err(Error::Refused(format!(
+            "--profile must be one of: {} (got: '{p}')",
+            names.join(" | ")
+        )));
+    }
+
+    // `yo <repo> ...` and `yo <profile> ...`: a repo of that name wins.
+    let mut args: &[String] = &req.args;
+    if let Some(first) = args.first() {
+        if reg.repo(first).is_some() {
+            repo_override = Some(first.clone());
+            args = &args[1..];
+        } else if picked.is_none() && repo_override.is_none() && reg.profile(first).is_some() {
+            picked = Some(first.clone());
+            args = &args[1..];
+        }
+    }
+    if args.len() > 2 {
+        return Err(Error::Refused(
+            "usage: yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]".into(),
+        ));
+    }
+    let input = match args.first().map(String::as_str) {
+        None | Some("" | "-") => Input::Unnamed,
+        Some(s) => match github::parse_ref(s) {
+            Some(r) => Input::Url(r),
+            None => Input::Name(s.to_string()),
+        },
+    };
+    let extra = args.get(1).filter(|s| !s.is_empty()).cloned();
+
+    Ok(Parsed {
+        repo_override,
+        picked,
+        input,
+        extra,
+    })
+}
+
+/// The `owner/repo` of a PR or issue URL whose repo isn't registered and
+/// has to be placed (see [`place`]) before the session can be planned:
+/// nothing else (`--repo`, `--here`, an agent's repo for an issue) says
+/// where the session goes.
+pub fn unplaced(ctx: &Ctx, req: &CreateRequest) -> Result<Option<String>> {
+    let reg = &ctx.registry;
+    let Parsed {
+        repo_override,
+        input: Input::Url(r),
+        ..
+    } = parse(ctx, req)?
+    else {
+        return Ok(None);
+    };
+    let agent_repo = req
+        .agent
+        .as_deref()
+        .and_then(|a| reg.agent(a))
+        .map(|a| a.repo.clone());
+    let pointed = repo_override.is_some()
+        || req.mode == Some(Mode::Here)
+        || (r.kind == GhKind::Issue && agent_repo.is_some());
+    let known = reg.repo_for_url(&*ctx.sys, &r.url).is_some();
+    Ok((!known && !pointed).then_some(r.owner_repo))
+}
+
+/// Whether yo pre-trusts `repo`'s worktrees: not a guest, and not when its
+/// own profile says `trust: false`.
 fn trusted(ctx: &Ctx, repo: &Repo) -> bool {
+    if ctx.registry.guest.as_deref() == Some(repo.key.as_str()) {
+        return false;
+    }
     repo.profile
         .as_deref()
         .and_then(|p| ctx.registry.profile(p))
@@ -680,20 +744,15 @@ fn no_clone(ctx: &Ctx, r: &Repo) -> Error {
     ))
 }
 
-fn unknown_url_repo(ctx: &Ctx, owner_repo: &str, add_to: bool) -> Error {
+fn unknown_url_repo(ctx: &Ctx, owner_repo: &str) -> Error {
     let known: Vec<&str> = ctx
         .registry
         .repos()
         .iter()
         .map(|r| r.key.as_str())
         .collect();
-    let later = if add_to {
-        "\n        (--add-to isn't in the Rust yo yet; scripts/yo has it)"
-    } else {
-        ""
-    };
     Error::Refused(format!(
-        "unrecognized repo in URL: {owner_repo}\n        known repos: {}\n        register it: yo config add-repo <clone|url>{later}",
+        "unrecognized repo in URL: {owner_repo}\n        known repos: {}\n        register it: yo config add-repo <clone|url>",
         known.join(" | ")
     ))
 }

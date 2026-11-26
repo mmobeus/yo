@@ -1,9 +1,9 @@
 //! Runners: how a session runs (an iTerm tab; later ACP, another machine).
 //!
-//! So far: the kind, for ledger records, and launching. [`DryLaunch`] stands
-//! in for iTerm (`YO_DRY_LAUNCH`): it says what it would run and runs
-//! nothing. The iTerm runner and the rest of the trait (locate, deliver,
-//! focus, close, retitle) arrive with the commands that use them.
+//! So far: the kind, for ledger records, and launching, by [`iterm::Iterm`]
+//! or [`DryLaunch`] (`YO_DRY_LAUNCH`), which says what it would run and runs
+//! nothing. The rest of the trait (locate, deliver, focus, close, retitle)
+//! arrives with the commands that use them.
 
 use std::path::PathBuf;
 
@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::harness::Argv;
 use crate::sys::Sys;
+
+pub mod iterm;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +53,12 @@ pub enum WindowChoice {
 pub enum Launched {
     /// Nothing ran: the line that would have.
     Dry { line: String },
+    /// In a new window or a tab; split with a shell beside it, or not.
+    Opened {
+        new_window: bool,
+        split: bool,
+        warnings: Vec<String>,
+    },
 }
 
 /// `YO_DRY_LAUNCH`: says what it would launch, and launches nothing.

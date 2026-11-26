@@ -230,16 +230,10 @@ fn commands_not_ported_yet_say_so() {
             "yo: `yo down` isn't in the Rust yo yet; scripts/yo still has it\n"
         )
     );
-    // Creating works, but opening iTerm doesn't yet: without a dry launch
-    // it refuses before anything is created.
+    // Creating with no repo to work in refuses before anything is created.
     let out = yo(&sys, t.path(), &["some-name", "a message"]);
     assert_eq!(out.code, 1);
-    assert!(
-        out.err
-            .starts_with("yo: launching in iTerm isn't in the Rust yo yet"),
-        "{}",
-        out.err
-    );
+    assert!(out.err.starts_with("yo: no repo given"), "{}", out.err);
     // Nothing was written.
     assert!(!t.path().join(".local").exists());
 }

@@ -152,6 +152,9 @@ pub struct Registry {
     /// The repo registered from the cwd in single-repo mode (no repos
     /// configured), if any.
     pub autoregistered: Option<String>,
+    /// The repo a PR or issue URL brought in as a guest for this run: not
+    /// pre-trusted, no shared memory, recorded with its `owner/repo`.
+    pub guest: Option<String>,
 }
 
 impl Registry {
@@ -276,7 +279,29 @@ impl Registry {
             profiles,
             agents,
             autoregistered: None,
+            guest: None,
         })
+    }
+
+    /// Registers a repo for this run (a URL's repo, placed).
+    pub fn add_repo(&mut self, r: Repo) {
+        self.repos.push(r);
+    }
+
+    /// Adds a profile for this run.
+    pub fn add_profile(&mut self, name: &str, owners: Vec<String>) {
+        self.profiles.push(Profile {
+            name: name.to_string(),
+            mode: None,
+            memory: None,
+            branch_prefix: None,
+            claude: None,
+            settings: None,
+            dir: None,
+            window_group: None,
+            owners,
+            trust: true,
+        });
     }
 
     pub fn repos(&self) -> &[Repo] {
@@ -500,7 +525,8 @@ impl Registry {
 }
 
 impl Repo {
-    fn bare(key: String, path: PathBuf) -> Repo {
+    /// A repo with nothing set but its key and clone.
+    pub fn bare(key: String, path: PathBuf) -> Repo {
         Repo {
             key,
             path,

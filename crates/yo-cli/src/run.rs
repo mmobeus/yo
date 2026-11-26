@@ -5,12 +5,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use yo_core::Ctx;
-use yo_core::create::{CreateRequest, plan_create};
+use yo_core::create::{CreateRequest, plan_create, unplaced};
 use yo_core::ledger::Ledger;
 use yo_core::paths::Paths;
-use yo_core::plan::execute;
+use yo_core::place::{self, PlaceTo};
+use yo_core::plan::{Report, execute};
 use yo_core::registry::Mode;
-use yo_core::runner::{DryLaunch, WindowChoice};
+use yo_core::runner::iterm::Iterm;
+use yo_core::runner::{DryLaunch, Runner, WindowChoice};
 use yo_core::sys::Sys;
 
 use crate::cli::{Cli, Command, ConfigCmd, Up, Window};
@@ -96,13 +98,8 @@ fn create(
     cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    // Until the iTerm runner is ported, only a dry launch can run: refuse
-    // before anything is created, not after.
     let dry_launch = sys.env_nonempty("YO_DRY_LAUNCH").is_some();
-    if !up.dry_run && !dry_launch {
-        return Err("launching in iTerm isn't in the Rust yo yet; use --dry-run, or YO_DRY_LAUNCH=1 to do everything but open the tab".into());
-    }
-    let ctx = Ctx::load(sys, cwd)?;
+    let mut ctx = Ctx::load(sys, cwd)?;
     let req = CreateRequest {
         cwd: cwd.to_path_buf(),
         repo: up.repo.clone(),
@@ -122,15 +119,112 @@ fn create(
         agent: up.agent.clone(),
         args: up.args.clone(),
     };
+    // A URL's repo nobody registered goes somewhere first: planning the
+    // worktree needs its clone.
+    if let Some(owner_repo) = unplaced(&ctx, &req)? {
+        let to = if place::claimed_by(&ctx, &owner_repo).is_some() {
+            PlaceTo::Guest // the claiming profile wins in `place`
+        } else if let Some(a) = &up.add_to {
+            PlaceTo::parse(&ctx, a)?
+        } else if can_ask(&ctx) {
+            ask_placement(&place::choices(&ctx, &owner_repo), &owner_repo)
+        } else {
+            PlaceTo::Guest
+        };
+        if up.dry_run {
+            write!(
+                out,
+                "dry run: {owner_repo} isn't registered; yo would {} {} and register it {}, then plan the session\ndry run: nothing changed.\n",
+                if place::clone_path(&ctx, &owner_repo).exists() {
+                    "use the clone at"
+                } else {
+                    "clone it to"
+                },
+                place::clone_path(&ctx, &owner_repo).display(),
+                match (place::claimed_by(&ctx, &owner_repo), &to) {
+                    (Some(p), _) => format!("in profile '{p}'"),
+                    (None, PlaceTo::Profile(p)) => format!("in profile '{p}'"),
+                    (None, PlaceTo::NewProfile(p)) => format!("in a new profile '{p}'"),
+                    (None, PlaceTo::Guest) => "as a guest".to_string(),
+                }
+            )?;
+            return Ok(0);
+        }
+        let (_, notes) = place::place(&mut ctx, &owner_repo, &to)?;
+        let mut report = render::Progress::new(out);
+        for n in &notes {
+            report.note(n);
+        }
+    }
     let plan = plan_create(&ctx, &req)?;
     if up.dry_run {
         out.write_all(render::dry_run(&plan).as_bytes())?;
         return Ok(0);
     }
     let mut report = render::Progress::new(out);
-    execute(&ctx, &plan, &DryLaunch, &mut report)?;
+    let iterm = Iterm::new(&ctx.registry.defaults);
+    let runner: &dyn Runner = if dry_launch { &DryLaunch } else { &iterm };
+    execute(&ctx, &plan, runner, &mut report)?;
     report.finish()?;
     Ok(0)
+}
+
+/// Whether to ask where a repo goes: at a terminal, outside a Claude
+/// session (whose terminal isn't the person's), with a config to save to.
+fn can_ask(ctx: &Ctx) -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && ctx.sys.env_nonempty("CLAUDECODE").is_none()
+        && ctx.paths.config.is_file()
+}
+
+/// Asks on the terminal where an unregistered repo goes; anything but a
+/// valid choice is a guest.
+fn ask_placement(c: &place::Choices, owner_repo: &str) -> PlaceTo {
+    use std::io::BufRead;
+    let Ok(mut tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    else {
+        return PlaceTo::Guest;
+    };
+    let owner = owner_repo.split('/').next().unwrap_or("");
+    let mut menu = format!("{owner_repo} isn't configured. Where does it go?\n");
+    for (i, p) in c.profiles.iter().enumerate() {
+        menu.push_str(&format!("  [{}] add it to profile {p}\n", i + 1));
+    }
+    if let Some(n) = &c.new_profile {
+        menu.push_str(&format!(
+            "  [n] a new profile \"{n}\" that claims every {owner}/* repo\n"
+        ));
+    }
+    menu.push_str(
+        "  [g] just this once, as a guest (no shared memory, not pre-trusted)\nchoice [g]: ",
+    );
+    if tty.write_all(menu.as_bytes()).is_err() {
+        return PlaceTo::Guest;
+    }
+    let mut ans = String::new();
+    let _ = std::io::BufReader::new(&mut tty).read_line(&mut ans);
+    place_answer(c, ans.trim())
+}
+
+/// A menu answer, as bash took it.
+fn place_answer(c: &place::Choices, ans: &str) -> PlaceTo {
+    match ans {
+        "n" | "N" => c
+            .new_profile
+            .clone()
+            .map_or(PlaceTo::Guest, PlaceTo::NewProfile),
+        _ => ans
+            .parse::<usize>()
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| c.profiles.get(i))
+            .map_or(PlaceTo::Guest, |p| PlaceTo::Profile(p.clone())),
+    }
 }
 
 fn window(w: &Window) -> WindowChoice {
@@ -186,5 +280,29 @@ fn subcommand_name(c: &Command) -> &'static str {
         Command::Forget { .. } => "forget",
         Command::Agent(_) => "agent",
         Command::SessionHook => "_session-hook",
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    #[test]
+    fn menu_answers() {
+        let c = place::Choices {
+            profiles: vec!["a".into(), "b".into()],
+            new_profile: Some("neo".into()),
+        };
+        assert_eq!(place_answer(&c, ""), PlaceTo::Guest);
+        assert_eq!(place_answer(&c, "g"), PlaceTo::Guest);
+        assert_eq!(place_answer(&c, "2"), PlaceTo::Profile("b".into()));
+        assert_eq!(place_answer(&c, "3"), PlaceTo::Guest);
+        assert_eq!(place_answer(&c, "0"), PlaceTo::Guest);
+        assert_eq!(place_answer(&c, "N"), PlaceTo::NewProfile("neo".into()));
+        let c = place::Choices {
+            new_profile: None,
+            ..c
+        };
+        assert_eq!(place_answer(&c, "n"), PlaceTo::Guest);
     }
 }
