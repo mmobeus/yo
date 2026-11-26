@@ -11,7 +11,7 @@
 | phase | what | status |
 | --- | --- | --- |
 | 0 | this design | done (#8, PR #10) |
-| before 1 | the gates: CI, lints, review skills, skill tuning | in progress (#11): workspace, `xtask` and CI done |
+| before 1 | the gates: CI, lints, review skills, skill tuning | in progress (#11): workspace, `xtask`, CI, `AGENTS.md` and checklists done |
 | 1 | Rust core with CLI parity | not started |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |

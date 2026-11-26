@@ -71,6 +71,9 @@ yo config                                # what's configured
 
 ## Making changes
 
+[`AGENTS.md`](AGENTS.md) has the conventions, the gates to run before a PR,
+and the review checklists. The short version for trying a change:
+
 Installed files are symlinks into this checkout, so an edit here is live
 immediately — which is what you want while iterating on a script, and not what
 you want while a change is half-finished. Keep this checkout on `main` and do
