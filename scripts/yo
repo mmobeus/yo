@@ -14,7 +14,7 @@
 #
 # Usage:
 #   yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S]
-#      [INPUT] [extra]
+#      [--model=M] [INPUT] [extra]
 #
 #   INPUT is resolved in order:
 #     PR / issue URL     github.com/.../pull/N or /issues/N (see below)
@@ -74,6 +74,11 @@
 #   named SESSION (the name the statusline shows, what SendMessage takes) when
 #   it finishes or gets blocked. For a coordinating session handing work out.
 #
+#   --model=M  run this session on model M (an alias like opus, sonnet, haiku,
+#   opus[1m], or a full model id). Session only: your default in settings.json
+#   is untouched, and resume keeps the session on whatever it last ran on.
+#   `yo resume --model=M <session>` switches a session as it comes back.
+#
 #   --new-window (--window) put this session in a NEW iTerm window instead of a
 #   tab in the shared one; --tab forces the opposite. The default is a tab, so
 #   sessions pile up in one window and iTerm2's Session Status tool — which only
@@ -122,7 +127,7 @@
 #                        --dry-run reports what would happen and stops.
 #   yo sessions          List the sessions yo knows about and whether each is
 #                        running, ready to resume, or gone (alias: ls).
-#   yo resume <name|session-id|dir> [--new-window|--tab]
+#   yo resume <name|session-id|dir> [--model=M] [--new-window|--tab]
 #                        Reopen one session in a tab of its shared window and
 #                        `claude --resume` it there, under the same repo,
 #                        profile and settings layer it started with (alias:
@@ -1851,6 +1856,17 @@ PY_EOF
   printf '%s' "$out"
 }
 
+# " --model 'M'" for a claude command line, or nothing. Session-scoped: the
+# flag never touches the default in settings.json, and a later plain
+# `claude --resume` keeps whatever model the session last ran on.
+_yo_model_arg() {
+  [ -n "$1" ] || return 0
+  case "$1" in
+    *[!A-Za-z0-9._:\[\]-]*) die "--model: unexpected characters in '$1' (an alias like opus, sonnet[1m], haiku, or a full model id)" ;;
+  esac
+  printf ' --model %s' "$(shell_single_quote "$1")"
+}
+
 # Builds a session's first message into COMPOSED_MSG (and its codename into
 # COMPOSED_PERSONA): the mode's own message, then [extra], then the report-back
 # instruction (--from), then the codename. One line — the command is written
@@ -2057,7 +2073,7 @@ cmd_up() {
   local repo_override="" input="" gh_kind="" gh_number="" gh_owner_repo=""
   local explicit_branch="" unnamed=0 persona="" force_new_window=-1
   local here=0 mode="" wt_path="" repo_named=0 url_repo="" profile_dir=""
-  local title_override="" report_to=""
+  local title_override="" report_to="" model=""
 
   # Flags may appear anywhere; strip them out of the positional args.
   local args=() a
@@ -2077,6 +2093,9 @@ cmd_up() {
                              [ -n "$title_override" ] || die "--title needs a value" ;;
       --from=*)              report_to="${a#--from=}"
                              [ -n "$report_to" ] || die "--from needs a session name" ;;
+      --model=*)             model="${a#--model=}"
+                             [ -n "$model" ] || die "--model needs a value"
+                             _yo_model_arg "$model" >/dev/null ;;   # validate now, before anything is created
       --*)      die "unknown flag: $a" ;;
       *)        args+=("$a") ;;
     esac
@@ -2092,7 +2111,7 @@ cmd_up() {
       && _yo_pfield "$1" 1 >/dev/null 2>&1; then
     YO_PROFILE_SELECTED="$1"; shift
   fi
-  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S] [INPUT] [extra]"
+  [ "$#" -le 2 ] || die "usage: yo [--repo=R] [--profile=P] [--here|--worktree] [--title=T] [--from=S] [--model=M] [INPUT] [extra]"
   input="${1:-}"; extra_msg="${2:-}"
 
   # Which repo. One that was NAMED (--repo, the positional form, a URL, or the
@@ -2265,13 +2284,15 @@ cmd_up() {
   # '\'' dance for any embedded single quote) is equally shell-safe and reads
   # like what it is.
   prepare_claude_cmd "$repo_key" "$label" "$session_key"
-  local claude_cmd="$YO_CLAUDE_LINE --session-id $session_id"
+  local claude_cmd
+  claude_cmd="$YO_CLAUDE_LINE$(_yo_model_arg "$model") --session-id $session_id"
   if [ -n "$initial_msg" ]; then
     claude_cmd="$claude_cmd $(shell_single_quote "$initial_msg")"
   fi
 
   echo "        persona: $persona"
   echo "        session: $session_id"
+  [ -n "$model" ] && echo "        model:   $model"
   [ -n "$initial_msg" ] && echo "        seeding claude with: $initial_msg"
   launch_session "$wt_path" "$win_title" "$claude_cmd" "$repo_key" "$label" \
     "$force_new_window"
@@ -2401,9 +2422,11 @@ _yo_ensure_repo() {
 }
 
 # Relaunches the session in the R_* globals, under the repo and profile it was
-# created with, so it gets the same settings layer, memory and window.
+# created with, so it gets the same settings layer, memory and window. Without
+# a model it resumes on the model it last ran on.
 _yo_resume_row() {
-  local force_new_window="$1" repo_key="" saved_profile="$YO_PROFILE_SELECTED"
+  local force_new_window="$1" model="${2:-}"
+  local repo_key="" saved_profile="$YO_PROFILE_SELECTED"
   if [ -n "$R_REPO" ]; then
     if ! repo_key=$(_yo_ensure_repo "$R_REPO" "$R_GUEST"); then
       if [ -n "$R_GUEST" ]; then
@@ -2429,7 +2452,7 @@ _yo_resume_row() {
   local label
   label=$(session_label "$repo_key" "$R_WT")
   prepare_claude_cmd "$repo_key" "$label" "$R_KEY"
-  launch_session "$R_WT" "$R_TITLE" "$YO_CLAUDE_LINE --resume $R_SID" \
+  launch_session "$R_WT" "$R_TITLE" "$YO_CLAUDE_LINE$(_yo_model_arg "$model") --resume $R_SID" \
     "$repo_key" "$label" "$force_new_window"
   YO_PROFILE_SELECTED="$saved_profile"
 }
@@ -2483,13 +2506,16 @@ EOF
 }
 
 cmd_resume() {
-  local query="" force_new_window=-1 a
+  local query="" force_new_window=-1 model="" a
   for a in "$@"; do
     case "$a" in
       --new-window|--window) force_new_window=1 ;;
       --tab)                 force_new_window=0 ;;
+      --model=*)             model="${a#--model=}"
+                             [ -n "$model" ] || die "--model needs a value"
+                             _yo_model_arg "$model" >/dev/null ;;
       --*) die "unknown flag: $a" ;;
-      *)   [ -z "$query" ] || die "usage: yo resume [<name|session-id|dir>] [--new-window|--tab]"
+      *)   [ -z "$query" ] || die "usage: yo resume [<name|session-id|dir>] [--model=M] [--new-window|--tab]"
            query="$a" ;;
     esac
   done
@@ -2529,7 +2555,7 @@ cmd_resume() {
     R_KEY=$(_yo_state put "$R_WT" "$R_SID" "$R_TITLE" "$R_REPO" "$R_NAME" \
       "$R_PROFILE" "$D_MODE" "") || R_KEY=""
   fi
-  _yo_resume_row "$force_new_window"
+  _yo_resume_row "$force_new_window" "$model"
   echo "==> ready."
 }
 

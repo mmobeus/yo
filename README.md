@@ -46,6 +46,7 @@ yo --repo=backend -  'look into the flaky test'
 yo --here - 'read HANDOFF.md'     # no worktree: this directory, as checked out
 yo --title='Fix flaky retry' my-fix   # your own tab / Session Status title
 yo --from=<session> my-fix 'brief'    # report back to that Claude session when done
+yo --model=sonnet my-fix          # this session only; your default is untouched
 yo title 'new title'              # retitle the session you're in (or /yo-title in claude)
 yo down                           # tear the session down
 yo sessions                       # what yo knows about, and what's running
@@ -66,6 +67,7 @@ session, and a hook in the session's settings layer follows it through
 ```sh
 yo sessions              # running, ready to resume, or gone
 yo resume my-fix         # one session, by name, session id or directory
+yo resume --model=opus my-fix   # ...switching its model on the way back
 yo resume-all --dry-run  # every session that was live
 ```
 
