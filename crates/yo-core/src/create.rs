@@ -355,6 +355,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
             harness.name()
         )));
     }
+    let command = harness.command(reg, repo, picked.as_deref());
     let prepared = harness.prepare(
         ctx,
         &PrepareAsk {
@@ -364,6 +365,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
             dir: &wt,
             mode,
             trusted_clone,
+            command: &command,
         },
     )?;
     plan.notes.extend(prepared.notes);
@@ -416,7 +418,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
     })));
 
     let spec = SessionSpec {
-        command: harness.command(reg, repo, picked.as_deref()),
+        command,
         dir: wt.clone(),
         name: name.clone(),
         id,
@@ -425,6 +427,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         codename: codename.clone(),
         first_message: brief.clone(),
         settings: prepared.settings,
+        args: prepared.args,
         remote_control: None,
     };
     let mut argv = harness.tui_command(&spec);

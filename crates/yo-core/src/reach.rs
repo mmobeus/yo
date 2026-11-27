@@ -198,6 +198,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
         .map(|x| x.key.clone())
         .or_else(|| reg.profile_of(repo, picked).map(|p| p.name.clone()))
         .unwrap_or_else(|| basename(&r.worktree));
+    let command = harness.command(reg, repo, picked);
     let prepared = harness.prepare(
         ctx,
         &PrepareAsk {
@@ -207,12 +208,13 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
             dir: &r.worktree,
             mode: r.mode_or_default(),
             trusted_clone: None,
+            command: &command,
         },
     )?;
     plan.notes.extend(prepared.notes);
     plan.actions.extend(prepared.actions);
     let spec = SessionSpec {
-        command: harness.command(reg, repo, picked),
+        command,
         dir: r.worktree.clone(),
         name: name.clone(),
         id: Some(id.to_string()),
@@ -221,6 +223,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
         codename: r.codename.clone().unwrap_or_default(),
         first_message: o.message.clone().filter(|m| !m.is_empty()),
         settings: prepared.settings,
+        args: prepared.args,
         remote_control: r.remote_control.clone(),
     };
     let mut argv = harness.resume_command(id, &spec);

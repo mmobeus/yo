@@ -255,6 +255,7 @@ What each harness gets:
 | running or not | `~/.claude/sessions` | the thread lock a running `codex` holds (`~/.codex/thread-writer-locks`), found with `lsof` |
 | quit deliberately | `/exit` marks it ended | with yo's hook (`yo setup` adds it, when asked, and Codex approves it), `/quit` and ctrl-d mark it ended. Without it, a quit session stays ready, so `resume-all` brings it back |
 | messages | typed into its tab; a stopped one is resumed with it | the same (`codex resume ID MESSAGE`) |
+| status line | yo's `statusline.sh`: model, name, branch, context, cost, time | Codex's own, set with `-c tui.status_line=[...]`: model and reasoning effort, directory, branch, context used, five-hour limit left. Not yo's name: Codex has no way to set one at launch. Left out when `~/.codex/config.toml` sets `tui.status_line`, or `harnesses.codex` (its `command` or `args`) mentions it. A status line set in a Codex profile (`-p`) is still overridden |
 | `--from` report back | with `SendMessage` | by running `yo SESSION 'report'`, which types it in |
 | inside a session | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` |
 

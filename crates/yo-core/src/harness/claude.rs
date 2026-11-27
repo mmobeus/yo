@@ -772,6 +772,7 @@ mod tests {
             first_message: msg.map(str::to_string),
             settings: None,
             remote_control: None,
+            args: Vec::new(),
         }
     }
 

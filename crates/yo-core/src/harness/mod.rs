@@ -222,6 +222,8 @@ pub struct SessionSpec {
     /// A Remote Control name (an agent's home), which the session takes as
     /// its name too.
     pub remote_control: Option<String>,
+    /// Flags [`Harness::prepare`] chose for it, after its own.
+    pub args: Vec<String>,
 }
 
 /// What a harness's setup is for.
@@ -237,15 +239,18 @@ pub struct PrepareAsk<'a> {
     /// per-folder state is copied over. `None` in place, or for a repo
     /// yo doesn't pre-trust.
     pub trusted_clone: Option<&'a Path>,
+    /// The harness's command, as configured (with `harnesses.<name>.args`).
+    pub command: &'a str,
 }
 
-/// A harness's setup: steps to run, what to say, and a settings layer for
-/// the launch.
+/// A harness's setup: steps to run, what to say, and a settings layer and
+/// flags for the launch.
 #[derive(Debug, Default)]
 pub struct Prepared {
     pub notes: Vec<Note>,
     pub actions: Vec<Action>,
     pub settings: Option<PathBuf>,
+    pub args: Vec<String>,
 }
 
 /// A step only one harness knows how to do.
