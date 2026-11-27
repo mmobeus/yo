@@ -40,6 +40,10 @@ pub trait Runner {
     /// yo too), or else the tab `tab`. `false`: nothing was closed (a dry
     /// run).
     fn close_own_tab(&self, sys: &dyn Sys, session: &str, tab: Option<&str>) -> bool;
+    /// Closes tab `tab` (as [`Launched::Opened`] gave it), another
+    /// session's, every member of it. `false`: nothing was closed (a dry
+    /// run).
+    fn close_tab(&self, sys: &dyn Sys, tab: &str) -> bool;
     /// The terminals and tabs it shows, for [`tab_of`]. `None`: it can't
     /// say.
     fn tabs(&self, _sys: &dyn Sys) -> Option<Tabs> {
@@ -62,6 +66,19 @@ pub struct Tabs {
     /// `/dev/ttys003`.
     pub ttys: Vec<String>,
     pub tabs: Vec<String>,
+    /// Each session shown, with its terminal, tab and title together.
+    pub panes: Vec<Pane>,
+}
+
+/// A session a runner shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pane {
+    /// `/dev/ttys003`.
+    pub tty: String,
+    /// Empty when it has none yo could use.
+    pub tab: String,
+    /// The title yo gave it (iTerm: `user.yoTitle`); empty if none.
+    pub title: String,
 }
 
 /// Whether a running session still has a tab.
@@ -82,13 +99,7 @@ pub fn tab_of(sys: &dyn Sys, tab: Option<&str>, pid: u32, shown: Option<&Tabs>) 
     let Some(shown) = shown else {
         return Tab::Unknown;
     };
-    let tty = sys.procs().tty(pid).map(|t| {
-        if t.starts_with("/dev/") {
-            t
-        } else {
-            format!("/dev/{t}")
-        }
-    });
+    let tty = tty_of(sys, pid);
     if tty.is_some_and(|t| shown.ttys.contains(&t))
         || tab.is_some_and(|t| shown.tabs.iter().any(|s| s == t))
     {
@@ -98,6 +109,18 @@ pub fn tab_of(sys: &dyn Sys, tab: Option<&str>, pid: u32, shown: Option<&Tabs>) 
     } else {
         Tab::Unknown
     }
+}
+
+/// The terminal process `pid` runs on, as runners show them
+/// (`/dev/ttys003`).
+pub fn tty_of(sys: &dyn Sys, pid: u32) -> Option<String> {
+    sys.procs().tty(pid).map(|t| {
+        if t.starts_with("/dev/") {
+            t
+        } else {
+            format!("/dev/{t}")
+        }
+    })
 }
 
 /// Whether `t` looks like a tab a runner gave: `<window id>/<tab id>`, of
@@ -196,6 +219,10 @@ impl Runner for DryLaunch {
         false
     }
 
+    fn close_tab(&self, _sys: &dyn Sys, _tab: &str) -> bool {
+        false
+    }
+
     fn ends_sessions(&self) -> bool {
         false
     }
@@ -214,6 +241,7 @@ mod tests {
         let shown = Tabs {
             ttys: vec!["/dev/ttys009".into(), "/dev/ttys011".into()],
             tabs: vec!["pty-W/40".into(), "pty-W/41".into()],
+            panes: vec![],
         };
         let s = Some(&shown);
         assert_eq!(tab_of(&sys, None, 30, s), Tab::Held);

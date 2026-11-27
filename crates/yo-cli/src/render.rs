@@ -283,6 +283,7 @@ fn action(a: &Action) -> String {
                 .unwrap_or_default()
         ),
         Action::CloseOwnTab { .. } => "close this tab".to_string(),
+        Action::CloseTab { tab } => format!("close its tab {tab}"),
         Action::EndSession {
             harness,
             pid,
@@ -417,6 +418,7 @@ impl Report for Progress<'_> {
             | Action::PruneWorktrees { .. }
             | Action::SweepWorktree { .. }
             | Action::CloseOwnTab { .. }
+            | Action::CloseTab { .. }
             | Action::EndSession { .. }
             | Action::RefreshHome { .. } => String::new(),
         };

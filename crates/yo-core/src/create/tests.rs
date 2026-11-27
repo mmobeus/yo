@@ -877,6 +877,8 @@ fn a_codex_session() {
         .unwrap();
     let r = &record(&p).record;
     assert_eq!(r.harness.as_deref(), Some("codex"));
+    // Recorded, so `yo down --children` from home finds it.
+    assert_eq!(r.from.as_deref(), Some("home"));
     assert_eq!(r.session_id, None, "Codex reports its own, later");
     assert!(r.created_at.is_some(), "what the id is learned against");
     // No settings layer, memory or trust: Claude's.

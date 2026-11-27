@@ -76,6 +76,19 @@ branch is kept), and closes the tab. If claude is still running in the tab
 before you confirm: closing a tab while it shows CLI would leave claude
 running with no tab. A session running in another tab is left alone.
 
+To end another session from outside it, name it:
+
+```sh
+yo down retry-fix
+```
+
+It does the same for that session: ends it if it's running, removes its
+worktree, forgets it, and closes its tab (the whole tab, CLI too). If the
+session may still be working (Claude says it's busy, or the harness can't
+say, as Codex can't), yo asks first, and `--yes` refuses. It closes the tab
+only if the tab still shows that session's title or terminal, because after
+iTerm restarts an old record's tab id can belong to another tab.
+
 ### Seeing what's running
 
 ```sh
@@ -166,7 +179,7 @@ at Codex's hook review.
 
 | how it ends | what happens next |
 | --- | --- |
-| `yo down` | gone: worktree removed (branch kept), tab closed |
+| `yo down`, or `yo down NAME` from another session | gone: worktree removed (branch kept), tab closed |
 | `/exit` in claude | **ended**: stays out of `resume-all`, but `yo resume <name>` reopens it |
 | close the tab, quit iTerm, or a crash | **ready**: `resume-all` brings it back |
 | close the tab while it shows CLI | **running (no tab)**: iTerm leaves claude running; see [Troubleshooting](#9-troubleshooting) |
@@ -349,6 +362,11 @@ yo --repo=backend --from=me-home --title='Fix retry' retry-fix '<the brief>'
 stuck: a Claude worker with `SendMessage`, a Codex one by running
 `yo SESSION 'report'`. The brief is all the worker knows: the goal, links, constraints, and
 what "done" means.
+
+yo records `--from` with the worker, so the home can find its workers
+later. `yo sessions --from=me-home` lists them, and from inside the home,
+`yo down --children` tears down the ones that are done. It skips any that
+are still working or have uncommitted work, and lists them.
 
 ### Agents
 

@@ -21,7 +21,9 @@ as `--flag=value` or `--flag value`.
 | `yo [flags] [INPUT] [message]` | start a session (see [flags](#flags-for-starting-a-session)) |
 | `yo NAME ['message']` | reach a session, agent home or home by name ([`yo NAME`](#yo-name)) |
 | `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, end its claude if it's still running in this tab, close its tab. Aliases `rm`, `teardown` |
-| `yo sessions` | list the ledger: running, running (no tab), ready, ended, gone, no-id, waiting? (a Codex session with no id yet, a while after launch: likely stopped at a prompt in its tab). Alias `ls` |
+| `yo down NAME [--dry-run] [--yes [--discard]]` | tear down another session from outside it: end it if it's running, remove its worktree (branch kept; same refusals), forget it, close its recorded tab (the whole tab, CLI peer too). One still working, or whose harness can't say (Codex), is asked about, and refused with `--yes`. The tab is closed only if it still shows the session's title or terminal |
+| `yo down --children [--dry-run] [--yes [--discard]]` | tear down the sessions this one started (recorded with `--from` naming it) that are done; those still working, or with uncommitted work without `--discard`, are skipped and listed |
+| `yo sessions [--from=SESSION]` | list the ledger: running, running (no tab), ready, ended, gone, no-id, waiting? (a Codex session with no id yet, a while after launch: likely stopped at a prompt in its tab). `--from`: only those started with `--from=SESSION`. Alias `ls` |
 | `yo resume [<name\|id\|dir>] [--model=M] [--new-window\|--tab]` | reopen one session; bare, list them |
 | `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live; waits a few seconds for sessions whose tab was just closed, and lists those still running without a tab instead of resuming them |
 | `yo title ["T"]` | retitle the session this runs in; bare, reset every yo tab's name |
@@ -116,7 +118,7 @@ so yo leaves the message as it is and passes the codename with
 | `--here` (`--in-place`) | no worktree: the named repo's clone, else the cwd |
 | `--worktree` | a worktree, where in place would be the default |
 | `--title="T"` | the tab and Session Status title |
-| `--from=SESSION` | report back to that session when done or stuck (a Claude session uses `SendMessage`; a Codex one runs `yo SESSION 'report'`) |
+| `--from=SESSION` | report back to that session when done or stuck (a Claude session uses `SendMessage`; a Codex one runs `yo SESSION 'report'`); recorded, for `yo sessions --from` and `yo down --children` |
 | `--model=M` | this session's model (`opus`, `sonnet`, `haiku`, `opus[1m]`, a full id) |
 | `--agent=NAME` | run as agent NAME; it must be merged on the base branch or in `~/.claude/agents` |
 | `--harness=H` | the coding agent to run it on (see [Harnesses](#harnesses)) |
@@ -278,7 +280,7 @@ What each harness gets:
 | --- | --- |
 | config | `~/.config/yo/config.json` |
 | base settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
-| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent, and `tab`: the iTerm tab it was last opened in, `<window id>/<tab id>`, recorded at launch and by `yo adopt`) |
+| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent, and `tab`: the iTerm tab it was last opened in, `<window id>/<tab id>`, recorded at launch and by `yo adopt`; and `from`: the session it reports back to, from `--from`, for `yo sessions --from` and `yo down --children`) |
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
 | skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title`; for Codex, the same names in `$CODEX_HOME/skills` (`~/.codex/skills`) |

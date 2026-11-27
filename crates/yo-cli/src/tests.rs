@@ -1264,3 +1264,319 @@ fn adopt_inside_codex() {
     .unwrap();
     assert!(rec.contains(r#""harness": "codex""#), "{rec}");
 }
+
+/// `with_session`'s worktree, as `down` asks git about it.
+fn worktree_git(sys: &FakeSys, api: &Path, wt: &Path) {
+    let (a, w) = (api.display().to_string(), wt.display().to_string());
+    sys.answer_ok("git", &["-C", &w, "rev-parse", "--show-toplevel"], &w);
+    sys.answer_ok(
+        "git",
+        &["-C", &w, "rev-parse", "--git-common-dir"],
+        &format!("{a}/.git"),
+    );
+    sys.answer_ok(
+        "git",
+        &["-C", &w, "rev-parse", "--abbrev-ref", "HEAD"],
+        "feat",
+    );
+    sys.answer_ok("git", &["-C", &w, "status", "--porcelain"], "");
+    sys.answer_ok("git", &["-C", &a, "worktree", "remove", &w], "");
+}
+
+/// A live claude session `id` as pid `pid`, on `tty`, saying `status`.
+fn live_claude(t: &TempDir, sys: &FakeSys, pid: u32, id: &str, tty: &str, status: &str) {
+    let sessions = t.path().join(".claude/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(format!("{pid}.json")),
+        format!(r#"{{"pid": {pid}, "sessionId": "{id}", "cwd": "/w", "status": "{status}"}}"#),
+    )
+    .unwrap();
+    sys.add_process(pid, "claude", Some(tty));
+}
+
+#[test]
+fn down_name_tears_down_another_session_and_closes_its_tab() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    // The real runner, in another tab; iTerm shows feat's tab, titled.
+    sys.set_env("YO_DRY_LAUNCH", "");
+    sys.set_env("ITERM_SESSION_ID", "w0t2p0:ME");
+    sys.answer_ok("pgrep", &["-axq", "iTerm2"], "");
+    sys.answer_ok("osascript", &["-"], "/dev/ttys009\tpty-W/40\tfeat\n");
+    let rec = t
+        .path()
+        .join(".local/state/yo/sessions/src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"tab": "pty-W/40", "#, 1)).unwrap();
+    live_claude(
+        &t,
+        &sys,
+        77,
+        "abcdef12-0000-4000-8000-000000000000",
+        "ttys009",
+        "idle",
+    );
+
+    let before = snapshot(t.path());
+    let out = yo(&sys, &api, &["down", "feat", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    for want in [
+        "Tearing down feat would:\n",
+        "  branch:   feat   (KEPT — not deleted)\n",
+        "  forget it in yo's session ledger (src__api-worktrees__feat)\n",
+        "  end its claude session (pid 77), idle\n",
+        "  close its iTerm2 tab (pty-W/40)\n",
+    ] {
+        assert!(out.out.contains(want), "missing {want:?} in:\n{}", out.out);
+    }
+    assert!(sys.signals().is_empty());
+    assert_eq!(snapshot(t.path()), before);
+    let changing = |c: &yo_core::sys::CommandSpec| {
+        c.args.iter().any(|x| x == "remove") || (c.program == "osascript" && c.args.len() > 1)
+    };
+    assert!(!sys.calls().iter().any(changing));
+
+    let out = yo(&sys, &api, &["down", "feat", "--yes"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(out.out.ends_with("feat torn down.\n"), "{}", out.out);
+    assert_eq!(sys.signals(), [(77, yo_core::sys::Signal::Hup)]);
+    assert!(!rec.exists());
+    assert!(
+        sys.calls()
+            .iter()
+            .any(|c| c.program == "osascript" && c.args == ["-", "", "pty-W/40"]),
+        "its tab, by the tab alone"
+    );
+}
+
+#[test]
+fn down_children_skips_the_working_and_sessions_lists_by_from() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let ledger = t.path().join(".local/state/yo/sessions");
+    let put = |key: &str, body: &str| fs::write(ledger.join(format!("{key}.json")), body).unwrap();
+    let rec = ledger.join("src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"from": "home", "#, 1)).unwrap();
+    let a = api.display();
+    put(
+        "id-home",
+        &format!(r#"{{"worktree": "{a}", "sessionId": "home-1", "name": "home", "mode": "here"}}"#),
+    );
+    put(
+        "id-busy",
+        &format!(
+            r#"{{"worktree": "{a}", "sessionId": "busy-1", "name": "busy", "mode": "here", "from": "home"}}"#
+        ),
+    );
+    live_claude(&t, &sys, 50, "home-1", "ttys001", "busy");
+    live_claude(&t, &sys, 60, "busy-1", "ttys002", "busy");
+
+    let out = yo(&sys, &api, &["sessions", "--from", "home"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains("feat") && out.out.contains("busy"),
+        "{}",
+        out.out
+    );
+    assert!(!out.out.contains("home-1"), "{}", out.out);
+
+    // From outside any session there's no "this one".
+    let out = yo(&sys, &api, &["down", "--children", "--dry-run"]);
+    assert_ne!(out.code, 0);
+    assert!(out.err.contains("not inside a session"), "{}", out.err);
+
+    sys.set_env("CLAUDE_CODE_SESSION_ID", "home-1");
+    let before = snapshot(t.path());
+    let out = yo(&sys, &api, &["down", "--children", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains("Tearing down feat would:\n"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out.contains("Skipped:\n  busy: may still be working\n"),
+        "{}",
+        out.out
+    );
+    assert_eq!(snapshot(t.path()), before);
+
+    let out = yo(&sys, &api, &["down", "--children", "--yes"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(out.out.ends_with("torn down: feat.\n"), "{}", out.out);
+    assert!(!rec.exists());
+    assert!(ledger.join("id-busy.json").exists());
+    assert!(ledger.join("id-home.json").exists());
+}
+
+#[test]
+fn down_name_asks_about_a_busy_session_and_says_what_it_cant_find() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    live_claude(
+        &t,
+        &sys,
+        77,
+        "abcdef12-0000-4000-8000-000000000000",
+        "ttys009",
+        "busy",
+    );
+    let before = snapshot(t.path());
+    // No answer (the tests' stdin is empty): a no.
+    let out = yo(&sys, &api, &["down", "feat"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("  end its claude session (pid 77), STILL WORKING\n"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out
+            .contains("feat may still be working. Tear it down anyway? [y/N] "),
+        "{}",
+        out.out
+    );
+    assert!(out.out.ends_with("aborted.\n"), "{}", out.out);
+    assert_eq!(snapshot(t.path()), before);
+    assert!(sys.signals().is_empty());
+
+    let out = yo(&sys, &api, &["down", "nosuch"]);
+    assert_ne!(out.code, 0);
+    assert!(
+        out.err
+            .contains("no session matches 'nosuch' (yo sessions lists them)"),
+        "{}",
+        out.err
+    );
+    // Two records by one name.
+    let ledger = t.path().join(".local/state/yo/sessions");
+    fs::write(
+        ledger.join("id-twin.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "twin-1", "name": "feat", "mode": "here"}}"#,
+            api.display()
+        ),
+    )
+    .unwrap();
+    let out = yo(&sys, &api, &["down", "feat"]);
+    assert_ne!(out.code, 0);
+    assert!(
+        out.err.contains("ambiguous: 2 sessions match 'feat'"),
+        "{}",
+        out.err
+    );
+}
+
+#[test]
+fn down_children_goes_on_past_one_that_fails() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let ledger = t.path().join(".local/state/yo/sessions");
+    let rec = ledger.join("src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"from": "home-1", "#, 1)).unwrap();
+    // A second child, whose worktree removal git refuses.
+    let two = api.with_file_name("api-worktrees").join("two");
+    fs::create_dir_all(&two).unwrap();
+    fs::write(
+        ledger.join("src__api-worktrees__two.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "two-1", "name": "two", "repo": "api", "from": "home-1"}}"#,
+            two.display()
+        ),
+    )
+    .unwrap();
+    worktree_git(&sys, &api, &two);
+    let (a, w) = (api.display().to_string(), two.display().to_string());
+    sys.answer(
+        "git",
+        &["-C", &a, "worktree", "remove", &w],
+        yo_core::fake::failed(1),
+    );
+    sys.set_env("CLAUDE_CODE_SESSION_ID", "home-1");
+
+    let out = yo(&sys, &api, &["down", "--children", "--yes"]);
+    assert_eq!(out.code, 1, "{}\n{}", out.out, out.err);
+    assert!(out.out.contains("torn down: feat.\n"), "{}", out.out);
+    assert!(out.out.ends_with("not torn down: two.\n"), "{}", out.out);
+    assert!(!rec.exists());
+    assert!(ledger.join("src__api-worktrees__two.json").exists());
+
+    // By id or by name, sessions --from lists the same.
+    let out = yo(&sys, &api, &["sessions", "--from", "home-1"]);
+    assert!(out.out.contains("two"), "{}", out.out);
+}
+
+#[test]
+fn down_name_says_a_codex_session_with_no_id_may_be_running() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let rec = t
+        .path()
+        .join(".local/state/yo/sessions/src__api-worktrees__feat.json");
+    fs::write(
+        &rec,
+        format!(
+            r#"{{"worktree": "{}", "name": "feat", "repo": "api", "harness": "codex"}}"#,
+            wt.display()
+        ),
+    )
+    .unwrap();
+    let out = yo(&sys, &api, &["down", "feat", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains(
+            "  (it may still be running: no session id recorded yet, so yo can't tell)\n"
+        ),
+        "{}",
+        out.out
+    );
+    let out = yo(&sys, &api, &["down", "feat", "--yes"]);
+    assert_ne!(out.code, 0);
+    assert!(
+        out.err.contains("can't tell whether feat is still working"),
+        "{}",
+        out.err
+    );
+    assert!(rec.exists());
+}
+
+#[test]
+fn down_children_says_why_it_skips_each() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let w = wt.display().to_string();
+    sys.answer_ok("git", &["-C", &w, "status", "--porcelain"], " M a.rs\n");
+    let ledger = t.path().join(".local/state/yo/sessions");
+    let rec = ledger.join("src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"from": "home-1", "#, 1)).unwrap();
+    fs::write(
+        ledger.join("id-cindy.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "cindy-1", "name": "cindy-home", "home": true, "agent": "cindy", "mode": "here", "from": "home-1"}}"#,
+            api.display()
+        ),
+    )
+    .unwrap();
+    sys.set_env("CLAUDE_CODE_SESSION_ID", "home-1");
+    let out = yo(&sys, &api, &["down", "--children", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("  feat: uncommitted changes (--discard to lose them):\n         M a.rs\n"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out.contains(
+            "  cindy-home: cindy-home is cindy's home, which yo keeps; quit its session with /exit instead\n"
+        ),
+        "{}",
+        out.out
+    );
+    assert!(out.out.ends_with("nothing to tear down.\n"), "{}", out.out);
+}

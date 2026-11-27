@@ -15,7 +15,8 @@ finding that's right is fixed in the PR when it's about the PR's change and
 small, or else filed as a `review-followup` issue. Then the reviewer checks the fixes and either
 accepts the PR, so the author can merge it, or says what's still blocking.
 At most three rounds, the first review included; a PR still not accepted
-after the third goes to the maintainer. `AGENTS.md` ("Review rounds") has
+after the third goes to the maintainer. Then the author's session tears
+down the review sessions it started. `AGENTS.md` ("Review rounds") has
 the steps.
 
 So a review aims for the few findings that matter, not for everything that

@@ -406,6 +406,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
             .and_then(|r| reg.github_for(sys, r)),
         codename: Some(codename.clone()),
         brief: brief.clone(),
+        from: req.from.clone(),
         by_id: mode == Mode::Here,
         harness: Some(harness.name().to_string()),
         runner: Some(RunnerKind::Iterm),

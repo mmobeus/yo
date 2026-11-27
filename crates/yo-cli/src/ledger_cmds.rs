@@ -18,7 +18,7 @@ use crate::run::{runner, say, shown, window};
 type Res = Result<i32, Box<dyn std::error::Error>>;
 
 /// A query that's a directory, as the ledger holds it: absolute and real.
-fn as_dir(cwd: &Path, q: &str) -> String {
+pub(crate) fn as_dir(cwd: &Path, q: &str) -> String {
     let p = cwd.join(q);
     if p.is_dir()
         && let Ok(real) = std::fs::canonicalize(&p)
@@ -29,7 +29,7 @@ fn as_dir(cwd: &Path, q: &str) -> String {
 }
 
 /// More than one session matches.
-fn ambiguous(ctx: &Ctx, q: &str, hits: &[Entry]) -> Box<dyn std::error::Error> {
+pub(crate) fn ambiguous(ctx: &Ctx, q: &str, hits: &[Entry]) -> Box<dyn std::error::Error> {
     let mut s = format!("ambiguous: {} sessions match '{q}'\n", hits.len());
     let live = ctx.live();
     let table = render::sessions(ctx, hits, &live, shown(ctx, &live).as_ref());

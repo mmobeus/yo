@@ -51,7 +51,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Focused, LaunchSpec, Launched, Runner, RunnerKind, Tabs, WindowChoice, valid_tab};
+use super::{
+    Focused, LaunchSpec, Launched, Pane, Runner, RunnerKind, Tabs, WindowChoice, valid_tab,
+};
 use crate::harness::shell_word;
 use crate::ojson::OValue;
 use crate::registry::{Defaults, Layout, WindowMode};
@@ -507,6 +509,13 @@ impl Runner for Iterm {
         true
     }
 
+    /// By the tab alone: no session's unique id is empty, so the script
+    /// goes straight to the tab yo recorded.
+    fn close_tab(&self, sys: &dyn Sys, tab: &str) -> bool {
+        let _ = sys.cmd().run(&script(CLOSE, &["", tab]));
+        true
+    }
+
     fn own_tab(&self, sys: &dyn Sys, session: &str) -> Option<String> {
         Iterm::own_tab(sys, session)
     }
@@ -523,12 +532,24 @@ impl Runner for Iterm {
         }
         let mut t = Tabs::default();
         for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let (tty, tab) = line.split_once('\t').unwrap_or((line, ""));
-            if tty.starts_with("/dev/") {
+            let mut cols = line.splitn(3, '\t');
+            let tty = cols.next().unwrap_or("");
+            let tab = cols.next().unwrap_or("");
+            let title = cols.next().unwrap_or("");
+            let tty = if tty.starts_with("/dev/") { tty } else { "" };
+            let tab = if valid_tab(tab) { tab } else { "" };
+            if !tty.is_empty() {
                 t.ttys.push(tty.to_string());
             }
-            if valid_tab(tab) {
+            if !tab.is_empty() {
                 t.tabs.push(tab.to_string());
+            }
+            if !tty.is_empty() || !tab.is_empty() {
+                t.panes.push(Pane {
+                    tty: tty.to_string(),
+                    tab: tab.to_string(),
+                    title: title.to_string(),
+                });
             }
         }
         Some(t)
@@ -681,9 +702,12 @@ mod tests {
         let it = iterm(Layout::Auto);
         assert!(it.close_own_tab(&sys, "w0t1p0:UUID", Some("pty-W/40")));
         assert!(it.close_own_tab(&sys, "w0t1p0:UUID", None));
+        // Another session's tab: by the tab alone.
+        assert!(it.close_tab(&sys, "pty-W/41"));
         let c = sys.calls();
         assert_eq!(c[0].args, ["-", "UUID", "pty-W/40"]);
         assert_eq!(c[1].args, ["-", "UUID", ""]);
+        assert_eq!(c[2].args, ["-", "", "pty-W/41"]);
         assert_eq!(c[0].stdin.as_deref(), Some(CLOSE.as_bytes()));
     }
 
@@ -700,13 +724,26 @@ mod tests {
         sys.answer(
             "osascript",
             &["-"],
-            ok("/dev/ttys003\tpty-W/27\n/dev/ttys007\t/\njunk\n"),
+            ok("/dev/ttys003\tpty-W/27\t[api] a\tb\n/dev/ttys007\t/\t\njunk\n"),
         );
         assert_eq!(
             it.tabs(&sys),
             Some(Tabs {
                 ttys: vec!["/dev/ttys003".into(), "/dev/ttys007".into()],
                 tabs: vec!["pty-W/27".into()],
+                panes: vec![
+                    Pane {
+                        tty: "/dev/ttys003".into(),
+                        tab: "pty-W/27".into(),
+                        // A tab in a title is the title's.
+                        title: "[api] a\tb".into(),
+                    },
+                    Pane {
+                        tty: "/dev/ttys007".into(),
+                        tab: String::new(),
+                        title: String::new(),
+                    },
+                ],
             })
         );
     }

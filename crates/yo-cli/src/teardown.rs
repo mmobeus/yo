@@ -4,12 +4,16 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 
 use yo_core::Ctx;
-use yo_core::down::{DownOpts, Found, plan_down};
+use yo_core::down::{
+    Activity, Children, DownOpts, Found, Other, OtherTab, Skip, Skipped, plan_down,
+    plan_down_children, plan_down_named,
+};
 use yo_core::plan::{Action, Note, Plan, Report, execute};
 use yo_core::runner::{LaunchSpec, Launched};
 use yo_core::sweep::{SweepOpts, plan_sweep};
 
 use crate::cli::{Down, Sweep};
+use crate::ledger_cmds::{ambiguous, as_dir};
 use crate::render;
 use crate::run::runner;
 
@@ -33,7 +37,47 @@ fn confirm(out: &mut dyn Write, q: &str) -> bool {
     matches!(ans.trim(), "y" | "Y" | "yes" | "YES")
 }
 
+/// A worktree `down` would remove: where it is, and what's lost or kept.
+fn say_worktree(
+    out: &mut dyn Write,
+    repo: &str,
+    worktree: &Path,
+    branch: &str,
+    dirty: &[String],
+    unpushed: &[String],
+    base: &str,
+) -> std::io::Result<()> {
+    writeln!(out, "  repo:     {repo}")?;
+    writeln!(out, "  worktree: {}", worktree.display())?;
+    writeln!(out, "  branch:   {branch}   (KEPT — not deleted)")?;
+    if !dirty.is_empty() {
+        writeln!(
+            out,
+            "\n  !!  UNCOMMITTED / untracked changes — these will be LOST:"
+        )?;
+        for l in dirty {
+            writeln!(out, "        {l}")?;
+        }
+    }
+    if !unpushed.is_empty() {
+        writeln!(
+            out,
+            "\n  *   commits not on {base} (preserved on branch '{branch}'):"
+        )?;
+        for l in unpushed {
+            writeln!(out, "        {l}")?;
+        }
+    }
+    Ok(())
+}
+
 pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
+    if let Some(name) = &d.name {
+        return down_named(ctx, d, name, cwd, out);
+    }
+    if d.children {
+        return down_children(ctx, d, out);
+    }
     let runner = runner(ctx);
     let (found, plan) = plan_down(
         ctx,
@@ -103,27 +147,7 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
             base,
         } => {
             writeln!(out, "{}", lead("work session"))?;
-            writeln!(out, "  repo:     {repo}")?;
-            writeln!(out, "  worktree: {}", worktree.display())?;
-            writeln!(out, "  branch:   {branch}   (KEPT — not deleted)")?;
-            if !dirty.is_empty() {
-                writeln!(
-                    out,
-                    "\n  !!  UNCOMMITTED / untracked changes — these will be LOST:"
-                )?;
-                for l in dirty {
-                    writeln!(out, "        {l}")?;
-                }
-            }
-            if !unpushed.is_empty() {
-                writeln!(
-                    out,
-                    "\n  *   commits not on {base} (preserved on branch '{branch}'):"
-                )?;
-                for l in unpushed {
-                    writeln!(out, "        {l}")?;
-                }
-            }
+            say_worktree(out, repo, worktree, branch, dirty, unpushed, base)?;
             writeln!(out, "\n{tab}")?;
             say_notes(out, &plan.notes)?;
             (
@@ -182,6 +206,198 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
         &mut report,
     )?;
     Ok(0)
+}
+
+/// What happens to another session, as `down NAME` and `--children` say
+/// it, each line indented.
+fn say_other(out: &mut dyn Write, o: &Other, plan: &Plan) -> std::io::Result<()> {
+    match &o.found {
+        Found::Worktree {
+            repo,
+            worktree,
+            branch,
+            dirty,
+            unpushed,
+            base,
+        } => {
+            say_worktree(out, repo, worktree, branch, dirty, unpushed, base)?;
+            writeln!(out)?;
+        }
+        Found::InPlace { dir, .. } => writeln!(
+            out,
+            "  leave {} exactly as it is (not a yo worktree to remove)",
+            dir.display()
+        )?,
+    }
+    if let Some(k) = plan.actions.iter().find_map(|a| match a {
+        Action::DropRecord(k) => Some(k),
+        _ => None,
+    }) {
+        writeln!(out, "  forget it in yo's session ledger ({})", k.0)?;
+    }
+    if let Some((harness, pid)) = plan.actions.iter().find_map(|a| match a {
+        Action::EndSession { harness, pid, .. } => Some((harness, pid)),
+        _ => None,
+    }) {
+        let how = match o.activity {
+            Activity::Idle => "idle",
+            Activity::Busy => "STILL WORKING",
+            _ => "running; yo can't tell whether it's still working",
+        };
+        writeln!(out, "  end its {harness} session (pid {pid}), {how}")?;
+    } else if o.activity == Activity::Unknown {
+        writeln!(
+            out,
+            "  (it may still be running: no session id recorded yet, so yo can't tell)"
+        )?;
+    }
+    match &o.tab {
+        OtherTab::Close(t) => writeln!(out, "  close its iTerm2 tab ({t})")?,
+        OtherTab::NoneRecorded => writeln!(out, "  (no tab recorded for it: none to close)")?,
+        OtherTab::NotOpen => writeln!(out, "  (its tab is already closed)")?,
+        OtherTab::Unconfirmed(t) => writeln!(
+            out,
+            "  leave tab {t} open: it no longer shows this session's title or terminal (close it by hand if it's this one's)"
+        )?,
+        OtherTab::CantTell => writeln!(
+            out,
+            "  leave its tab as it is: yo can't see iTerm2's tabs (close it by hand if it's open)"
+        )?,
+    }
+    say_notes(out, &plan.notes)
+}
+
+/// `yo down NAME`: tears down another session, from outside it.
+fn down_named(ctx: &Ctx, d: &Down, q: &str, cwd: &Path, out: &mut dyn Write) -> Res {
+    let q = as_dir(cwd, q);
+    let e = match ctx.ledger().get(&q) {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return Err(format!("no session matches '{q}' (yo sessions lists them)").into());
+        }
+        Err(hits) => return Err(ambiguous(ctx, &q, &hits)),
+    };
+    let runner = runner(ctx);
+    let (other, plan) = plan_down_named(
+        ctx,
+        &*runner,
+        &e,
+        DownOpts {
+            yes: d.yes,
+            discard: d.discard,
+        },
+    )?;
+    let name = &other.name;
+    if d.dry_run {
+        writeln!(out, "Tearing down {name} would:")?;
+    } else {
+        writeln!(out, "About to tear down {name}:")?;
+    }
+    say_other(out, &other, &plan)?;
+    let dirty = matches!(&other.found, Found::Worktree { dirty, .. } if !dirty.is_empty());
+    if d.dry_run {
+        if dirty {
+            writeln!(
+                out,
+                "dry run: nothing changed. Uncommitted work means --yes alone will refuse; add --discard to lose it."
+            )?;
+        } else {
+            writeln!(out, "dry run: nothing changed.")?;
+        }
+        return Ok(0);
+    }
+    let question = if other.activity.working() {
+        format!("{name} may still be working. Tear it down anyway?")
+    } else {
+        format!("Tear down {name}?")
+    };
+    if !d.yes && !confirm(out, &question) {
+        writeln!(out, "aborted.")?;
+        return Ok(0);
+    }
+    let mut report = render::Progress::new(out);
+    execute(ctx, &plan, &*runner, &mut report)?;
+    if let Found::Worktree { branch, .. } = &other.found {
+        writeln!(out, "worktree removed; branch '{branch}' kept.")?;
+    }
+    writeln!(out, "{name} torn down.")?;
+    Ok(0)
+}
+
+/// `yo down --children`: tears down the sessions this one started that
+/// are done, skipping (and listing) those that may still be working or
+/// would lose uncommitted work.
+fn down_children(ctx: &Ctx, d: &Down, out: &mut dyn Write) -> Res {
+    let runner = runner(ctx);
+    let Children { go, skipped } = plan_down_children(ctx, &*runner, d.discard)?;
+    if go.is_empty() && skipped.is_empty() {
+        writeln!(out, "no sessions in the ledger were started from this one.")?;
+        return Ok(0);
+    }
+    for (other, plan) in &go {
+        if d.dry_run {
+            writeln!(out, "Tearing down {} would:", other.name)?;
+        } else {
+            writeln!(out, "To tear down {}:", other.name)?;
+        }
+        say_other(out, other, plan)?;
+        writeln!(out)?;
+    }
+    if !skipped.is_empty() {
+        writeln!(out, "Skipped:")?;
+        for Skipped { name, why } in &skipped {
+            match why {
+                Skip::Working => writeln!(out, "  {name}: may still be working")?,
+                Skip::Uncommitted(files) => {
+                    writeln!(
+                        out,
+                        "  {name}: uncommitted changes (--discard to lose them):"
+                    )?;
+                    for f in files {
+                        writeln!(out, "        {f}")?;
+                    }
+                }
+                Skip::Refused(m) => writeln!(out, "  {name}: {}", m.replace('\n', "\n  "))?,
+            }
+        }
+    }
+    if go.is_empty() {
+        writeln!(out, "nothing to tear down.")?;
+        return Ok(0);
+    }
+    if d.dry_run {
+        writeln!(out, "dry run: nothing changed.")?;
+        return Ok(0);
+    }
+    let names: Vec<&str> = go.iter().map(|(o, _)| o.name.as_str()).collect();
+    if !d.yes && !confirm(out, &format!("Tear down {}?", names.join(", "))) {
+        writeln!(out, "aborted.")?;
+        return Ok(0);
+    }
+    // One that fails doesn't stop the rest.
+    let mut failed = Vec::new();
+    for (other, plan) in &go {
+        writeln!(out, "==> {}", other.name)?;
+        let mut report = render::Progress::new(out);
+        if let Err(e) = execute(ctx, plan, &*runner, &mut report) {
+            writeln!(out, "  ! {}: {e}", other.name)?;
+            failed.push(other.name.as_str());
+        }
+    }
+    let done: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| !failed.contains(n))
+        .collect();
+    if !done.is_empty() {
+        writeln!(out, "torn down: {}.", done.join(", "))?;
+    }
+    if failed.is_empty() {
+        Ok(0)
+    } else {
+        writeln!(out, "not torn down: {}.", failed.join(", "))?;
+        Ok(1)
+    }
 }
 
 /// Sweep's progress, in bash's words.

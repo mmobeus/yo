@@ -61,7 +61,7 @@ the port is tested. No code comes with it; phase 1 builds against it.
 | background sessions | run over [ACP](https://agentclientprotocol.com) (the Agent Client Protocol), which works for many harnesses, not by driving one harness's own stream format |
 | messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
 | app | a Tauri app (`yo app`): one web UI, wrapped by Tauri, talking to the daemon over its Unix socket. The app holds no yo logic. The same UI can be served over the daemon's opt-in HTTP, for a phone or for UI development. Not Wails |
-| compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
+| compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records (and, as it turned out, `tab` and `from`), and a `harness` setting in config |
 | the port | it keeps today's *effects* (ledger, config, git, files written, commands launched); output may change, deliberately. Each command is tested by `yo-core` unit tests on its plan, with a fake `Sys`, and was compared with `scripts/yo` by hand while porting, since bash `yo` went about a day after the Rust one ran. See [testing the port](#testing-the-port) |
 | daemon | optional for the CLI and the TUI; started on demand by what needs it (`yo app`, background sessions, the relay). Listens only on a Unix socket unless TCP is turned on. A launchd agent can come later |
 | how it's built | gates cheapest first, everything CI runs can run locally (`cargo xtask`), review skills by hand, and only the maintainer loosens a gate; see [how it's built](#how-its-built) |
@@ -263,7 +263,7 @@ yo-core/src/
   reach.rs      reaching what it found: focus a running session (typing the message), resume a stopped one
   create.rs     plan a new session: INPUT (unnamed, PR, issue, existing or new branch), worktree, branch, title, codename, brief
   session.rs    for the ledger commands: where a directory sits (a yo worktree, a clone), a session by query, recording one
-  down.rs       tear down the current session
+  down.rs       tear down the current session, another by name, or the ones it started
   end.rs        end a running session the way a closed terminal would (down, when closing its tab doesn't)
   sweep.rs      classify worktrees; remove
   naming.rs     codenames, titles, truncation
@@ -420,6 +420,7 @@ pub struct Record {
     pub remote_control: Option<String>,
     pub codename: Option<String>,
     pub brief: Option<String>,
+    pub from: Option<String>,             // new; --from, the session it reports back to (down --children)
     pub by_id: bool,
     pub harness: Option<String>,          // new; absent = claude
     pub machine: Option<MachineId>,       // new; absent = this machine
@@ -528,7 +529,10 @@ printing a plan; `resume` refuses running and gone sessions in `yo-cli` too.
 What a running session without a tab is, and the wait for those still
 exiting, are `yo-core`'s (`reach::tabless`, `reach::await_tabless`). `adopt`, `forget` and `title` write the ledger directly, and
 `title` and `adopt` call the iTerm runner's own methods rather than going
-through `Runner`. `config edit` runs `$EDITOR` outside `Sys`, and `setup` runs a harness's
+through `Runner`. `down --children` is planned in `yo-core`
+(`plan_down_children`: a plan per child, and why each skipped one is
+skipped), but `yo-cli` runs the plans one after another, going on past one
+that fails. `config edit` runs `$EDITOR` outside `Sys`, and `setup` runs a harness's
 command (`codex`) interactively, after a yes, to approve yo's hook there. These move
 into `yo-core` plans (`plan_resume_all` and small ones for the ledger
 commands) when the daemon or the TUI needs them, no later than phase 4.
@@ -797,6 +801,22 @@ pub struct LaunchSpec {
   SIGTERM, each sent only while the harness still lists that session on
   that pid. From inside the session, a detached `yo _end-session` does it
   after iTerm's undo window.
+- **Tearing down another session** (`down NAME`, #68) works from its record:
+  it ends the session first, from outside, then closes its recorded tab by
+  the tab alone, which takes every member of a workgroup tab. A tab id is a
+  window's id and a small number, so after iTerm restarts an old record's
+  id can name another tab: yo closes it only when something in it shows the
+  session's title (`user.yoTitle`) or terminal, or the session runs with its
+  terminal shown nowhere and the tab has a pane that could be its hidden
+  peer (no yo title, as a workgroup's CLI has none, or its own). Whether a
+  session is still working comes from its harness (Claude's session files
+  say `idle` or `busy`; Codex says nothing, so yo asks). A worktree is
+  held by any session running in it, even one whose id the record doesn't
+  have (as sweep keeps it), other than the one yo runs in; and a record
+  with no id yet from a harness that reports its own later (Codex, before
+  its first message) may be working too. Records keep `--from`, so a
+  session can find the ones it started (`down --children`), however it was
+  named (`session::started_from`).
 - **ACP** (phase 5): for sessions nobody is watching. The daemon runs the
   harness's ACP command (`claude-agent-acp`, `codex-acp`, ...) as a child
   process and talks JSON-RPC to it over stdin and stdout, through the
@@ -1133,7 +1153,7 @@ today (unknown flag, unknown repo, bad name, ambiguous match):
 | reach | running with and without a message; running but no tab found; stopped (resumes with the message) |
 | ledger | `sessions`; `adopt` (new, already known, after `/clear`); `forget`; `title`, with and without a name; the hook for `SessionStart`, `SessionEnd` with `prompt_input_exit` and with other reasons |
 | resume | by name, id, prefix, directory; a transcript-only id; a guest repo no longer registered; `resume-all` with and without `--dry-run` |
-| down | in a worktree (clean, dirty, with unpushed commits; `--yes`, `--discard`, `--dry-run`); in place; an agent's home (refused) |
+| down | in a worktree (clean, dirty, with unpushed commits; `--yes`, `--discard`, `--dry-run`); in place; an agent's home (refused); another session by name (idle, busy, unknown; its tab confirmed or left open; this session and homes refused); `--children` |
 | sweep | each verdict (DEAD, STALE, SUSP, KEEP and its reasons); squash-merged; reused branch with an open PR; `--apply`, `--include-stale`, `--include-suspended`, `--delete-branches`, `--repo` |
 | config | no config (single-repo mode); `show`, `path`, `add-repo` from a directory, a URL and `owner/repo`; unknown keys; env overrides beating the file |
 | agents | `yo agent` bare, start, reach; an agent not merged on base |

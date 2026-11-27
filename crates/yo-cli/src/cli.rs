@@ -39,12 +39,17 @@ pub enum Command {
     },
     /// The sessions in the ledger.
     #[command(visible_alias = "ls")]
-    Sessions,
+    Sessions {
+        /// Only the sessions started to report back to SESSION (`--from`).
+        #[arg(long, value_name = "SESSION", value_parser = nonempty)]
+        from: Option<String>,
+    },
     /// Reopen a session (no query: list them).
     Resume(Resume),
     /// Reopen every resumable session.
     ResumeAll(ResumeAll),
-    /// Tear down the current session.
+    /// Tear down the current session, or another (NAME), or the ones this
+    /// one started (--children).
     #[command(visible_aliases = ["rm", "teardown"])]
     Down(Down),
     /// Remove worktrees whose work has landed.
@@ -165,6 +170,14 @@ pub struct ResumeAll {
 
 #[derive(Debug, Args)]
 pub struct Down {
+    /// Another session to tear down, from outside it: its name, id or
+    /// directory.
+    #[arg(value_name = "NAME", conflicts_with = "children")]
+    pub name: Option<String>,
+    /// Tear down the sessions this one started (with --from naming it)
+    /// that are done; those still working are skipped and listed.
+    #[arg(long)]
+    pub children: bool,
     /// Say what would happen, and change nothing.
     #[arg(long, short = 'n')]
     pub dry_run: bool,
@@ -291,11 +304,11 @@ mod tests {
     fn subcommands_and_aliases() {
         assert!(matches!(
             parse(&["sessions"]).unwrap().command,
-            Some(Command::Sessions)
+            Some(Command::Sessions { from: None })
         ));
         assert!(matches!(
             parse(&["ls"]).unwrap().command,
-            Some(Command::Sessions)
+            Some(Command::Sessions { from: None })
         ));
         assert!(matches!(
             parse(&["rm"]).unwrap().command,
