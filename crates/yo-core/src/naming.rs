@@ -125,9 +125,14 @@ pub fn truncate_title(s: &str) -> String {
     }
 }
 
-/// An unnamed session's name: `sesh_YYYYmmdd_HHMMSS`, in local time as
-/// `date` gives it, else UTC from the clock.
+/// An unnamed session's name: `sesh_YYYYmmdd_HHMMSS`.
 pub fn unnamed(sys: &dyn Sys) -> String {
+    format!("sesh_{}", stamp(sys))
+}
+
+/// `YYYYmmdd_HHMMSS`, in local time as `date` gives it, else UTC from the
+/// clock.
+pub fn stamp(sys: &dyn Sys) -> String {
     let local = sys
         .cmd()
         .run(&CommandSpec::new("date").arg("+%Y%m%d_%H%M%S"))
@@ -135,8 +140,7 @@ pub fn unnamed(sys: &dyn Sys) -> String {
         .filter(|o| o.success())
         .map(|o| o.text())
         .filter(|t| t.len() == 15 && t.chars().all(|c| c.is_ascii_digit() || c == '_'));
-    let stamp = local.unwrap_or_else(|| utc_stamp(sys));
-    format!("sesh_{stamp}")
+    local.unwrap_or_else(|| utc_stamp(sys))
 }
 
 fn utc_stamp(sys: &dyn Sys) -> String {

@@ -9,6 +9,10 @@ pub struct Paths {
     /// The config file: `$YO_CONFIG`, else `$XDG_CONFIG_HOME/yo/config.json`
     /// (`~/.config` when unset). It may not exist.
     pub config: PathBuf,
+    /// yo's config directory, `$XDG_CONFIG_HOME/yo` (`~/.config/yo`),
+    /// whatever `$YO_CONFIG` says: where `yo setup` puts the settings layer
+    /// and the statusline it names.
+    pub config_dir: PathBuf,
     /// yo's state directory: `$XDG_STATE_HOME/yo` (`~/.local/state`).
     pub state: PathBuf,
 }
@@ -16,12 +20,16 @@ pub struct Paths {
 impl Paths {
     pub fn new(sys: &dyn Sys) -> Self {
         let home = sys.home();
-        let config = sys.env_nonempty("YO_CONFIG").map_or_else(
-            || xdg(sys, &home, "XDG_CONFIG_HOME", ".config").join("yo/config.json"),
-            PathBuf::from,
-        );
+        let config_dir = xdg(sys, &home, "XDG_CONFIG_HOME", ".config").join("yo");
+        let config = sys
+            .env_nonempty("YO_CONFIG")
+            .map_or_else(|| config_dir.join("config.json"), PathBuf::from);
         let state = xdg(sys, &home, "XDG_STATE_HOME", ".local/state").join("yo");
-        Paths { config, state }
+        Paths {
+            config,
+            config_dir,
+            state,
+        }
     }
 
     /// The ledger: one JSON file per session.
@@ -32,6 +40,12 @@ impl Paths {
     /// Composed per-session settings layers.
     pub fn settings(&self) -> PathBuf {
         self.state.join("settings")
+    }
+
+    /// What `yo setup` installed, so a later run (or `--uninstall`) knows
+    /// which files are its own.
+    pub fn setup_manifest(&self) -> PathBuf {
+        self.state.join("setup.json")
     }
 
     pub fn machine_id(&self) -> PathBuf {

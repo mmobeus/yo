@@ -9,6 +9,7 @@ mod cli;
 mod ledger_cmds;
 mod render;
 mod run;
+mod setup;
 mod teardown;
 
 #[cfg(test)]

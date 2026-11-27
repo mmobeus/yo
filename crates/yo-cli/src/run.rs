@@ -45,6 +45,15 @@ fn go(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, Box<dyn std::error::Error>> {
+    if let Some(Command::Setup(s)) = &cli.command {
+        return crate::setup::setup(sys, s, cwd, out);
+    }
+    if yo_core::setup::stale(&*sys, &Paths::new(&*sys)) {
+        writeln!(
+            err,
+            "yo: the skills and settings yo setup installed are from another version of yo; run yo setup to update them"
+        )?;
+    }
     match &cli.command {
         None => return up(&cli.up, sys, cwd, out),
         Some(Command::Resume(r)) => {

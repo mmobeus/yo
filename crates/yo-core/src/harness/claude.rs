@@ -6,17 +6,36 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    Argv, Capabilities, Harness, LiveSession, PrepareAsk, Prepared, SessionSpec, single_quote,
-    valid_session_id,
+    Argv, Bundle, Bundled, BundledKind, Capabilities, GlobalSettings, Harness, LiveSession,
+    PrepareAsk, Prepared, SessionSpec, single_quote, valid_session_id,
 };
 use crate::ledger::HookEvent;
 use crate::ojson::OValue;
+use crate::paths::Paths;
 use crate::plan::Action;
 use crate::sys::Sys;
 use crate::{Ctx, Error, Result};
 
 #[derive(Debug, Default)]
 pub struct Claude;
+
+// What `yo setup` installs: the repo's `claude/` directory, built in.
+const SETTINGS: &str = include_str!("../../../../claude/settings.json");
+const STATUSLINE: &str = include_str!("../../../../claude/statusline.sh");
+const SKILLS: &[(&str, &str)] = &[
+    (
+        "claude/skills/yo-adopt",
+        include_str!("../../../../claude/skills/yo-adopt/SKILL.md"),
+    ),
+    (
+        "claude/skills/yo-down",
+        include_str!("../../../../claude/skills/yo-down/SKILL.md"),
+    ),
+    (
+        "claude/skills/yo-title",
+        include_str!("../../../../claude/skills/yo-title/SKILL.md"),
+    ),
+];
 
 impl Harness for Claude {
     fn name(&self) -> &str {
@@ -255,6 +274,48 @@ impl Harness for Claude {
         });
         out.settings = Some(path);
         Ok(out)
+    }
+
+    /// The settings layer and the statusline it names, beside yo's config
+    /// (nothing of Claude's own is replaced); the skills in
+    /// `~/.claude/skills`, where Claude finds personal skills, each its own
+    /// directory. `--merge-settings` merges the layer into
+    /// `~/.claude/settings.json`.
+    fn bundle(&self, sys: &dyn Sys, paths: &Paths) -> Bundle {
+        let claude = sys.home().join(".claude");
+        let mut items = vec![
+            Bundled {
+                rel: "claude/settings.json",
+                dest: paths.config_dir.join("claude-settings.json"),
+                kind: BundledKind::File {
+                    text: SETTINGS,
+                    exec: false,
+                },
+            },
+            Bundled {
+                rel: "claude/statusline.sh",
+                dest: paths.config_dir.join("statusline.sh"),
+                kind: BundledKind::File {
+                    text: STATUSLINE,
+                    exec: true,
+                },
+            },
+        ];
+        for (rel, text) in SKILLS {
+            let name = rel.rsplit('/').next().unwrap_or(rel);
+            items.push(Bundled {
+                rel,
+                dest: claude.join("skills").join(name),
+                kind: BundledKind::Dir(vec![("SKILL.md", text)]),
+            });
+        }
+        Bundle {
+            items,
+            global: Some(GlobalSettings {
+                path: claude.join("settings.json"),
+                layer: SETTINGS,
+            }),
+        }
     }
 
     /// `SessionStart` and `SessionEnd` payloads (a missing event name is a
