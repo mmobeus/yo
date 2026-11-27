@@ -1,6 +1,7 @@
 // iTerm2's preferences, for yo: the Default profile (only what JSON can
-// hold), whether Claude Code's workgroup has a terminal peer, and the
-// primary display's size. Prints one JSON object. Run with osascript -l JavaScript.
+// hold), whether Claude Code's workgroup has a terminal peer, the
+// workgroups themselves (for `yo setup` to add one), and the primary
+// display's size. Prints one JSON object. Run with osascript -l JavaScript.
 ObjC.import("AppKit");
 function plain(v) {
   // What JSON can hold; anything else (NSData, dates) is dropped.
@@ -26,6 +27,7 @@ function run() {
     var text = raw.isKindOfClass($.NSData)
       ? $.NSString.alloc.initWithDataEncoding(raw, $.NSUTF8StringEncoding).js
       : ObjC.unwrap(raw);
+    out.workgroups = text;
     JSON.parse(text).forEach(function (g) {
       if (g.uniqueIdentifier !== "builtin.claudeCode") return;
       (g.sessions || []).forEach(function (s) {

@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use super::{Focused, LaunchSpec, Launched, Runner, RunnerKind, WindowChoice};
 use crate::harness::shell_word;
+use crate::ojson::OValue;
 use crate::registry::{Defaults, Layout, WindowMode};
 use crate::sys::{CommandSpec, Sys};
 use crate::{Error, Result};
@@ -101,6 +102,8 @@ impl Iterm {
 struct Prefs {
     default: Option<Value>,
     peer: bool,
+    /// The workgroups, as iTerm keeps them (JSON).
+    workgroups: Option<String>,
     screen: Option<(u64, u64)>,
 }
 
@@ -125,8 +128,121 @@ fn prefs(sys: &dyn Sys) -> Prefs {
     Prefs {
         default: v.get("default").filter(|d| d.is_object()).cloned(),
         peer: v.get("peer").and_then(Value::as_bool).unwrap_or(false),
+        workgroups: v
+            .get("workgroups")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         screen,
     }
+}
+
+/// Claude Code's workgroup in iTerm2, and whether it has a terminal peer:
+/// a shell beside every chat, which lets yo open claude alone rather than
+/// split a pane for the shell (`YO_LAYOUT=workgroup`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Peer {
+    Present,
+    /// No such workgroup (the integration isn't set up, or iTerm2 isn't
+    /// there), so nothing to add a peer to.
+    NoGroup,
+    /// No peer yet: the workgroups as they are, and with one named `name`.
+    Missing {
+        old: String,
+        new: String,
+    },
+}
+
+const CLAUDE_GROUP: &str = "builtin.claudeCode";
+
+pub fn peer(sys: &dyn Sys, name: &str) -> Peer {
+    let Some(raw) = prefs(sys).workgroups else {
+        return Peer::NoGroup;
+    };
+    let Ok(mut groups) = OValue::parse(&raw) else {
+        return Peer::NoGroup;
+    };
+    let OValue::Array(list) = &mut groups else {
+        return Peer::NoGroup;
+    };
+    let id = |g: &OValue| match g.get("uniqueIdentifier") {
+        Some(OValue::String(s)) => s == CLAUDE_GROUP,
+        _ => false,
+    };
+    let Some(group) = list.iter_mut().find(|g| id(g)) else {
+        return Peer::NoGroup;
+    };
+    if group.get("sessions").is_none() {
+        group.insert("sessions", OValue::Array(Vec::new()));
+    }
+    let Some(OValue::Array(sessions)) = group.get_mut("sessions") else {
+        return Peer::NoGroup;
+    };
+    let is_peer = |s: &OValue| {
+        matches!(
+            s.get("kind").and_then(|k| k.get("kind")),
+            Some(OValue::String(k)) if k == "peer"
+        )
+    };
+    if sessions.iter().any(is_peer) {
+        return Peer::Present;
+    }
+    let s = |v: &str| OValue::String(v.to_string());
+    sessions.push(OValue::Object(vec![
+        ("mode".into(), s("regular")),
+        (
+            "kind".into(),
+            OValue::Object(vec![("kind".into(), s("peer"))]),
+        ),
+        ("command".into(), s("")),
+        ("perFileCommand".into(), s("")),
+        (
+            "toolbarItems".into(),
+            OValue::Array(vec![OValue::Object(vec![(
+                "kind".into(),
+                s("modeSwitcher"),
+            )])]),
+        ),
+        ("displayName".into(), s(name)),
+        (
+            "uniqueIdentifier".into(),
+            s(&sys.new_session_id().to_uppercase()),
+        ),
+        ("urlString".into(), s("")),
+        ("parentID".into(), s("builtin.claudeCode.main")),
+    ]));
+    Peer::Missing {
+        old: raw,
+        new: groups.to_compact(),
+    }
+}
+
+/// Writes iTerm2's workgroups. iTerm reads them at launch, so a running
+/// iTerm2 sees them after its next restart (and writes its own copy back
+/// if they're edited in its settings before then).
+pub fn write_workgroups(sys: &dyn Sys, json: &str) -> Result<()> {
+    let hex: String = json.bytes().map(|b| format!("{b:02x}")).collect();
+    let spec = CommandSpec::new("defaults").args([
+        "write",
+        "com.googlecode.iterm2",
+        "Workgroups",
+        "-data",
+        &hex,
+    ]);
+    match sys.cmd().run(&spec) {
+        Ok(o) if o.success() => Ok(()),
+        Ok(o) => Err(Error::Failed(format!(
+            "defaults write failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ))),
+        Err(e) => Err(Error::Failed(format!("couldn't run defaults: {e}"))),
+    }
+}
+
+/// Whether iTerm2 is running.
+pub fn running(sys: &dyn Sys) -> bool {
+    sys.cmd()
+        .run(&CommandSpec::new("pgrep").args(["-xq", "iTerm2"]))
+        .is_ok_and(|o| o.success())
 }
 
 /// The dynamic profile: a copy of the Default profile that ignores titles

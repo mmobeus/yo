@@ -225,6 +225,13 @@ Usage:
                        Show the config and what it registers; open it in
                        $EDITOR (validated after); or list a repo, cloning it
                        first unless it's a directory.
+  yo setup [--dry-run] [--uninstall] [--link=CHECKOUT] [--merge-settings]
+           [--no-iterm] [--force]
+                       Install yo's skills, settings layer and statusline
+                       (copies built into yo; --link links them into a yo
+                       checkout instead), a starting config if there's none,
+                       and iTerm2's workgroup peer. Run it again after
+                       upgrading yo. --uninstall takes them out again.
   yo help              Show this help, plus the configured repos and profiles.
 
 Session ledger: yo records each session's id under
@@ -256,7 +263,7 @@ What "create" does:
   6. launch claude in the LEFT pane (with an initial message pre-filled when
      created from a PR/issue URL), under a session id yo picks and records
      in the session ledger, stacking yo's settings layer on top of your own
-     with `claude --settings`: the installed claude-settings.json plus an
+     with `claude --settings`: the claude-settings.json yo setup installed, plus an
      autoMemoryDirectory — one memory shared by every session
      (~/.claude/memories/yo unless the config's "memories" / "memory" say
      otherwise) — plus the hooks that keep the ledger current.

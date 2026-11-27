@@ -711,3 +711,126 @@ fn reaching_a_guest_session_dry_neither_clones_nor_registers() {
             .any(|c| c.args.iter().any(|a| a == "clone"))
     );
 }
+
+/// A sandbox where git, jq and gh are there, and iTerm2's Claude Code
+/// workgroup has no peer.
+fn setup_sandbox() -> (TempDir, Arc<FakeSys>) {
+    let (t, sys) = sandbox(None);
+    for tool in ["git", "jq", "gh"] {
+        sys.answer_ok(tool, &["--version"], "1");
+    }
+    sys.answer_ok(
+        "osascript",
+        &["-l", "JavaScript", "-"],
+        r#"{"workgroups": "[{\"uniqueIdentifier\":\"builtin.claudeCode\",\"sessions\":[]}]"}"#,
+    );
+    sys.answer_ok("date", &["+%Y%m%d_%H%M%S"], "20261126_101500");
+    (t, sys)
+}
+
+#[test]
+fn setup_dry_run_says_each_step_and_writes_nothing() {
+    let (t, sys) = setup_sandbox();
+    let out = yo(&sys, t.path(), &["setup", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert_eq!(
+        out.out,
+        "==> setting up yo, from copies built into this yo
+dry run: nothing will be written
+  copy    ~/.config/yo/claude-settings.json
+  copy    ~/.config/yo/statusline.sh
+  copy    ~/.claude/skills/yo-adopt
+  copy    ~/.claude/skills/yo-down
+  copy    ~/.claude/skills/yo-title
+  create  ~/.config/yo/config.json (no repos yet)
+  peer    iTerm2's Claude Code workgroup <- terminal peer 'CLI'
+          (the workgroups as they were: ~/.config/yo/iterm-workgroups.bak-20261126-101500.json)
+  record  ~/.local/state/yo/setup.json (what setup installed)
+dry run: nothing changed.
+"
+    );
+    assert_eq!(fs::read_dir(t.path()).unwrap().count(), 0);
+    assert!(!sys.calls().iter().any(|c| c.program == "defaults"));
+}
+
+#[test]
+fn setup_then_uninstall() {
+    let (t, sys) = setup_sandbox();
+    let out = yo(&sys, t.path(), &["setup", "--no-iterm"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.ends_with(
+            "done. Run yo setup again after upgrading yo.
+next: register a repo with yo config add-repo <clone|owner/repo>
+"
+        ),
+        "{}",
+        out.out
+    );
+    assert!(t.path().join(".claude/skills/yo-down/SKILL.md").is_file());
+    // The starting config, with no repos, is a config yo reads.
+    let help = yo(&sys, t.path(), &["config", "show"]);
+    assert_eq!(help.code, 0, "{}", help.err);
+    assert_eq!(help.err, "");
+
+    let again = yo(&sys, t.path(), &["setup", "--no-iterm"]);
+    assert!(
+        again
+            .out
+            .contains("  ok      ~/.config/yo/statusline.sh (up to date)\n")
+    );
+    assert!(!again.out.contains("next:"));
+
+    let out = yo(&sys, t.path(), &["setup", "--uninstall"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert_eq!(
+        out.out,
+        "==> uninstalling yo's skills and settings
+  rm      ~/.config/yo/claude-settings.json (yo's copy)
+  rm      ~/.config/yo/statusline.sh (yo's copy)
+  rm      ~/.claude/skills/yo-adopt (yo's copy)
+  rm      ~/.claude/skills/yo-down (yo's copy)
+  rm      ~/.claude/skills/yo-title (yo's copy)
+  ok      ~/.config/yo/config.json (your config, left alone)
+  rm      ~/.local/state/yo/setup.json (what setup installed)
+done. Backups of anything rewritten end in .bak-<time>; yo itself stays (brew uninstall yo).
+"
+    );
+    assert!(!t.path().join(".claude/skills/yo-down").exists());
+}
+
+#[test]
+fn other_commands_say_when_setup_is_out_of_date() {
+    let (t, sys) = setup_sandbox();
+    yo(&sys, t.path(), &["setup", "--no-iterm"]);
+    let m = t.path().join(".local/state/yo/setup.json");
+    let text = fs::read_to_string(&m).unwrap();
+    let skill = t
+        .path()
+        .join(".claude/skills/yo-down")
+        .display()
+        .to_string();
+    // The skill as an older yo had it.
+    let at = text.find(&format!("\"{skill}\": \"")).unwrap() + skill.len() + 5;
+    let older = format!("{}0000000000000000{}", &text[..at], &text[at + 16..]);
+    fs::write(&m, older).unwrap();
+    let out = yo(&sys, t.path(), &["config", "path"]);
+    assert_eq!(out.code, 0);
+    assert!(
+        out.err.contains("run yo setup to update them"),
+        "{}",
+        out.err
+    );
+    // Setup itself fixes it, and doesn't nag first.
+    let fix = yo(&sys, t.path(), &["setup", "--no-iterm"]);
+    assert_eq!(fix.err, "");
+    assert_eq!(yo(&sys, t.path(), &["config", "path"]).err, "");
+}
+
+#[test]
+fn setup_link_needs_a_checkout() {
+    let (t, sys) = setup_sandbox();
+    let out = yo(&sys, t.path(), &["setup", "--link", "nowhere"]);
+    assert_eq!(out.code, 1);
+    assert!(out.err.starts_with("yo: --link "), "{}", out.err);
+}

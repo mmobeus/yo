@@ -39,6 +39,20 @@ impl OValue {
         s
     }
 
+    /// On one line, as compact as JSON goes.
+    pub fn to_compact(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Takes `key` out of an object, if it's there.
+    pub fn remove(&mut self, key: &str) -> Option<OValue> {
+        let OValue::Object(m) = self else {
+            return None;
+        };
+        let i = m.iter().position(|(k, _)| k == key)?;
+        Some(m.remove(i).1)
+    }
+
     pub fn get(&self, key: &str) -> Option<&OValue> {
         match self {
             OValue::Object(m) => m.iter().find(|(k, _)| k == key).map(|(_, v)| v),

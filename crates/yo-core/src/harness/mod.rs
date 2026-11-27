@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::ledger::HookEvent;
+use crate::paths::Paths;
 use crate::plan::{Action, Note};
 use crate::registry::Repo;
 use crate::sys::Sys;
@@ -42,6 +43,47 @@ pub trait Harness: Send + Sync {
     fn hook_event(&self, _payload: &str) -> Option<HookEvent> {
         None
     }
+    /// What `yo setup` installs for it, from copies built into yo: files
+    /// (skills, a settings layer), and the settings `--merge-settings`
+    /// merges into its own. Nothing, for a harness with none.
+    fn bundle(&self, _sys: &dyn Sys, _paths: &Paths) -> Bundle {
+        Bundle::default()
+    }
+}
+
+/// A harness's part of `yo setup`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bundle {
+    pub items: Vec<Bundled>,
+    pub global: Option<GlobalSettings>,
+}
+
+/// A file or directory yo installs, built into the binary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bundled {
+    /// Where it lives in a yo checkout (`claude/skills/yo-down`): what
+    /// `--link` links to, and how a link an older install made is known.
+    pub rel: &'static str,
+    pub dest: PathBuf,
+    pub kind: BundledKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BundledKind {
+    File {
+        text: &'static str,
+        exec: bool,
+    },
+    /// A directory of files: `(name, text)`.
+    Dir(Vec<(&'static str, &'static str)>),
+}
+
+/// Settings merged into the harness's own settings file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalSettings {
+    pub path: PathBuf,
+    /// JSON, as an object.
+    pub layer: &'static str,
 }
 
 /// What a harness has beyond the required parts. Anything it lacks shows

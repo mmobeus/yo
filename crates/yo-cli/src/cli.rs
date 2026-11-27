@@ -48,6 +48,9 @@ pub enum Command {
     Forget { query: String },
     /// List agents, or start or reach one's home.
     Agent(Agent),
+    /// Install yo's skills, settings layer and statusline (run again after
+    /// upgrading yo).
+    Setup(Setup),
     /// The ledger hook, run by the harness with its payload on stdin.
     #[command(name = "_session-hook", hide = true)]
     SessionHook,
@@ -196,6 +199,30 @@ pub struct Agent {
     pub window: Window,
 }
 
+#[derive(Debug, Args)]
+pub struct Setup {
+    /// Say what would happen, and change nothing.
+    #[arg(long, short = 'n')]
+    pub dry_run: bool,
+    /// Take out what setup put in (your config stays).
+    #[arg(long)]
+    pub uninstall: bool,
+    /// Link the files into this yo checkout instead of copying them, so
+    /// edits there are live.
+    #[arg(long, value_name = "CHECKOUT", conflicts_with = "uninstall")]
+    pub link: Option<std::path::PathBuf>,
+    /// Also merge yo's Claude settings into ~/.claude/settings.json (with
+    /// --uninstall: take them back out).
+    #[arg(long)]
+    pub merge_settings: bool,
+    /// Leave iTerm2's Claude Code workgroup alone.
+    #[arg(long)]
+    pub no_iterm: bool,
+    /// Replace links that point somewhere unexpected.
+    #[arg(long)]
+    pub force: bool,
+}
+
 fn nonempty(v: &str) -> Result<String, String> {
     if v.is_empty() {
         Err("needs a value".to_string())
@@ -299,6 +326,7 @@ mod tests {
         assert!(parse(&["a", "b", "c", "d"]).is_err());
         assert!(parse(&["forget"]).is_err());
         assert!(parse(&["down", "--discard"]).is_err());
+        assert!(parse(&["setup", "--uninstall", "--link", "."]).is_err());
         assert!(parse(&["sweep", "--nope"]).is_err());
         let s = parse(&["sweep", "--repo", "a", "--repo=b"]).unwrap();
         let Some(Command::Sweep(s)) = s.command else {

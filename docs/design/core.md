@@ -15,6 +15,7 @@
 | 0 | this design | done (#8, PR #10) |
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
+| after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | in progress (#34): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; the release workflow and the formula are next |
 | 2 | a second harness: Codex | not started |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
@@ -68,6 +69,7 @@ the port is tested. No code comes with it; phase 1 builds against it.
 | "latest focus" | raw: the last prompt and the last tool used. A summary can come later |
 | phone | Claude's Remote Control for Claude sessions, for now; for every harness later, the same web UI over the daemon's opt-in HTTP, on a tailnet |
 | iTerm automation | keep shelling out to `osascript` |
+| distribution | a Homebrew formula (`mmobeus/tap/yo`) from release binaries, or `cargo install` from a checkout; then `yo setup` installs a harness's files (`Harness::bundle`) from copies built into yo, with a manifest so a rerun or `--uninstall` knows its own copies, and every command says when an upgrade left them stale (#34) |
 | git, gh | keep shelling out to the `git` and `gh` CLIs, not a git library: same behavior as today, same auth, same config |
 
 ## Principles
@@ -173,8 +175,9 @@ Where the browser path is still used:
 Costs, accepted:
 
 - **Signing.** Builds for yourself can be signed ad hoc. Shipping to others
-  needs an Apple Developer ID and notarization on each release; that comes
-  with the distribution question (see [open questions](#open-questions)).
+  needs an Apple Developer ID and notarization on each release. The CLI
+  doesn't: a Homebrew formula's download isn't quarantined, and arm64
+  builds are signed ad hoc by the linker.
 - **One engine.** On macOS Tauri uses the system's WebKit, so the UI is tested
   against WebKit, not Chrome.
 
@@ -970,9 +973,9 @@ been scaffolding for that one day. Instead:
     a failed clone says so in one line
   - a settings layer that can't be written stops the create, before the
     record and the launch, rather than launching without it
-  - yo is a binary that `install.sh` builds with cargo, so installing needs
-    Rust (rustup); python3 is needed only for the installer's iTerm2
-    workgroup step
+  - yo is a binary, from Homebrew or `cargo install`; `yo setup` does what
+    `install.sh` did besides placing it, from copies built into yo (or
+    links, `--link`), with no python3 (#34)
 - **Fakes can't prove the AppleScript drives iTerm correctly.** A short manual
   checklist covered that, run once before the switch: start, start in a new
   window, reach with a message, title, down, resume-all.
@@ -1176,7 +1179,5 @@ These stay open. Nothing in the design depends on how they're answered.
   aren't connected over Remote Control are useful enough to need anything
   more, and how replies with no reply address show up.
 - **The hub:** self-hosted, on a home machine, or hosted. Phase 7.
-- **Distribution:** stay "clone and `install.sh`" (which would then run
-  `cargo build`), release binaries, or a Homebrew tap.
 - **An MCP server:** coordinating sessions calling yo as tools rather than
   shelling out. It would sit on the yo API, like the TUI.

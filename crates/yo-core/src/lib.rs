@@ -35,6 +35,7 @@ pub mod registry;
 pub mod resolve;
 pub mod runner;
 pub mod session;
+pub mod setup;
 pub mod sweep;
 pub mod sys;
 
