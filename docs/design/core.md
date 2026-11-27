@@ -295,7 +295,7 @@ pub trait Sys: Send + Sync {
     fn env(&self, key: &str) -> Option<String>;      // Some("") is set but empty
     fn home(&self) -> PathBuf;
     fn cmd(&self) -> &dyn CommandRunner;             // git, gh, osascript, claude, codex
-    fn procs(&self) -> &dyn ProcessTable;            // a pid's comm (None: not running), its tty
+    fn procs(&self) -> &dyn ProcessTable;            // a pid's comm (None: not running), tty, ppid; and signal(pid, HUP | TERM)
     fn hostname(&self) -> String;
     fn exe(&self) -> PathBuf;                        // this yo, for hooks that call it back
     fn sleep(&self, d: Duration);                    // iTerm loading a profile yo just wrote
@@ -310,8 +310,9 @@ pub trait CommandRunner: Send + Sync {
 Files are touched with plain `std::fs` under paths the `Sys` gives (`home`, and
 XDG variables via `env`), so a throwaway `HOME` sandboxes them, as today.
 
-The real `Sys` takes its randomness from `/dev/urandom` and asks `ps` whether a
-pid is alive and what it is, rather than pulling in `uuid`, `rand` or `libc`
+The real `Sys` takes its randomness from `/dev/urandom`, asks `ps` whether a
+pid is alive and what it is, and sends signals with `kill` (only `down` does,
+to end a session its tab left running), rather than pulling in `uuid`, `rand` or `libc`
 (the workspace forbids `unsafe`). The fake lives in `fake.rs`, not under
 `sys.rs`, so the banned calls `sys.rs` may make aren't open to it; other
 crates use it only as a dev-dependency feature.
@@ -519,9 +520,11 @@ turns it into events. The core never prints.
 
 As built in phase 1, not every command that changes something has a plan
 yet. `resume-all` plans each session with `plan_resume`, but choosing which
-ones (only `ready`) happens in `yo-cli`, and its `--dry-run` lists them
-rather than printing a plan; `resume` refuses running and gone sessions in
-`yo-cli` too. `adopt`, `forget` and `title` write the ledger directly, and
+ones (only `ready`, and not those running without a tab, which it lists
+instead) happens in `yo-cli`, and its `--dry-run` lists them rather than
+printing a plan; `resume` refuses running and gone sessions in `yo-cli` too.
+What a running session without a tab is, and the wait for those still
+exiting, are `yo-core`'s (`reach::tabless`, `reach::await_tabless`). `adopt`, `forget` and `title` write the ledger directly, and
 `title` and `adopt` call the iTerm runner's own methods rather than going
 through `Runner`. `config edit` runs `$EDITOR` outside `Sys`. These move
 into `yo-core` plans (`plan_resume_all` and small ones for the ledger

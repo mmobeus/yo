@@ -96,7 +96,7 @@ fn a_worktree_is_removed_its_branch_kept() {
     let t = T::new();
     t.in_worktree("");
     t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:UUID");
-    let (found, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    let (found, plan) = plan_down(&t.ctx(), &DryLaunch, &t.wt(), DownOpts::default()).unwrap();
     assert_eq!(
         found,
         Found::Worktree {
@@ -134,6 +134,7 @@ fn uncommitted_work_needs_discard_with_yes() {
     t.in_worktree(" M f\n?? new\n");
     let m = refused(plan_down(
         &t.ctx(),
+        &DryLaunch,
         &t.wt(),
         DownOpts {
             yes: true,
@@ -154,7 +155,7 @@ fn uncommitted_work_needs_discard_with_yes() {
             discard: true,
         },
     ] {
-        let (found, plan) = plan_down(&t.ctx(), &t.wt(), o).unwrap();
+        let (found, plan) = plan_down(&t.ctx(), &DryLaunch, &t.wt(), o).unwrap();
         assert!(matches!(found, Found::Worktree { dirty, .. } if dirty.len() == 2));
         assert!(matches!(
             plan.actions[0],
@@ -178,6 +179,7 @@ fn an_agents_home_is_refused() {
     );
     let m = refused(plan_down(
         &t.ctx(),
+        &DryLaunch,
         &t.wt(),
         DownOpts {
             yes: true,
@@ -197,7 +199,7 @@ fn an_unknown_repo_is_refused() {
         &["rev-parse", "--show-toplevel"],
         &other.display().to_string(),
     );
-    let m = refused(plan_down(&t.ctx(), &other, DownOpts::default()));
+    let m = refused(plan_down(&t.ctx(), &DryLaunch, &other, DownOpts::default()));
     assert_eq!(m, "couldn't identify the repo from its remotes");
 }
 
@@ -206,7 +208,7 @@ fn in_place_touches_nothing_on_disk() {
     let t = T::new();
     let dir = t.home.join("src/api");
     // Not a yo worktree: only its record and the tab.
-    let (found, plan) = plan_down(&t.ctx(), &dir, DownOpts::default()).unwrap();
+    let (found, plan) = plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()).unwrap();
     assert_eq!(
         found,
         Found::InPlace {
@@ -232,7 +234,8 @@ fn in_place_touches_nothing_on_disk() {
             ..Record::default()
         },
     );
-    let (found, _) = plan_down(&t.ctx(), &dir.join("sub"), DownOpts::default()).unwrap();
+    let (found, _) =
+        plan_down(&t.ctx(), &DryLaunch, &dir.join("sub"), DownOpts::default()).unwrap();
     assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-a"));
     // Two there: neither, unless this session's id picks one.
     t.record(
@@ -244,15 +247,15 @@ fn in_place_touches_nothing_on_disk() {
             ..Record::default()
         },
     );
-    let (found, _) = plan_down(&t.ctx(), &dir, DownOpts::default()).unwrap();
+    let (found, _) = plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()).unwrap();
     assert!(matches!(found, Found::InPlace { key: None, .. }));
     t.sys.set_env("CLAUDE_CODE_SESSION_ID", "b");
-    let (found, plan) = plan_down(&t.ctx(), &dir, DownOpts::default()).unwrap();
+    let (found, plan) = plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()).unwrap();
     assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-b"));
     assert_eq!(plan.actions[0], Action::DropRecord(Key("id-b".into())));
     // YO_SESSION_KEY names it outright.
     t.sys.set_env("YO_SESSION_KEY", "id-a");
-    let (found, _) = plan_down(&t.ctx(), &dir, DownOpts::default()).unwrap();
+    let (found, _) = plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()).unwrap();
     assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-a"));
 }
 
@@ -260,7 +263,7 @@ fn in_place_touches_nothing_on_disk() {
 fn planning_runs_nothing_that_changes() {
     let t = T::new();
     t.in_worktree(" M f\n");
-    let _ = plan_down(&t.ctx(), &t.wt(), DownOpts::default());
+    let _ = plan_down(&t.ctx(), &DryLaunch, &t.wt(), DownOpts::default());
     for c in t.sys.calls() {
         let sub = c.args.get(2).map(String::as_str);
         assert!(
@@ -348,7 +351,7 @@ fn a_teardown_against_real_git() {
 
     // Clean, with a commit not pushed: the worktree goes, its branch (and
     // the commit) stays, and only its own record is dropped.
-    let (found, plan) = plan_down(&ctx, &wt("feat"), yes).unwrap();
+    let (found, plan) = plan_down(&ctx, &DryLaunch, &wt("feat"), yes).unwrap();
     assert!(
         matches!(&found, Found::Worktree { dirty, unpushed, .. } if dirty.is_empty() && unpushed.len() == 1),
         "{found:?}"
@@ -362,7 +365,7 @@ fn a_teardown_against_real_git() {
 
     // Clean when planned, dirty by the time it runs: the plan didn't ask
     // for --force, so git refuses and everything stays, the record too.
-    let (_, plan) = plan_down(&ctx, &wt("late"), yes).unwrap();
+    let (_, plan) = plan_down(&ctx, &DryLaunch, &wt("late"), yes).unwrap();
     assert!(plan.actions.contains(&Action::RemoveWorktree {
         repo: clone.clone(),
         path: wt("late"),
@@ -401,9 +404,42 @@ fn running(t: &T) {
     t.sys.add_child(30, "claude", Some("ttys009"), 20);
 }
 
-/// Ends sessions for real (on the fake), and says what it closed.
+/// Ends sessions for real (on the fake), says what it closed, and runs in
+/// tab `pty-W/40`.
 #[derive(Default)]
 struct Closer(std::sync::Mutex<Vec<(String, Option<String>)>>);
+
+/// The same, run in another tab.
+#[derive(Default)]
+struct Elsewhere;
+
+impl crate::runner::Runner for Elsewhere {
+    fn kind(&self) -> crate::runner::RunnerKind {
+        crate::runner::RunnerKind::Iterm
+    }
+    fn launch(
+        &self,
+        _: &dyn crate::sys::Sys,
+        _: &crate::runner::LaunchSpec,
+    ) -> Result<crate::runner::Launched> {
+        unreachable!()
+    }
+    fn focus(
+        &self,
+        _: &dyn crate::sys::Sys,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<crate::runner::Focused> {
+        unreachable!()
+    }
+    fn close_own_tab(&self, _: &dyn crate::sys::Sys, _: &str, _: Option<&str>) -> bool {
+        true
+    }
+    fn own_tab(&self, _: &dyn crate::sys::Sys, _: &str) -> Option<String> {
+        Some("pty-W/9".into())
+    }
+}
 
 impl crate::runner::Runner for Closer {
     fn kind(&self) -> crate::runner::RunnerKind {
@@ -432,6 +468,9 @@ impl crate::runner::Runner for Closer {
             .push((session.to_string(), tab.map(str::to_string)));
         true
     }
+    fn own_tab(&self, _: &dyn crate::sys::Sys, session: &str) -> Option<String> {
+        (session == "w0t1p0:CLI").then(|| "pty-W/40".into())
+    }
 }
 
 #[test]
@@ -441,7 +480,7 @@ fn from_a_shell_its_session_is_ended_before_the_tab_closes() {
     let t = T::new();
     running(&t);
     t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:CLI");
-    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    let (_, plan) = plan_down(&t.ctx(), &Closer::default(), &t.wt(), DownOpts::default()).unwrap();
     assert_eq!(
         plan.actions[3..],
         [
@@ -479,7 +518,7 @@ fn from_inside_it_a_detached_helper_ends_it_after_the_close() {
     running(&t);
     t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:CHAT");
     t.sys.set_env("CLAUDE_CODE_SESSION_ID", "s1");
-    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    let (_, plan) = plan_down(&t.ctx(), &DryLaunch, &t.wt(), DownOpts::default()).unwrap();
     assert_eq!(
         plan.actions[3..],
         [
@@ -514,7 +553,7 @@ fn a_session_not_running_is_left_alone_and_a_dry_run_ends_nothing() {
     running(&t);
     // Not running: nothing to end.
     fs::remove_file(t.home.join(".claude/sessions/30.json")).unwrap();
-    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    let (_, plan) = plan_down(&t.ctx(), &DryLaunch, &t.wt(), DownOpts::default()).unwrap();
     assert!(
         !plan
             .actions
@@ -523,7 +562,8 @@ fn a_session_not_running_is_left_alone_and_a_dry_run_ends_nothing() {
     );
     // Running, under a dry runner: said, not done.
     running(&t);
-    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:CLI");
+    let (_, plan) = plan_down(&t.ctx(), &Closer::default(), &t.wt(), DownOpts::default()).unwrap();
     let end: Vec<Action> = plan
         .actions
         .into_iter()
@@ -551,12 +591,48 @@ fn from_inside_it_with_no_tab_to_close_it_is_left_running() {
     let t = T::new();
     running(&t);
     t.sys.set_env("CLAUDE_CODE_SESSION_ID", "s1");
-    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    let (_, plan) = plan_down(&t.ctx(), &DryLaunch, &t.wt(), DownOpts::default()).unwrap();
     assert_eq!(
         plan.actions[3..],
         [Action::CloseOwnTab {
             session: None,
             tab: Some("pty-W/40".into()),
         }]
+    );
+}
+
+#[test]
+fn from_a_shell_in_another_tab_it_is_left_running() {
+    // `yo down` typed in some other tab's shell under the directory: that
+    // session isn't this tab's to end.
+    let t = T::new();
+    running(&t);
+    t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:OTHER");
+    let (_, plan) = plan_down(&t.ctx(), &Elsewhere, &t.wt(), DownOpts::default()).unwrap();
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::EndSession { .. }))
+    );
+    assert_eq!(
+        plan.notes,
+        [Note::Info(
+            "its claude session (pid 30) isn't in this tab, so it's left running".into()
+        )]
+    );
+    // A runner that can't say which tab it's in ends nothing either.
+    let (_, plan) = plan_down(&t.ctx(), &DryLaunch, &t.wt(), DownOpts::default()).unwrap();
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::EndSession { .. }))
+    );
+    assert_eq!(
+        plan.notes,
+        [Note::Info(
+            "its claude session (pid 30) is left running: yo can't tell it's in this tab".into()
+        )]
     );
 }

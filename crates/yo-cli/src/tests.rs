@@ -640,7 +640,7 @@ fn down_dry_run_shows_what_it_would_do_and_changes_nothing() {
 }
 
 #[test]
-fn down_from_a_shell_says_it_ends_the_session_still_running() {
+fn down_from_a_shell_ends_the_session_in_its_tab() {
     let (t, sys, api, wt) = with_session();
     let (a, w) = (api.display().to_string(), wt.display().to_string());
     sys.answer_ok("git", &["-C", &w, "rev-parse", "--show-toplevel"], &w);
@@ -650,8 +650,16 @@ fn down_from_a_shell_says_it_ends_the_session_still_running() {
         &format!("{a}/.git"),
     );
     sys.answer_ok("git", &["-C", &w, "status", "--porcelain"], "");
+    // The real runner: iTerm says which tab this shell is in.
+    sys.set_env("YO_DRY_LAUNCH", "");
     sys.set_env("ITERM_SESSION_ID", "w0t1p0:CLI");
-    // Its claude still runs (pid 77), in the tab's other member.
+    sys.answer_ok("osascript", &["-", "CLI"], "pty-W/40\n");
+    // Its claude still runs (pid 77) in this tab, the one it was recorded in.
+    let rec = t
+        .path()
+        .join(".local/state/yo/sessions/src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"tab": "pty-W/40", "#, 1)).unwrap();
     let sessions = t.path().join(".claude/sessions");
     fs::create_dir_all(&sessions).unwrap();
     fs::write(
@@ -670,17 +678,16 @@ fn down_from_a_shell_says_it_ends_the_session_still_running() {
         "{}",
         out.out
     );
-    // With the dry runner, it says so and sends nothing.
+    assert!(sys.signals().is_empty());
     sys.answer_ok("git", &["-C", &a, "worktree", "remove", &w], "");
     let out = yo(&sys, &wt, &["down", "--yes"]);
     assert_eq!(out.code, 0, "{}", out.err);
     assert!(
-        out.out
-            .contains("dry end: the claude session abcdef12-0000-4000-8000-000000000000 (pid 77)"),
+        out.out.contains("ended the claude session (pid 77)"),
         "{}",
         out.out
     );
-    assert!(sys.signals().is_empty());
+    assert_eq!(sys.signals(), [(77, yo_core::sys::Signal::Hup)]);
 }
 
 #[test]

@@ -20,7 +20,7 @@ as `--flag=value` or `--flag value`.
 | --- | --- |
 | `yo [flags] [INPUT] [message]` | start a session (see [flags](#flags-for-starting-a-session)) |
 | `yo NAME ['message']` | reach a session, agent home or home by name ([`yo NAME`](#yo-name)) |
-| `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, end its claude if it's still running, close its tab. Aliases `rm`, `teardown` |
+| `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, end its claude if it's still running in this tab, close its tab. Aliases `rm`, `teardown` |
 | `yo sessions` | list the ledger: running, running (no tab), ready, ended, gone. Alias `ls` |
 | `yo resume [<name\|id\|dir>] [--model=M] [--new-window\|--tab]` | reopen one session; bare, list them |
 | `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live; waits a few seconds for sessions whose tab was just closed, and lists those still running without a tab instead of resuming them |

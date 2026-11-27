@@ -74,7 +74,7 @@ It warns about anything uncommitted or unpushed, removes the worktree (the
 branch is kept), and closes the tab. If claude is still running in the tab
 (you ran `yo down` in the CLI shell), it ends claude first, and says so
 before you confirm: closing a tab while it shows CLI would leave claude
-running with no tab.
+running with no tab. A session running in another tab is left alone.
 
 ### Seeing what's running
 

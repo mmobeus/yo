@@ -45,6 +45,11 @@ pub trait Runner {
     fn tabs(&self, _sys: &dyn Sys) -> Option<Tabs> {
         None
     }
+    /// The tab holding `session`, the one yo runs in, as [`Launched::Opened`]
+    /// gives tabs. `None`: it can't say.
+    fn own_tab(&self, _sys: &dyn Sys, _session: &str) -> Option<String> {
+        None
+    }
     /// Whether it really ends sessions (a dry runner says it would).
     fn ends_sessions(&self) -> bool {
         true

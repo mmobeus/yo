@@ -150,9 +150,9 @@ Usage:
                        it can run from inside claude (the /yo-down skill); it
                        refuses to lose uncommitted work unless --discard.
                        --dry-run reports what would happen and stops.
-                       If the session's claude is still running (down run
-                       from the CLI shell), down ends it before closing the
-                       tab.
+                       If the session's claude is still running in this tab
+                       (down run from the CLI shell), down ends it before
+                       closing the tab; one in another tab is left running.
   yo agent [NAME] [--model=M] [--new-window|--tab] [--dry-run] ['message']
                        Start, or bring back, agent NAME's home session: a
                        long-lived checkout of the repo's base branch at

@@ -427,6 +427,10 @@ impl Runner for Iterm {
         true
     }
 
+    fn own_tab(&self, sys: &dyn Sys, session: &str) -> Option<String> {
+        Iterm::own_tab(sys, session)
+    }
+
     /// Only while iTerm runs (asking it would start it); with it not
     /// running, nothing has a tab.
     fn tabs(&self, sys: &dyn Sys) -> Option<Tabs> {

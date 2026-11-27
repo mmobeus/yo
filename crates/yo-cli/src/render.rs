@@ -7,9 +7,10 @@ use yo_core::Ctx;
 use yo_core::harness::{LiveSession, Prep, claude};
 use yo_core::ledger::{Entry, Record, State, state_of};
 use yo_core::plan::{Action, BranchSpec, Note, Plan, Report};
+use yo_core::reach::tabless;
 use yo_core::registry::Mode;
+use yo_core::runner::Tabs;
 use yo_core::runner::{LaunchSpec, Launched};
-use yo_core::runner::{Tab, Tabs, tab_of};
 
 /// `yo help`: the guide, then what yo can see.
 pub fn help(ctx: &Ctx) -> String {
@@ -110,11 +111,10 @@ pub fn sessions(
     }
     let status = |r: &Record| {
         let state = state_of(r, live);
-        match state {
-            State::Running { pid } if tab_of(&*ctx.sys, r.tab(), pid, shown) == Tab::Gone => {
-                (state, "running (no tab)")
-            }
-            _ => (state, state.as_str()),
+        if tabless(ctx, r, live, shown).is_some() {
+            (state, "running (no tab)")
+        } else {
+            (state, state.as_str())
         }
     };
     let rows: Vec<(&Entry, State, &str)> = entries

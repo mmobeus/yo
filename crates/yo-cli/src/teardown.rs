@@ -15,6 +15,15 @@ use crate::run::runner;
 
 type Res = Result<i32, Box<dyn std::error::Error>>;
 
+/// What planning found, under the summary (so a dry run shows it too).
+fn say_notes(out: &mut dyn Write, notes: &[Note]) -> std::io::Result<()> {
+    for n in notes {
+        let (Note::Info(t) | Note::Detail(t) | Note::Warn(t)) = n;
+        writeln!(out, "  {t}")?;
+    }
+    Ok(())
+}
+
 /// A yes from stdin.
 fn confirm(out: &mut dyn Write, q: &str) -> bool {
     let _ = write!(out, "{q} [y/N] ");
@@ -25,8 +34,10 @@ fn confirm(out: &mut dyn Write, q: &str) -> bool {
 }
 
 pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
+    let runner = runner(ctx);
     let (found, plan) = plan_down(
         ctx,
+        &*runner,
         cwd,
         DownOpts {
             yes: d.yes,
@@ -77,7 +88,13 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
                 )?,
             }
             writeln!(out, "{tab}")?;
-            ("Close this tab?", false, None)
+            say_notes(out, &plan.notes)?;
+            let q = if ending.is_some() {
+                "End its session and close this tab?"
+            } else {
+                "Close this tab?"
+            };
+            (q, false, None)
         }
         Found::Worktree {
             repo,
@@ -110,8 +127,13 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
                 }
             }
             writeln!(out, "\n{tab}")?;
+            say_notes(out, &plan.notes)?;
             (
-                "Remove the worktree and close this tab?",
+                if ending.is_some() {
+                    "Remove the worktree, end its session and close this tab?"
+                } else {
+                    "Remove the worktree and close this tab?"
+                },
                 !dirty.is_empty(),
                 Some(format!("worktree removed; branch '{branch}' kept.")),
             )
@@ -138,12 +160,11 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
         .actions
         .into_iter()
         .partition(|a| matches!(a, Action::CloseOwnTab { .. } | Action::EndSession { .. }));
-    let runner = runner(ctx);
     let mut report = render::Progress::new(out);
     execute(
         ctx,
         &Plan {
-            notes: plan.notes,
+            notes: vec![],
             actions: rest,
         },
         &*runner,

@@ -182,6 +182,8 @@ fn a_new_branch_from_the_base() {
         l.argv.env,
         [("YO_SESSION_KEY".into(), "src__api-worktrees__feat".into())]
     );
+    // The record that gets the tab it opens in.
+    assert_eq!(l.record, Some(record(&p).key.clone()));
     assert_eq!(l.argv.command, "claude --permission-mode auto");
     // After the settings layer (`--settings FILE`).
     assert_eq!(l.argv.args[2..6], ["--name", "feat", "--session-id", ID]);

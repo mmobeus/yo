@@ -2,16 +2,13 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use yo_core::Ctx;
 use yo_core::git;
-use yo_core::harness::LiveSession;
 use yo_core::ledger::{Entry, State, state_of};
 use yo_core::plan::execute;
-use yo_core::reach::{ResumeOpts, ensure_guest, plan_resume};
+use yo_core::reach::{ResumeOpts, await_tabless, ensure_guest, plan_resume, tabless};
 use yo_core::runner::iterm::Iterm;
-use yo_core::runner::{Tab, Tabs, tab_of};
 use yo_core::session::{self, Found, classify};
 
 use crate::cli::{Adopt, Resume, ResumeAll};
@@ -77,8 +74,7 @@ pub fn resume(ctx: &mut Ctx, r: &Resume, cwd: &Path, out: &mut dyn Write) -> Res
     let live = ctx.live();
     match state_of(&e.record, &live) {
         State::Running { pid } => {
-            let shown = shown(ctx, &live);
-            if tab_of(&*ctx.sys, e.record.tab(), pid, shown.as_ref()) == Tab::Gone {
+            if tabless(ctx, &e.record, &live, shown(ctx, &live).as_ref()).is_some() {
                 return Err(format!(
                     "{name} is still running (pid {pid}), but its tab was closed; end it with kill -HUP {pid}, then yo resume {name}"
                 )
@@ -119,27 +115,19 @@ pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
     let mut live = ctx.live();
     let shown = shown(ctx, &live);
     let entries = ctx.ledger().all();
-    // A session whose tab was just closed (iTerm quit, its windows closed)
-    // may still be on its way out: iTerm ends it after its undo window.
-    // Give those a moment, so they're resumed rather than skipped.
-    if !r.dry_run
+    // Sessions whose tab just closed may still be exiting: given a moment,
+    // they're resumed rather than skipped.
+    let waiting = !r.dry_run
         && entries
             .iter()
-            .any(|e| tabless(ctx, e, &live, shown.as_ref()).is_some())
-    {
+            .any(|e| tabless(ctx, &e.record, &live, shown.as_ref()).is_some());
+    if waiting {
         writeln!(
             out,
             "==> waiting for sessions whose tab just closed to exit"
         )?;
-        let mut waited = Duration::ZERO;
-        while waited < EXIT_WAIT
-            && entries
-                .iter()
-                .any(|e| tabless(ctx, e, &live, shown.as_ref()).is_some())
-        {
-            ctx.sys.sleep(EXIT_POLL);
-            waited += EXIT_POLL;
-            live = ctx.live();
+        if let Some(now) = await_tabless(ctx, &entries, shown.as_ref(), &live) {
+            live = now;
         }
     }
     let mut n = 0;
@@ -148,7 +136,7 @@ pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
     for e in entries {
         let st = state_of(&e.record, &live);
         let name = e.record.name.clone().unwrap_or_else(|| e.key.0.clone());
-        if let Some(pid) = tabless(ctx, &e, &live, shown.as_ref()) {
+        if let Some(pid) = tabless(ctx, &e.record, &live, shown.as_ref()) {
             stuck.push_str(&format!("  {name}  (pid {pid})\n"));
             continue;
         }
@@ -194,20 +182,6 @@ pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
         writeln!(out, "==> resumed {n} session(s)")?;
     }
     Ok(0)
-}
-
-/// How long `resume-all` waits for sessions whose tab was closed to exit.
-const EXIT_WAIT: Duration = Duration::from_secs(6);
-const EXIT_POLL: Duration = Duration::from_millis(500);
-
-/// The pid of `e`'s session, if it's running but its tab is gone.
-fn tabless(ctx: &Ctx, e: &Entry, live: &[LiveSession], shown: Option<&Tabs>) -> Option<u32> {
-    match state_of(&e.record, live) {
-        State::Running { pid } if tab_of(&*ctx.sys, e.record.tab(), pid, shown) == Tab::Gone => {
-            Some(pid)
-        }
-        _ => None,
-    }
 }
 
 /// `yo adopt`: records the session it's run from (its id from the harness's
