@@ -265,10 +265,7 @@ fn release(root: &Path) -> Result<(), String> {
     let tag = need("YO_RELEASE_TAG")?;
     need("GH_TOKEN")?;
     let tap_token = need("HOMEBREW_TAP_TOKEN")?;
-    let version = tag
-        .strip_prefix('v')
-        .ok_or_else(|| format!("the tag is {tag}; a release tag is v<version>"))?;
-    let pre = parse_version(version)?;
+    let (version, pre) = tag_version(&tag)?;
     let built = dist(root, Some(version))?;
     let mut args = vec![
         "release".to_string(),
@@ -318,6 +315,15 @@ fn release(root: &Path) -> Result<(), String> {
         return Err(format!("gh api .../dispatches: {status}"));
     }
     Ok(())
+}
+
+/// A release tag's version, and whether it's a pre-release (marked one on
+/// GitHub, and kept from the tap).
+fn tag_version(tag: &str) -> Result<(&str, bool), String> {
+    let version = tag
+        .strip_prefix('v')
+        .ok_or_else(|| format!("the tag is {tag}; a release tag is v<version>"))?;
+    Ok((version, parse_version(version)?))
 }
 
 /// Checks a release version is `X.Y.Z`, or `X.Y.Z-<pre>` for a
@@ -596,7 +602,16 @@ fn load_dotenv(path: &Path) -> Result<Vec<(String, String)>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_version;
+    use super::{parse_version, tag_version};
+
+    #[test]
+    fn release_tags() {
+        assert_eq!(tag_version("v0.2.0"), Ok(("0.2.0", false)));
+        assert_eq!(tag_version("v0.2.0-rc.1"), Ok(("0.2.0-rc.1", true)));
+        assert!(tag_version("0.2.0").is_err());
+        assert!(tag_version("v0.2").is_err());
+        assert!(tag_version("release-0.2.0").is_err());
+    }
 
     #[test]
     fn release_versions() {
