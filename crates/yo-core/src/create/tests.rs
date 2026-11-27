@@ -341,6 +341,25 @@ fn unnamed_sessions_take_their_codename_as_title() {
 }
 
 #[test]
+fn an_unnamed_name_already_in_the_ledger_gets_a_suffix() {
+    // Two started in the same second (#52).
+    let t = T::new("");
+    let mut e = crate::ledger::Entry {
+        key: crate::ledger::Key("id-x".into()),
+        record: crate::ledger::Record {
+            name: Some("sesh_20261126_085422".into()),
+            ..Default::default()
+        },
+    };
+    t.ctx().ledger().write(&mut e).unwrap();
+    let p = t.plan_in(&t.home, |_| {}).unwrap();
+    assert_eq!(
+        record(&p).record.name.as_deref(),
+        Some("sesh_20261126_085422_2")
+    );
+}
+
+#[test]
 fn in_place() {
     let t = T::new("");
     let dir = t.home.join("scratch");
