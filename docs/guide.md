@@ -430,6 +430,13 @@ commands that start that way (it keeps the answer in `~/.codex/rules`);
 The statusline shows the model, the session's Claude name (📡, what you'd
 give `--from` or `yo NAME`), the branch, context used, cost and time.
 
+A Codex session gets Codex's own status line, set to something close: the
+model and its reasoning effort, the directory, the branch, context used and
+how much of the five-hour limit is left. It can't show yo's name (Codex
+names a session only with `/rename`); the tab's title has it. A status line
+of your own wins: yo leaves its out when `~/.codex/config.toml` sets
+`[tui] status_line`, or `harnesses.codex` passes `-c tui.status_line=...`.
+
 ### iTerm2
 
 - **One window, many tabs.** Sessions open as tabs in one shared window, so

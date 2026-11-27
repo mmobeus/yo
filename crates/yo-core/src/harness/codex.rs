@@ -18,6 +18,9 @@
 //!   runs.
 //! - **The codename** goes in as developer instructions
 //!   (`-c developer_instructions=...`), so the first message stays as it is.
+//! - **The status line:** yo passes `-c tui.status_line=[...]`
+//!   ([`STATUS_LINE`]), unless `config.toml` or the configured command
+//!   sets one (a `-c` would beat the person's own).
 //! - **Trust:** Codex asks to trust a git repo once, and keeps the answer
 //!   in `~/.codex/config.toml` under the main clone (`[projects."<clone>"]`),
 //!   which every worktree of it inherits. A `-c projects...` override
@@ -64,6 +67,12 @@ mod hooks;
 
 /// Its name, in config and the ledger.
 pub const NAME: &str = "codex";
+
+/// The status line yo gives a session, as TOML: Claude's (`claude/statusline.sh`)
+/// as near as Codex's items go. Codex can't show yo's name: it names a
+/// thread only by `/rename`, and the tab's title has it anyway.
+const STATUS_LINE: &str =
+    r#"["model-with-reasoning","current-dir","git-branch","context-used","five-hour-limit"]"#;
 
 #[derive(Debug, Default)]
 pub struct Codex;
@@ -176,7 +185,8 @@ impl Harness for Codex {
     /// a repo yo trusts, a question whether to trust its main clone in
     /// Codex's config; otherwise, a warning that Codex will ask in the
     /// tab. And a warning when yo's hook is in Codex's hooks file but not
-    /// approved yet, so Codex will stop at its review first.
+    /// approved yet, so Codex will stop at its review first. And yo's status
+    /// line, unless Codex's config or the configured command sets one.
     fn prepare(&self, ctx: &Ctx, p: &PrepareAsk<'_>) -> Result<Prepared> {
         let sys = &*ctx.sys;
         let home = codex_home(sys);
@@ -211,6 +221,11 @@ impl Harness for Codex {
                     out.notes.push(Note::Warn(otherwise));
                 }
             }
+        }
+
+        // A status line like Claude's, unless the person has their own.
+        if !cfg.sets_status_line() && !p.command.contains("tui.status_line") {
+            out.args = vec!["-c".into(), format!("tui.status_line={STATUS_LINE}")];
         }
 
         if let Some(h) = self.global_hook(sys)
@@ -471,6 +486,7 @@ fn flags(s: &SessionSpec) -> Vec<String> {
             ))
         ));
     }
+    args.extend(s.args.iter().cloned());
     if let Some(m) = &s.model {
         args.push("-m".into());
         args.push(m.clone());

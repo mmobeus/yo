@@ -130,6 +130,16 @@ impl Config {
             .map(|(_, t)| t)
     }
 
+    /// Whether the file sets Codex's status line (`tui.status_line`, or a
+    /// `tui = { ... }` that might).
+    pub fn sets_status_line(&self) -> bool {
+        self.has(&["tui", "status_line"])
+            || self
+                .defs
+                .iter()
+                .any(|d| !d.table && d.path.len() == 1 && d.path[0] == "tui")
+    }
+
     /// Whether the hook Codex keys as `key` (`<hooks.json>:session_end:0:0`)
     /// has been approved in its `/hooks` screen.
     pub fn hook_approved(&self, key: &str) -> bool {
@@ -300,6 +310,16 @@ trusted_hash = "sha256:ab"
         let c = read(CODEX);
         assert!(c.hook_approved("/h/.codex/hooks.json:session_end:0:0"));
         assert!(!c.hook_approved("/h/.codex/hooks.json:session_end:1:0"));
+    }
+
+    #[test]
+    fn a_status_line_is_the_persons_in_any_spelling() {
+        assert!(!read(CODEX).sets_status_line(), "[tui] without one");
+        assert!(!read("[tui]\nstatus_line_use_colors = false\n").sets_status_line());
+        assert!(read("[tui]\nstatus_line = [\n  \"model\",\n]\n").sets_status_line());
+        assert!(read("tui.status_line = [\"model\"]\n").sets_status_line());
+        assert!(read("tui = { status_line = [\"model\"] }\n").sets_status_line());
+        assert!(!read("[profiles.x]\ntui = 1\n").sets_status_line());
     }
 
     #[test]

@@ -198,6 +198,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
         .map(|x| x.key.clone())
         .or_else(|| reg.profile_of(repo, picked).map(|p| p.name.clone()))
         .unwrap_or_else(|| basename(&r.worktree));
+    let command = harness.command(reg, repo, picked);
     let prepared = harness.prepare(
         ctx,
         &PrepareAsk {
@@ -207,12 +208,13 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
             dir: &r.worktree,
             mode: r.mode_or_default(),
             trusted_clone: None,
+            command: &command,
         },
     )?;
     plan.notes.extend(prepared.notes);
     plan.actions.extend(prepared.actions);
     let spec = SessionSpec {
-        command: harness.command(reg, repo, picked),
+        command,
         dir: r.worktree.clone(),
         name: name.clone(),
         id: Some(id.to_string()),
@@ -221,6 +223,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
         codename: r.codename.clone().unwrap_or_default(),
         first_message: o.message.clone().filter(|m| !m.is_empty()),
         settings: prepared.settings,
+        args: prepared.args,
         remote_control: r.remote_control.clone(),
     };
     let mut argv = harness.resume_command(id, &spec);
@@ -314,6 +317,24 @@ mod tests {
         e.record.harness = None;
         let p = plan_reach(&c, &e, State::Ready, "feat", &o).unwrap();
         assert!(launch(&p).argv.command.starts_with("claude"));
+    }
+
+    #[test]
+    fn a_resumed_codex_session_keeps_yos_status_line() {
+        let t = TempDir::new().unwrap();
+        let (c, _) = ctx(&t);
+        let mut e = entry(&t);
+        e.record.harness = Some("codex".into());
+        e.record.agent = None;
+        let p = plan_reach(&c, &e, State::Ready, "feat", &ResumeOpts::default()).unwrap();
+        let a = &launch(&p).argv.args;
+        assert_eq!(a[0], "resume");
+        let i = a
+            .iter()
+            .position(|x| x.starts_with("tui.status_line=["))
+            .unwrap_or_else(|| panic!("{a:?}"));
+        assert_eq!(a[i - 1], "-c");
+        assert!(i < a.iter().position(|x| x == ID).unwrap(), "{a:?}");
     }
 
     #[test]

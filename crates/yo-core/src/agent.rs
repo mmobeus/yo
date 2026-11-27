@@ -145,6 +145,7 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         )));
     }
     let profile = reg.profile_of(Some(repo), None).map(|p| p.name.clone());
+    let command = harness.command(reg, Some(repo), None);
     let prepared = harness.prepare(
         ctx,
         &PrepareAsk {
@@ -154,6 +155,7 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
             dir: &wt,
             mode: Mode::Worktree,
             trusted_clone: trusted.then_some(repo.path.as_path()),
+            command: &command,
         },
     )?;
     plan.notes.extend(prepared.notes);
@@ -195,7 +197,7 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         },
     })));
     let spec = SessionSpec {
-        command: harness.command(reg, Some(repo), None),
+        command,
         dir: wt.clone(),
         name: format!("agent-{name}"),
         id,
@@ -204,6 +206,7 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         codename: title.clone(),
         first_message: brief,
         settings: prepared.settings,
+        args: prepared.args,
         remote_control: Some(rc.clone()),
     };
     let mut argv = harness.tui_command(&spec);

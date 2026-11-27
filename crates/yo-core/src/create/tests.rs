@@ -1000,6 +1000,39 @@ fn a_codex_worktree_of_an_untrusted_repo_is_only_warned_about() {
 }
 
 #[test]
+fn a_codex_session_gets_yos_status_line_unless_it_has_its_own() {
+    let codex = |r: &mut CreateRequest| {
+        r.args = args(&["feat"]);
+        r.harness = Some("codex".into());
+    };
+    let line = |t: &T| {
+        let l = launch(&t.plan(codex).unwrap()).clone();
+        l.argv
+            .args
+            .iter()
+            .position(|a| a.starts_with("tui.status_line="))
+            .map(|i| (l.argv.args[i - 1].clone(), l.argv.args[i].clone()))
+    };
+    let t = T::new("");
+    let (c, v) = line(&t).expect("yo's line");
+    assert_eq!(c, "-c");
+    assert!(
+        v.contains("\"git-branch\"") && v.contains("\"context-used\""),
+        "{v}"
+    );
+
+    // The person's own, in Codex's config: a -c would beat it.
+    let cfg = t.home.join(".codex/config.toml");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(&cfg, "[tui]\nstatus_line = [\"model\"]\n").unwrap();
+    assert_eq!(line(&t), None);
+
+    // Or in harnesses.codex, which comes first, so yo's would win.
+    let t = T::new(r#", "harnesses": {"codex": {"args": ["-c", "tui.status_line=[\"model\"]"]}}"#);
+    assert_eq!(line(&t), None);
+}
+
+#[test]
 fn an_unapproved_codex_hook_is_warned_about() {
     let t = T::new("");
     let codex = |r: &mut CreateRequest| {
