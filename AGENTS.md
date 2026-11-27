@@ -46,12 +46,26 @@ same PR.
 
 ## After opening it
 
-Run the review from the main checkout, on an up-to-date, clean `main`, not
-from the PR's branch: `/review-pr <number>` in Claude Code. (Run from the
-PR's branch, the PR's own edited reviewer would review it.) With any other
-harness, follow
-`.claude/skills/review-pr/SKILL.md` by hand: it's plain markdown, and the
-reviewers' rules are in [`docs/dev/review.md`](docs/dev/review.md). It posts
+Start the review yourself, in a new session: don't leave it for the
+maintainer. It runs from the main checkout, on an up-to-date, clean `main`,
+not from the PR's branch (run from the PR's branch, the PR's own edited
+reviewer would review it). Check the main checkout is on `main`, clean and
+current with `origin/main`, then, from it:
+
+```sh
+yo --here --from=<your session's name> --title='Review PR #<number>' - '/review-pr <number>'
+```
+
+That opens a Claude Code session in place in the main checkout with
+`/review-pr <number>` as its first prompt. `--from` has it message your
+session (with `SendMessage`) when the review is posted or it gets stuck.
+Your session's name is its Claude name: the name `yo sessions` lists for it
+(for a session yo started, its worktree's name). Tell the maintainer the
+review is running. If the main checkout isn't clean and on `main`, say so
+rather than changing it. With any other harness, follow
+`.claude/skills/review-pr/SKILL.md` by hand, from the main checkout: it's
+plain markdown, and the reviewers' rules are in
+[`docs/dev/review.md`](docs/dev/review.md). It posts
 one comment with blocking and non-blocking findings, and sets the
 `yo-review` status on the commit it reviewed, so a new push has no
 `yo-review` until it's reviewed again.
