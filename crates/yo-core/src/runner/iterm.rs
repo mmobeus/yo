@@ -329,7 +329,7 @@ impl Runner for Iterm {
         let mut warnings = Vec::new();
         let profile = self.ensure_profile(sys, &p).unwrap_or_else(|| {
             warnings.push(format!(
-                "couldn't build the '{}' profile; using default (title may be overwritten by claude)",
+                "couldn't build the '{}' profile; using default (title may be overwritten by the session)",
                 self.profile
             ));
             String::new()

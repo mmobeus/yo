@@ -44,6 +44,13 @@ pub trait Harness: Send + Sync {
             shell_word(to)
         )
     }
+    /// How else to reach one of its running sessions when yo can't find
+    /// its tab (`remote_control`: the session's Remote Control name), as
+    /// it follows "reach it ". `None` (the default): there's no other way,
+    /// short of ending it and resuming it.
+    fn reach_hint(&self, _remote_control: Option<&str>) -> Option<String> {
+        None
+    }
     /// Its sessions that are running now.
     fn live(&self, sys: &dyn Sys) -> Vec<LiveSession>;
     fn capabilities(&self) -> Capabilities;

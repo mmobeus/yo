@@ -25,14 +25,18 @@ pub struct ResumeOpts {
 }
 
 /// A running session's tab: brought forward, with the message typed in.
+/// `harness` (its name) says how else to reach it, if its tab can't be
+/// found; one yo doesn't know offers no other way.
 pub fn plan_focus(
     ctx: &Ctx,
+    harness: &str,
     pid: u32,
     tab: Option<&str>,
     label: &str,
     rc: Option<&str>,
     message: Option<&str>,
 ) -> Plan {
+    let reach = ctx.harness(harness).ok().and_then(|h| h.reach_hint(rc));
     let tty = ctx.sys.procs().tty(pid).map(|t| {
         if t.starts_with("/dev/") {
             t
@@ -47,7 +51,7 @@ pub fn plan_focus(
             tty,
             tab: tab.map(str::to_string),
             label: label.to_string(),
-            remote_control: rc.map(str::to_string),
+            reach,
             message: message.filter(|m| !m.is_empty()).map(str::to_string),
         }],
     }
@@ -59,6 +63,10 @@ pub fn plan_reach(ctx: &Ctx, e: &Entry, st: State, label: &str, o: &ResumeOpts) 
     match st {
         State::Running { pid } => Ok(plan_focus(
             ctx,
+            e.record
+                .harness
+                .as_deref()
+                .unwrap_or(crate::harness::DEFAULT),
             pid,
             e.record.tab(),
             label,
@@ -451,6 +459,30 @@ mod tests {
                 "feat is running (pid 43), but not in an iTerm tab yo can find;",
                 "reach it by Remote Control as feat-rc, or with SendMessage from another session (your message was not delivered);",
                 "or end it (kill -HUP 43) and yo resume it",
+            ]
+        );
+
+        // A Codex session has no SendMessage: ending and resuming it is all.
+        let mut e = entry(&t);
+        e.record.harness = Some("codex".into());
+        let p = plan_reach(
+            &c,
+            &e,
+            State::Running { pid: 43 },
+            "feat",
+            &ResumeOpts {
+                message: Some("hi".into()),
+                ..ResumeOpts::default()
+            },
+        )
+        .unwrap();
+        let mut said = Said::default();
+        execute(&c, &p, &DryLaunch, &mut said).unwrap();
+        assert_eq!(
+            said.0,
+            [
+                "feat is running (pid 43), but not in an iTerm tab yo can find (your message was not delivered);",
+                "end it (kill -HUP 43) and yo resume it",
             ]
         );
     }

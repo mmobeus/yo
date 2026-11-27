@@ -571,7 +571,10 @@ Phase 2 added `default_command` and `command` (its configured command), `ids`,
 `inside` (yo runs inside one of its sessions: Claude's `CLAUDECODE`) and
 `persona_dir` (where its agents are defined: Claude's `.claude/agents`, in a
 checkout and under `HOME`), `reported_id` (an id learned after launch) and
-`report_back` (how a session reaches the one `--from` names).
+`report_back` (how a session reaches the one `--from` names). `reach_hint`
+(#50) says how else to reach a running session whose tab yo can't find:
+Claude's is Remote Control or `SendMessage`; Codex has none, so yo only
+suggests ending and resuming it.
 
 ```rust
 pub trait Harness {

@@ -124,8 +124,9 @@ pub enum Action {
         tab: Option<String>,
         /// What the progress calls it.
         label: String,
-        /// Its Remote Control name, for when there's no tab to reach.
-        remote_control: Option<String>,
+        /// How else to reach it when there's no tab to find, as its
+        /// harness says ([`crate::harness::Harness::reach_hint`]).
+        reach: Option<String>,
         message: Option<String>,
     },
 }
@@ -365,7 +366,7 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                 tty,
                 tab,
                 label,
-                remote_control,
+                reach,
                 message,
             } => {
                 let got = match (tty, tab) {
@@ -404,24 +405,30 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                             .unwrap_or_default()
                     ))),
                     Focused::NotFound => {
-                        let rc = remote_control
-                            .as_deref()
-                            .map(|r| format!("by Remote Control as {r}, or "))
-                            .unwrap_or_default();
                         let lost = if message.is_some() {
                             " (your message was not delivered)"
                         } else {
                             ""
                         };
-                        out.note(&Note::Info(format!(
-                            "{label} is running (pid {pid}), but not in an iTerm tab yo can find;"
-                        )));
-                        out.note(&Note::Detail(format!(
-                            "reach it {rc}with SendMessage from another session{lost};"
-                        )));
-                        out.note(&Note::Detail(format!(
-                            "or end it (kill -HUP {pid}) and yo resume it"
-                        )));
+                        match reach {
+                            Some(r) => {
+                                out.note(&Note::Info(format!(
+                                    "{label} is running (pid {pid}), but not in an iTerm tab yo can find;"
+                                )));
+                                out.note(&Note::Detail(format!("reach it {r}{lost};")));
+                                out.note(&Note::Detail(format!(
+                                    "or end it (kill -HUP {pid}) and yo resume it"
+                                )));
+                            }
+                            None => {
+                                out.note(&Note::Info(format!(
+                                    "{label} is running (pid {pid}), but not in an iTerm tab yo can find{lost};"
+                                )));
+                                out.note(&Note::Detail(format!(
+                                    "end it (kill -HUP {pid}) and yo resume it"
+                                )));
+                            }
+                        }
                     }
                 }
             }
