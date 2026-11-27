@@ -559,6 +559,12 @@ impl Harness for Bare {
     fn name(&self) -> &str {
         "bare"
     }
+    fn default_command(&self) -> &str {
+        "bare"
+    }
+    fn ids(&self) -> IdPolicy {
+        IdPolicy::Reported
+    }
     fn live(&self, _sys: &dyn Sys) -> Vec<LiveSession> {
         Vec::new()
     }
@@ -585,11 +591,12 @@ impl Harness for Bare {
 fn a_harness_without_extras() {
     let t = T::new("");
     let mut ctx = t.ctx();
-    ctx.harnesses = vec![Box::new(Bare)];
+    ctx.harnesses = vec![Box::new(crate::harness::claude::Claude), Box::new(Bare)];
     let req = |f: fn(&mut CreateRequest)| {
         let mut r = CreateRequest {
             cwd: t.clone("api"),
             args: args(&["x"]),
+            harness: Some("bare".into()),
             ..CreateRequest::default()
         };
         f(&mut r);
@@ -597,6 +604,12 @@ fn a_harness_without_extras() {
     };
     let p = plan_create(&ctx, &req(|_| {})).unwrap();
     assert_eq!(record(&p).record.harness.as_deref(), Some("bare"));
+    // It reports its own id once it starts: none yet, and none passed.
+    assert_eq!(record(&p).record.session_id, None);
+    match plan_create(&ctx, &req(|r| r.harness = Some("nope".into()))) {
+        Err(Error::Refused(m)) => assert_eq!(m, "no harness 'nope' (yo has: claude, bare)"),
+        other => panic!("{other:?}"),
+    }
     // No settings layer, memory or trust: those are Claude's.
     assert!(!p.actions.iter().any(|a| matches!(
         a,

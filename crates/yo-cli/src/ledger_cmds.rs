@@ -188,12 +188,20 @@ pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
 /// environment, or `--session-id`), so `resume-all` brings it back.
 pub fn adopt(ctx: &Ctx, a: &Adopt, cwd: &Path, out: &mut dyn Write) -> Res {
     let sys = &*ctx.sys;
+    let own = ctx.own_session_of();
     let id = a
         .session_id
         .clone()
-        .or_else(|| sys.env_nonempty("CLAUDE_CODE_SESSION_ID"))
-        .ok_or("no session id: run this from inside a claude session, or pass --session-id=ID")?;
-    let harness = ctx.harnesses.first().ok_or("no harness")?;
+        .or_else(|| own.as_ref().map(|(_, id)| id.clone()))
+        .ok_or("no session id: run this from inside a coding session, or pass --session-id=ID")?;
+    // The harness it runs inside, else the one a session here would run on.
+    let harness = match own {
+        Some((h, _)) => h,
+        None => {
+            let repo = ctx.registry.detect_repo(sys, cwd);
+            ctx.harness(&ctx.registry.harness(None, repo, None))?
+        }
+    };
     let dir: PathBuf = harness
         .session_cwd(sys, &id)
         .unwrap_or_else(|| std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()));
@@ -274,7 +282,7 @@ pub fn title(ctx: &Ctx, title: Option<&str>, cwd: &Path, out: &mut dyn Write) ->
         .map(PathBuf::from)
         .unwrap_or_else(|| std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()));
     let key = sys.env_nonempty("YO_SESSION_KEY");
-    let id = sys.env_nonempty("CLAUDE_CODE_SESSION_ID");
+    let id = ctx.own_session();
     if !ctx
         .ledger()
         .retitle(key.as_deref(), id.as_deref(), &top, title)

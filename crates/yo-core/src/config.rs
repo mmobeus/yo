@@ -28,6 +28,19 @@ pub struct Config {
     pub repos_in: Vec<Text>,
     #[serde(default)]
     pub agents: Ordered<AgentCfg>,
+    /// Per-harness settings, by harness name.
+    #[serde(default)]
+    pub harnesses: Ordered<HarnessCfg>,
+}
+
+/// `harnesses.<name>`: how to run one harness.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessCfg {
+    /// Its command, as shell words (`codex`, `claude --permission-mode auto`).
+    pub command: Option<Text>,
+    /// Arguments added after the command, each one word.
+    pub args: Option<Words>,
 }
 
 /// `defaults`: global settings. Each has an environment variable that, when
@@ -37,6 +50,7 @@ pub struct Config {
 pub struct DefaultsCfg {
     pub branch_prefix: Option<Text>,
     pub mode: Option<Text>,
+    pub harness: Option<Text>,
     pub claude: Option<Text>,
     pub memories: Option<Text>,
     pub memory: Option<Text>,
@@ -58,6 +72,7 @@ pub struct DefaultsCfg {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProfileCfg {
     pub mode: Option<Text>,
+    pub harness: Option<Text>,
     pub memory: Option<Text>,
     pub branch_prefix: Option<Text>,
     pub claude: Option<Text>,
@@ -88,6 +103,7 @@ pub struct RepoCfg {
     pub memory: Option<Text>,
     pub branch_prefix: Option<Text>,
     pub mode: Option<Text>,
+    pub harness: Option<Text>,
 }
 
 #[derive(Debug, Deserialize)]

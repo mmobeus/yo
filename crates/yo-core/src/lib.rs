@@ -83,6 +83,28 @@ impl Ctx {
     }
 
     /// The id of the harness session yo is running inside, if any.
+    /// The harness named `name`.
+    pub fn harness(&self, name: &str) -> Result<&dyn Harness> {
+        harness::find(&self.harnesses, name)
+    }
+
+    /// The harness a ledger record's session runs on.
+    pub fn harness_of(&self, rec: &ledger::Record) -> Result<&dyn Harness> {
+        self.harness(rec.harness.as_deref().unwrap_or(harness::DEFAULT))
+    }
+
+    /// Whether yo runs inside a session of any harness.
+    pub fn inside_session(&self) -> bool {
+        self.harnesses.iter().any(|h| h.inside(&*self.sys))
+    }
+
+    /// The session yo runs inside, and its harness.
+    pub fn own_session_of(&self) -> Option<(&dyn Harness, String)> {
+        self.harnesses
+            .iter()
+            .find_map(|h| h.own_session(&*self.sys).map(|id| (&**h, id)))
+    }
+
     pub fn own_session(&self) -> Option<String> {
         self.harnesses
             .iter()

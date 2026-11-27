@@ -102,14 +102,11 @@ pub fn remote_for(sys: &dyn Sys, dir: &Path, owner_repo: Option<&str>) -> String
     "origin".to_string()
 }
 
-/// Whether `.claude/agents` at `rev` in the clone defines agent `name`.
-pub fn has_agent_at(sys: &dyn Sys, dir: &Path, rev: &str, name: &str) -> bool {
+/// Whether directory `under` (a harness's persona directory) at `rev` in
+/// the clone defines agent `name`.
+pub fn has_agent_at(sys: &dyn Sys, dir: &Path, rev: &str, under: &str, name: &str) -> bool {
     let pat = agent_pattern(name);
-    git_ok(
-        sys,
-        dir,
-        &["grep", "-q", "-E", &pat, rev, "--", ".claude/agents"],
-    )
+    git_ok(sys, dir, &["grep", "-q", "-E", &pat, rev, "--", under])
 }
 
 /// The `name:` line of an agent definition, as an extended regex. Names are

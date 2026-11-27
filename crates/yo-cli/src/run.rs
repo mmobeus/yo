@@ -174,6 +174,7 @@ fn has_flags(up: &Up) -> bool {
         || up.from.is_some()
         || up.model.is_some()
         || up.agent.is_some()
+        || up.harness.is_some()
 }
 
 /// `yo [flags] [REPO|PROFILE] [INPUT] [EXTRA]`: reach what NAME names, or
@@ -465,6 +466,7 @@ fn create(
         from: up.from.clone(),
         model: up.model.clone(),
         agent: up.agent.clone(),
+        harness: up.harness.clone(),
         args: up.args.clone(),
     };
     // A URL's repo nobody registered goes somewhere first: planning the
@@ -506,13 +508,13 @@ fn create(
     run_plan(ctx, &plan, up.dry_run, true, out)
 }
 
-/// Whether to ask where a repo goes: at a terminal, outside a Claude
+/// Whether to ask where a repo goes: at a terminal, outside a harness's
 /// session (whose terminal isn't the person's), with a config to save to.
 fn can_ask(ctx: &Ctx) -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
-        && ctx.sys.env_nonempty("CLAUDECODE").is_none()
+        && !ctx.inside_session()
         && ctx.paths.config.is_file()
 }
 

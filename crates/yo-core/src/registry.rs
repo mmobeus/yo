@@ -57,6 +57,8 @@ pub struct Repo {
     pub memory: Option<String>,
     pub branch_prefix: Option<String>,
     pub mode: Option<Mode>,
+    /// The harness its sessions run on.
+    pub harness: Option<String>,
     pub profile: Option<String>,
 }
 
@@ -64,6 +66,7 @@ pub struct Repo {
 pub struct Profile {
     pub name: String,
     pub mode: Option<Mode>,
+    pub harness: Option<String>,
     pub memory: Option<String>,
     pub branch_prefix: Option<String>,
     pub claude: Option<String>,
@@ -109,8 +112,13 @@ pub struct Defaults {
     pub branch_prefix: String,
     /// `YO_MODE`
     pub mode: Mode,
-    /// `YO_CLAUDE_CMD`
-    pub claude: String,
+    /// `YO_HARNESS`: the harness sessions run on (`claude`, `codex`).
+    pub harness: String,
+    /// `YO_CLAUDE_CMD`: the claude harness's command, by its older name.
+    /// `None`: `harnesses.claude.command`, else the harness's own default.
+    pub claude: Option<String>,
+    /// `harnesses.<name>`, in the file's order.
+    pub harnesses: Vec<(String, HarnessSettings)>,
     /// `YO_MEMORIES`: the shared memory root. `None` when set to nothing,
     /// which turns shared memory off.
     pub memories: Option<PathBuf>,
@@ -139,6 +147,13 @@ pub struct Defaults {
     pub clone_protocol: CloneProtocol,
     /// `YO_ADHOC_PROFILE` (`guestProfile` in the file)
     pub guest_profile: Option<String>,
+}
+
+/// `harnesses.<name>`: how to run one harness.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HarnessSettings {
+    pub command: Option<String>,
+    pub args: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -209,6 +224,7 @@ impl Registry {
             profiles.push(Profile {
                 name: name.to_string(),
                 mode,
+                harness: harness_name(&format!("yo_profile {name}"), &p.harness)?,
                 memory: nonempty(&p.memory),
                 branch_prefix: nonempty(&p.branch_prefix),
                 claude: nonempty(&p.claude),
@@ -293,6 +309,7 @@ impl Registry {
         self.profiles.push(Profile {
             name: name.to_string(),
             mode: None,
+            harness: None,
             memory: None,
             branch_prefix: None,
             claude: None,
@@ -412,16 +429,40 @@ impl Registry {
         )
     }
 
-    /// The command for the claude harness. Repos don't set it.
-    pub fn claude_cmd(&self, repo: Option<&Repo>, picked: Option<&str>) -> String {
+    /// The harness a new session runs on: `flag` (`--harness`), then the
+    /// repo's, the profile's, then `YO_HARNESS` or `defaults.harness`.
+    pub fn harness(&self, flag: Option<&str>, repo: Option<&Repo>, picked: Option<&str>) -> String {
         self.layered(
-            None,
+            flag.map(str::to_string),
             repo,
             picked,
-            |_| None,
-            |p| p.claude.clone(),
-            self.defaults.claude.clone(),
+            |r| r.harness.clone(),
+            |p| p.harness.clone(),
+            self.defaults.harness.clone(),
         )
+    }
+
+    /// The command harness `name` runs as, as shell words: `base` (the
+    /// harness's own default, or a setting it has of its own), else its
+    /// `harnesses.<name>.command`, with `harnesses.<name>.args` after it.
+    pub fn command(&self, name: &str, base: Option<String>, default: &str) -> String {
+        let set = self.harness_settings(name);
+        let mut cmd = base.or(set.command).unwrap_or_else(|| default.to_string());
+        for a in &set.args {
+            cmd.push(' ');
+            cmd.push_str(&crate::harness::shell_word(a));
+        }
+        cmd
+    }
+
+    /// `harnesses.<name>`, or nothing set.
+    pub fn harness_settings(&self, name: &str) -> HarnessSettings {
+        self.defaults
+            .harnesses
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, h)| h.clone())
+            .unwrap_or_default()
     }
 
     /// The shared window a session joins. Repos don't set it.
@@ -538,6 +579,7 @@ impl Repo {
             memory: None,
             branch_prefix: None,
             mode: None,
+            harness: None,
             profile: None,
         }
     }
@@ -585,6 +627,7 @@ impl Builder<'_> {
             memory: nonempty(&r.memory),
             branch_prefix: nonempty(&r.branch_prefix),
             mode,
+            harness: harness_name(&format!("yo_repo {key}"), &r.harness)?,
             profile: profile.map(str::to_string),
         });
         Ok(())
@@ -694,13 +737,32 @@ impl Defaults {
             Some(s) => Some(PathBuf::from(s)),
         };
 
+        let harness = or(get("YO_HARNESS", &d.harness), crate::harness::DEFAULT);
+        if !valid_key(&harness) {
+            return Err(bad(
+                "YO_HARNESS",
+                "a harness name, like 'claude' or 'codex'",
+                &harness,
+            ));
+        }
+        let mut harnesses = Vec::new();
+        for (name, h) in cfg.harnesses.iter() {
+            check_key("harnesses: name", name)?;
+            harnesses.push((
+                name.to_string(),
+                HarnessSettings {
+                    command: nonempty(&h.command),
+                    args: h.args.clone().map(|w| w.0).unwrap_or_default(),
+                },
+            ));
+        }
+
         Ok(Defaults {
             branch_prefix: get("YO_BRANCH_PREFIX", &d.branch_prefix).unwrap_or_default(),
             mode,
-            claude: or(
-                get("YO_CLAUDE_CMD", &d.claude),
-                "claude --permission-mode auto",
-            ),
+            harness,
+            claude: get("YO_CLAUDE_CMD", &d.claude).filter(|s| !s.is_empty()),
+            harnesses,
             memories,
             memory: or(get("YO_MEMORY_STORE", &d.memory), "yo"),
             settings: get_path("YO_CLAUDE_SETTINGS", &d.settings)
@@ -744,6 +806,15 @@ fn check_key(what: &str, k: &str) -> Result<()> {
     }
 }
 
+/// A repo's or profile's `harness`: a name, if set.
+fn harness_name(at: &str, t: &Option<Text>) -> Result<Option<String>> {
+    let h = nonempty(t);
+    if let Some(n) = &h {
+        check_key(&format!("{at}: harness"), n)?;
+    }
+    Ok(h)
+}
+
 fn nonempty(t: &Option<Text>) -> Option<String> {
     t.as_ref().map(|t| t.0.clone()).filter(|s| !s.is_empty())
 }
@@ -778,7 +849,8 @@ mod tests {
         let sys = FakeSys::new("/h");
         let d = reg(&sys, "{}").defaults;
         assert_eq!(d.mode, Mode::Worktree);
-        assert_eq!(d.claude, "claude --permission-mode auto");
+        assert_eq!(d.claude, None);
+        assert_eq!(d.harness, "claude");
         assert_eq!(d.branch_prefix, "");
         assert_eq!(d.memories, Some(PathBuf::from("/h/.claude/memories")));
         assert_eq!(d.memory, "yo");
@@ -800,13 +872,13 @@ mod tests {
         let json = r#"{"defaults": {"mode": "here", "claude": "c1", "windowGroup": "g"}}"#;
         let d = reg(&sys, json).defaults;
         assert_eq!(
-            (d.mode, d.claude.as_str(), d.window_group.as_str()),
-            (Mode::Here, "c1", "g")
+            (d.mode, d.claude.as_deref(), d.window_group.as_str()),
+            (Mode::Here, Some("c1"), "g")
         );
         sys.set_env("YO_MODE", "worktree");
         sys.set_env("YO_CLAUDE_CMD", "c2");
         let d = reg(&sys, json).defaults;
-        assert_eq!((d.mode, d.claude.as_str()), (Mode::Worktree, "c2"));
+        assert_eq!((d.mode, d.claude.as_deref()), (Mode::Worktree, Some("c2")));
     }
 
     #[test]
@@ -819,7 +891,13 @@ mod tests {
         let d = reg(&sys, json).defaults;
         // Kept as empty where bash uses ${X-...}, the default where ${X:-...}.
         assert_eq!(d.branch_prefix, "");
-        assert_eq!(d.claude, "claude --permission-mode auto");
+        // YO_CLAUDE_CMD set to nothing: the harness's own default.
+        assert_eq!(d.claude, None);
+        use crate::harness::{Harness, claude::Claude};
+        assert_eq!(
+            Claude.command(&reg(&sys, json), None, None),
+            "claude --permission-mode auto"
+        );
         assert_eq!(d.memories, None);
     }
 
@@ -969,8 +1047,75 @@ mod tests {
         assert_eq!(r.branch_prefix(c, None), "d");
         assert_eq!(r.branch_prefix(None, Some("p")), "pp");
         // the claude command: profile, then defaults
-        assert_eq!(r.claude_cmd(b, None), "pc");
-        assert_eq!(r.claude_cmd(c, None), "claude --permission-mode auto");
+        use crate::harness::{Harness, claude::Claude};
+        assert_eq!(Claude.command(&r, b, None), "pc");
+        assert_eq!(Claude.command(&r, c, None), "claude --permission-mode auto");
+    }
+
+    #[test]
+    fn harness_flag_repo_profile_defaults() {
+        let sys = FakeSys::new("/h");
+        let json = r#"{"defaults": {"harness": "d"},
+                "profiles": {"p": {"harness": "ph",
+                                   "repos": {"a": {"path": "/a", "harness": "ra"},
+                                             "b": {"path": "/b"}}}},
+                "repos": {"c": {"path": "/c"}}}"#;
+        let r = reg(&sys, json);
+        let (a, b, c) = (r.repo("a"), r.repo("b"), r.repo("c"));
+        assert_eq!(r.harness(Some("f"), a, None), "f");
+        assert_eq!(r.harness(None, a, None), "ra");
+        assert_eq!(r.harness(None, b, None), "ph");
+        assert_eq!(r.harness(None, c, None), "d");
+        assert_eq!(r.harness(None, c, Some("p")), "ph");
+        // YO_HARNESS beats the file's default, not a repo's or a profile's.
+        sys.set_env("YO_HARNESS", "e");
+        let r = reg(&sys, json);
+        assert_eq!(r.harness(None, r.repo("c"), None), "e");
+        assert_eq!(r.harness(None, r.repo("a"), None), "ra");
+        // Nothing set: claude.
+        assert_eq!(
+            reg(&FakeSys::new("/h"), "{}").harness(None, None, None),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn harness_names_are_checked() {
+        let sys = FakeSys::new("/h");
+        for json in [
+            r#"{"defaults": {"harness": "a b"}}"#,
+            r#"{"repos": {"a": {"path": "/a", "harness": "../x"}}}"#,
+            r#"{"profiles": {"p": {"harness": "x;y"}}}"#,
+            r#"{"harnesses": {"a b": {}}}"#,
+        ] {
+            let cfg: Config = serde_json::from_str(json).unwrap();
+            assert!(Registry::build(&sys, &cfg).is_err(), "{json}");
+        }
+        assert!(serde_json::from_str::<Config>(r#"{"harnesses": {"x": {"nope": 1}}}"#).is_err());
+    }
+
+    #[test]
+    fn harness_commands() {
+        use crate::harness::{Harness, claude::Claude};
+        let sys = FakeSys::new("/h");
+        let r = reg(
+            &sys,
+            r#"{"harnesses": {"x": {"command": "xx --flag", "args": ["it's", "b"]},
+                              "claude": {"command": "cl", "args": "--verbose"}}}"#,
+        );
+        assert_eq!(r.command("x", None, "dflt"), "xx --flag 'it'\\''s' b");
+        assert_eq!(r.command("y", None, "dflt"), "dflt");
+        assert_eq!(
+            r.command("x", Some("own".into()), "dflt"),
+            "own 'it'\\''s' b"
+        );
+        // claude: harnesses.claude.command, under its older `claude` setting.
+        assert_eq!(Claude.command(&r, None, None), "cl --verbose");
+        let r = reg(
+            &sys,
+            r#"{"defaults": {"claude": "old"}, "harnesses": {"claude": {"command": "cl"}}}"#,
+        );
+        assert_eq!(Claude.command(&r, None, None), "old");
     }
 
     #[test]

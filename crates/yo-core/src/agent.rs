@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::harness::{Harness, PrepareAsk, SessionSpec};
+use crate::harness::{IdPolicy, PrepareAsk, SessionSpec};
 use crate::ledger::{Entry, Key, Record, State, state_of};
 use crate::plan::{Action, BranchSpec, Note, Plan};
 use crate::reach::{ResumeOpts, plan_reach};
@@ -98,28 +98,27 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         }
     }
 
-    let harness: &dyn Harness = ctx
-        .harnesses
-        .first()
-        .map(|h| &**h)
-        .ok_or_else(|| Error::Refused("no harness".into()))?;
-    if !harness.capabilities().personas {
+    // An agent's home runs on its repo's harness: the persona needs one
+    // that has agents.
+    let harness = ctx.harness(&reg.harness(None, Some(repo), None))?;
+    if !harness.capabilities().personas || harness.persona_dir().is_none() {
         return Err(Error::Refused(format!(
             "agent '{name}': the {} harness has no agents",
             harness.name()
         )));
     }
+    crate::create::check_flags(harness, o.model.is_some(), None)?;
 
     // Merged agents only: checked against the base, freshly fetched.
     plan.notes.push(Note::Info(format!("fetching {start}")));
     let _ = git::git(sys, &repo.path, &["fetch", "--quiet", &remote, &base]);
-    if !git::has_agent_at(sys, &repo.path, &start, name)
-        && !crate::create::home_has_agent(ctx, name)
-    {
-        return Err(Error::Refused(format!(
-            "no agent named '{name}' in {start}:.claude/agents of {}, or in ~/.claude/agents\n        yo starts only agents that are merged (or installed in ~/.claude/agents)",
-            repo.path.display()
-        )));
+    if !crate::create::has_agent_at(ctx, harness, &repo.path, &start, name) {
+        return Err(crate::create::no_agent(
+            harness,
+            name,
+            &format!("{start}:"),
+            &repo.path,
+        ));
     }
     if wt.exists() {
         if git::git(sys, &wt, &["rev-parse", "--is-inside-work-tree"]).is_none() {
@@ -140,8 +139,9 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
     let trusted = crate::create::trusted(ctx, repo);
     if !trusted {
         plan.notes.push(Note::Info(format!(
-            "not pre-trusting the worktree ({} isn't a trusted repo) — Claude will ask",
-            repo.key
+            "not pre-trusting the worktree ({} isn't a trusted repo) — {} will ask",
+            repo.key,
+            harness.name()
         )));
     }
     let profile = reg.profile_of(Some(repo), None).map(|p| p.name.clone());
@@ -168,12 +168,15 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
 
     let id = sys.new_session_id();
     let key = Key::for_worktree(&sys.home(), &wt);
+    // Only a harness with personas gets here, and so far that's one that
+    // lets yo pick the id.
+    let id = (harness.ids() == IdPolicy::Picked).then_some(id);
     let brief = o.message.clone().filter(|m| !m.is_empty());
     plan.actions.push(Action::PutRecord(Box::new(Entry {
         key: key.clone(),
         record: Record {
             worktree: wt.clone(),
-            session_id: Some(id.clone()),
+            session_id: id.clone(),
             name: Some(format!("agent-{name}")),
             title: Some(title.clone()),
             repo: Some(repo.key.clone()),
@@ -192,10 +195,10 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         },
     })));
     let spec = SessionSpec {
-        command: reg.claude_cmd(Some(repo), None),
+        command: harness.command(reg, Some(repo), None),
         dir: wt.clone(),
         name: format!("agent-{name}"),
-        id: Some(id.clone()),
+        id,
         model: o.model.clone(),
         persona: Some(name.to_string()),
         codename: title.clone(),

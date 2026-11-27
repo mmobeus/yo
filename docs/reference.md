@@ -104,6 +104,7 @@ so yo leaves the message as it is and passes the codename with
 | `--from=SESSION` | report back to that Claude session with `SendMessage` when done or stuck |
 | `--model=M` | this session's model (`opus`, `sonnet`, `haiku`, `opus[1m]`, a full id) |
 | `--agent=NAME` | run as agent NAME; it must be merged on the base branch or in `~/.claude/agents` |
+| `--harness=H` | the coding agent to run it on (see [Harnesses](#harnesses)) |
 | `--add-to=PROFILE\|guest` | where an unconfigured URL's repo goes, without asking |
 | `--new-window` (`--window`), `--tab` | a window of its own, or a tab in the shared one |
 | `--dry-run` (`-n`) | print the plan and change nothing |
@@ -139,7 +140,8 @@ are an error. A leading `~/` in a path is your home directory.
   "profiles": { "NAME": { ..., "repos": {}, "reposIn": [], "agents": {} } },
   "repos":    { "KEY": { ... } },
   "reposIn":  [ "DIR" ],
-  "agents":   { "NAME": { ... } }
+  "agents":   { "NAME": { ... } },
+  "harnesses": { "NAME": { "command": "...", "args": [ ... ] } }
 }
 ```
 
@@ -152,8 +154,9 @@ setting's environment variable, if set, beats the file.
 | --- | --- | --- | --- |
 | `branchPrefix` | prefix for branches yo creates, as `<prefix>/<name>` | none | `YO_BRANCH_PREFIX` |
 | `mode` | `worktree` or `here` | `worktree` | `YO_MODE` |
+| `harness` | the harness new sessions run on | `claude` | `YO_HARNESS` |
 | `defaultRepo` | the repo used outside any known clone | the first repo | `YO_DEFAULT_REPO` |
-| `claude` | the claude command | `claude --permission-mode auto` | `YO_CLAUDE_CMD` |
+| `claude` | the claude harness's command (beats `harnesses.claude.command`) | `claude --permission-mode auto` | `YO_CLAUDE_CMD` |
 | `memories` | the shared memory root; `""` turns shared memory off | `~/.claude/memories` | `YO_MEMORIES` |
 | `memory` | the store inside it | `yo` | `YO_MEMORY_STORE` |
 | `settings` | yo's base settings layer | `claude-settings.json` beside the config | `YO_CLAUDE_SETTINGS` |
@@ -176,6 +179,7 @@ setting's environment variable, if set, beats the file.
 | `reposIn` | directories whose clones join it, keyed by directory name |
 | `agents` | agents: `{ NAME: AGENT }` |
 | `mode` | `here` or `worktree` |
+| `harness` | the harness its sessions run on |
 | `memory` | its memory store: a name inside `memories`, an absolute path, or `none` |
 | `branchPrefix` | prefix for branches |
 | `claude` | the claude command |
@@ -194,7 +198,7 @@ setting's environment variable, if set, beats the file.
 | `mcp` | MCP servers from the repo's `.mcp.json` to pre-approve |
 | `mirror` | gitignored files to copy into each worktree, such as `.env` |
 | `titlePrefix` | tab title prefix; default `[key] `, none for the default repo |
-| `memory`, `branchPrefix`, `mode` | as for a profile, for this repo |
+| `memory`, `branchPrefix`, `mode`, `harness` | as for a profile, for this repo |
 
 ### Agent
 
@@ -203,15 +207,36 @@ setting's environment variable, if set, beats the file.
 | `repo` | the repo its sessions default to, and where its home lives (required) |
 | `title` | the name tabs and codenames lead with; default, NAME capitalized |
 
+### Harnesses
+
+A harness is the coding agent a session runs: `claude` (Claude Code). A
+session's harness is `--harness`, else its repo's `harness`, its profile's,
+then `defaults.harness`. The ledger records it, so resuming and reaching a
+session use the harness it started on. An agent's home runs on its repo's
+harness.
+
+`harnesses.NAME` sets how yo runs one:
+
+| key | sets |
+| --- | --- |
+| `command` | its command, as shell words; default, the harness's own (`claude --permission-mode auto`) |
+| `args` | arguments added after the command, each one word |
+
+For `claude`, the older `claude` setting (a profile's, `defaults.claude`,
+`YO_CLAUDE_CMD`) beats `harnesses.claude.command`.
+
+A flag the session's harness has nothing for (`--agent`, `--model`) is an
+error that names the harness, never ignored.
+
 ## Environment
 
 | variable | effect |
 | --- | --- |
 | `YO_CONFIG` | the config file to read |
 | `YO_*` in the `defaults` table | override that setting for one run |
-| `YO_DRY_LAUNCH=1` | print the tab title, directory and claude command instead of opening iTerm (the ledger is still written) |
+| `YO_DRY_LAUNCH=1` | print the tab title, directory and harness command instead of opening iTerm (the ledger is still written) |
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME` | move yo's config and state |
-| `YO_SESSION_KEY` | set by yo on the claude it launches: the session's ledger record |
+| `YO_SESSION_KEY` | set by yo on the harness it launches: the session's ledger record |
 
 ## Files and locations
 

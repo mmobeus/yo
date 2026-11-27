@@ -131,6 +131,9 @@ pub struct Up {
     /// Run the session as agent NAME.
     #[arg(long, value_name = "NAME", value_parser = agent_name)]
     pub agent: Option<String>,
+    /// The coding agent to run it on: claude, codex.
+    #[arg(long, value_name = "H", value_parser = agent_name)]
+    pub harness: Option<String>,
     /// Say what would happen, and change nothing.
     #[arg(long, short = 'n')]
     pub dry_run: bool,
@@ -328,6 +331,15 @@ mod tests {
         assert!(parse(&["--model=opus;rm"]).is_err());
         assert!(parse(&["--model="]).is_err());
         assert!(parse(&["--agent=a b"]).is_err());
+        assert!(parse(&["--harness=a;b"]).is_err());
+        assert_eq!(
+            parse(&["--harness=codex", "x"])
+                .unwrap()
+                .up
+                .harness
+                .as_deref(),
+            Some("codex")
+        );
         assert!(parse(&["--title="]).is_err());
         assert!(parse(&["resume", "x", "--model=a b"]).is_err());
     }
