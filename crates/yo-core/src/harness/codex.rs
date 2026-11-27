@@ -147,6 +147,8 @@ impl Harness for Codex {
                 cwd: PathBuf::new(),
                 name: None,
                 updated_at: 0,
+                // Codex doesn't say.
+                idle: None,
             });
         }
         if out.is_empty() {

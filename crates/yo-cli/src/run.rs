@@ -108,7 +108,7 @@ fn go(
         ReadOnly::Help => render::help(&ctx),
         ReadOnly::ConfigShow => render::config_show(&ctx),
         ReadOnly::ConfigPath => format!("{}\n", ctx.paths.config.display()),
-        ReadOnly::Sessions => {
+        ReadOnly::Sessions(from) => {
             let live = ctx.live();
             // Adopt live sessions first, as bash does; a ledger problem
             // doesn't stop the listing.
@@ -117,12 +117,11 @@ fn go(
                     writeln!(err, "adopted {} ({}) from a live session", a.name, a.id)?;
                 }
             }
-            render::sessions(
-                &ctx,
-                &ctx.ledger().all(),
-                &live,
-                shown(&ctx, &live).as_ref(),
-            )
+            let mut all = ctx.ledger().all();
+            if let Some(f) = from {
+                all.retain(|e| e.record.from.as_deref() == Some(f.as_str()));
+            }
+            render::sessions(&ctx, &all, &live, shown(&ctx, &live).as_ref())
         }
     };
     out.write_all(text.as_bytes())?;
@@ -633,7 +632,8 @@ enum ReadOnly {
     Help,
     ConfigShow,
     ConfigPath,
-    Sessions,
+    /// Only those reporting back to this session, if given.
+    Sessions(Option<String>),
 }
 
 /// The commands ported so far: the ones that only read (and `sessions`'
@@ -647,7 +647,7 @@ fn read_only(c: Option<&Command>) -> Option<ReadOnly> {
         Command::Config {
             command: Some(ConfigCmd::Path),
         } => Some(ReadOnly::ConfigPath),
-        Command::Sessions => Some(ReadOnly::Sessions),
+        Command::Sessions { from } => Some(ReadOnly::Sessions(from.clone())),
         _ => None,
     }
 }

@@ -112,6 +112,11 @@ pub enum Action {
         session: Option<String>,
         tab: Option<String>,
     },
+    /// Closes another session's tab (as the runner gave it), every member
+    /// of it: only one yo confirmed is that session's while planning.
+    CloseTab {
+        tab: String,
+    },
     /// Ends a running session (`harness`'s session `id`, process `pid`) the
     /// way a closed terminal would, in case closing its tab doesn't. With
     /// `after_close` (yo runs inside it, so ends with it), a detached
@@ -346,6 +351,11 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     }
                 }
             },
+            Action::CloseTab { tab } => {
+                if !runner.close_tab(sys, tab) {
+                    out.note(&Note::Info(format!("dry close: tab {tab}")));
+                }
+            }
             Action::EndSession {
                 harness,
                 id,

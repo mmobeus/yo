@@ -263,7 +263,7 @@ yo-core/src/
   reach.rs      reaching what it found: focus a running session (typing the message), resume a stopped one
   create.rs     plan a new session: INPUT (unnamed, PR, issue, existing or new branch), worktree, branch, title, codename, brief
   session.rs    for the ledger commands: where a directory sits (a yo worktree, a clone), a session by query, recording one
-  down.rs       tear down the current session
+  down.rs       tear down the current session, another by name, or the ones it started
   end.rs        end a running session the way a closed terminal would (down, when closing its tab doesn't)
   sweep.rs      classify worktrees; remove
   naming.rs     codenames, titles, truncation
@@ -797,6 +797,16 @@ pub struct LaunchSpec {
   SIGTERM, each sent only while the harness still lists that session on
   that pid. From inside the session, a detached `yo _end-session` does it
   after iTerm's undo window.
+- **Tearing down another session** (`down NAME`, #68) works from its record:
+  it ends the session first, from outside, then closes its recorded tab by
+  the tab alone, which takes every member of a workgroup tab. A tab id is a
+  window's id and a small number, so after iTerm restarts an old record's
+  id can name another tab: yo closes it only when something in it shows the
+  session's title (`user.yoTitle`) or terminal, or the session runs with its
+  terminal shown nowhere (hidden in that tab). Whether a session is still
+  working comes from its harness (Claude's session files say `idle` or
+  `busy`; Codex says nothing, so yo asks). Records keep `--from`, so a
+  session can find the ones it started (`down --children`).
 - **ACP** (phase 5): for sessions nobody is watching. The daemon runs the
   harness's ACP command (`claude-agent-acp`, `codex-acp`, ...) as a child
   process and talks JSON-RPC to it over stdin and stdout, through the
@@ -1133,7 +1143,7 @@ today (unknown flag, unknown repo, bad name, ambiguous match):
 | reach | running with and without a message; running but no tab found; stopped (resumes with the message) |
 | ledger | `sessions`; `adopt` (new, already known, after `/clear`); `forget`; `title`, with and without a name; the hook for `SessionStart`, `SessionEnd` with `prompt_input_exit` and with other reasons |
 | resume | by name, id, prefix, directory; a transcript-only id; a guest repo no longer registered; `resume-all` with and without `--dry-run` |
-| down | in a worktree (clean, dirty, with unpushed commits; `--yes`, `--discard`, `--dry-run`); in place; an agent's home (refused) |
+| down | in a worktree (clean, dirty, with unpushed commits; `--yes`, `--discard`, `--dry-run`); in place; an agent's home (refused); another session by name (idle, busy, unknown; its tab confirmed or left open; this session and homes refused); `--children` |
 | sweep | each verdict (DEAD, STALE, SUSP, KEEP and its reasons); squash-merged; reused branch with an open PR; `--apply`, `--include-stale`, `--include-suspended`, `--delete-branches`, `--repo` |
 | config | no config (single-repo mode); `show`, `path`, `add-repo` from a directory, a URL and `owner/repo`; unknown keys; env overrides beating the file |
 | agents | `yo agent` bare, start, reach; an agent not merged on base |

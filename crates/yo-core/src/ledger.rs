@@ -56,6 +56,11 @@ pub struct Record {
     pub codename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<String>,
+    /// The session it reports back to (`--from`), as it was named: the
+    /// session that started it, which `yo down --children` tears it down
+    /// from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
     /// Keyed by the session id (a session in place), not the worktree.
     #[serde(default, skip_serializing_if = "is_false")]
     pub by_id: bool,
@@ -641,6 +646,7 @@ mod tests {
             cwd: cwd.to_path_buf(),
             name: None,
             updated_at: updated,
+            idle: None,
         }
     }
 

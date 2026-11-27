@@ -351,6 +351,9 @@ pub struct LiveSession {
     /// When the harness last updated it, in its own units (Claude: unix ms).
     /// Only compared with others from the same harness.
     pub updated_at: i64,
+    /// Whether it's waiting for a prompt rather than working (Claude: its
+    /// `status`). `None`: the harness doesn't say.
+    pub idle: Option<bool>,
 }
 
 /// Whether `id` looks like a session id yo can pass on: letters, digits,

@@ -417,34 +417,6 @@ struct Closer(std::sync::Mutex<Vec<(String, Option<String>)>>);
 #[derive(Default)]
 struct Elsewhere;
 
-impl crate::runner::Runner for Elsewhere {
-    fn kind(&self) -> crate::runner::RunnerKind {
-        crate::runner::RunnerKind::Iterm
-    }
-    fn launch(
-        &self,
-        _: &dyn crate::sys::Sys,
-        _: &crate::runner::LaunchSpec,
-    ) -> Result<crate::runner::Launched> {
-        unreachable!()
-    }
-    fn focus(
-        &self,
-        _: &dyn crate::sys::Sys,
-        _: &str,
-        _: Option<&str>,
-        _: Option<&str>,
-    ) -> Result<crate::runner::Focused> {
-        unreachable!()
-    }
-    fn close_own_tab(&self, _: &dyn crate::sys::Sys, _: &str, _: Option<&str>) -> bool {
-        true
-    }
-    fn own_tab(&self, _: &dyn crate::sys::Sys, _: &str) -> Option<String> {
-        Some("pty-W/9".into())
-    }
-}
-
 impl crate::runner::Runner for Closer {
     fn kind(&self) -> crate::runner::RunnerKind {
         crate::runner::RunnerKind::Iterm
@@ -471,6 +443,9 @@ impl crate::runner::Runner for Closer {
             .unwrap()
             .push((session.to_string(), tab.map(str::to_string)));
         true
+    }
+    fn close_tab(&self, _: &dyn crate::sys::Sys, _: &str) -> bool {
+        unreachable!()
     }
     fn own_tab(&self, _: &dyn crate::sys::Sys, session: &str) -> Option<String> {
         (session == "w0t1p0:CLI").then(|| "pty-W/40".into())
@@ -716,3 +691,36 @@ fn from_the_cli_its_in_place_session_is_found_by_its_tab() {
     ));
     assert!(m.contains("\n        sesh_a\n        sesh_b\n"), "{m}");
 }
+
+impl crate::runner::Runner for Elsewhere {
+    fn kind(&self) -> crate::runner::RunnerKind {
+        crate::runner::RunnerKind::Iterm
+    }
+    fn launch(
+        &self,
+        _: &dyn crate::sys::Sys,
+        _: &crate::runner::LaunchSpec,
+    ) -> Result<crate::runner::Launched> {
+        unreachable!()
+    }
+    fn focus(
+        &self,
+        _: &dyn crate::sys::Sys,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<crate::runner::Focused> {
+        unreachable!()
+    }
+    fn close_own_tab(&self, _: &dyn crate::sys::Sys, _: &str, _: Option<&str>) -> bool {
+        true
+    }
+    fn close_tab(&self, _: &dyn crate::sys::Sys, _: &str) -> bool {
+        unreachable!()
+    }
+    fn own_tab(&self, _: &dyn crate::sys::Sys, _: &str) -> Option<String> {
+        Some("pty-W/9".into())
+    }
+}
+
+mod named;

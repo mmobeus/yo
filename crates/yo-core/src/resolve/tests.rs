@@ -70,6 +70,7 @@ fn live(id: &str, pid: u32, name: Option<&str>, cwd: PathBuf) -> LiveSession {
         cwd,
         name: name.map(str::to_string),
         updated_at: 0,
+        idle: None,
     }
 }
 

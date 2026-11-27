@@ -539,6 +539,9 @@ mod tests {
         fn close_own_tab(&self, _: &dyn crate::sys::Sys, _: &str, _: Option<&str>) -> bool {
             true
         }
+        fn close_tab(&self, _: &dyn crate::sys::Sys, _: &str) -> bool {
+            true
+        }
     }
 
     #[test]

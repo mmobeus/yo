@@ -36,6 +36,7 @@ impl Harness for OneLive {
             cwd: self.0.clone(),
             name: None,
             updated_at: 0,
+            idle: None,
         }]
     }
     fn capabilities(&self) -> Capabilities {

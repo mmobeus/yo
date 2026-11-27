@@ -638,6 +638,7 @@ fn session(d: &Value) -> Option<LiveSession> {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         updated_at: d["updatedAt"].as_i64().unwrap_or(0),
+        idle: d["status"].as_str().map(|s| s == "idle"),
     })
 }
 
