@@ -10,9 +10,13 @@ the `review-*` skills in `.claude/skills/`, and `review-pr` runs all three.
 A second opinion, not a ruling. A reviewer sees less than the author does
 (no PR description, no issue, no conversation) and is guessing as much as
 the author is. The author weighs each finding: fixes the ones that are
-right, says in a line why not for the ones that aren't, and leaves most
-non-blocking ones for later. The maintainer decides what has to change
-before merging, and whether another review is worth running.
+right, and says in a line why not for the ones that aren't. A non-blocking
+finding that's right is fixed in the PR when it's about the PR's change and
+small, or else filed as a `review-followup` issue. Then the reviewer checks the fixes and either
+accepts the PR, so the author can merge it, or says what's still blocking.
+At most three rounds, the first review included; a PR still not accepted
+after the third goes to the maintainer. `AGENTS.md` ("Review rounds") has
+the steps.
 
 So a review aims for the few findings that matter, not for everything that
 could be said.

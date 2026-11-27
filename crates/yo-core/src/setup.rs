@@ -2,7 +2,7 @@
 //! harnesses' files (Claude's skills, settings layer and statusline), from
 //! copies built into yo, or linked into a checkout with `--link`; yo's
 //! starting config, made once; optionally the harness's settings merged
-//! into its own; and iTerm2's workgroup peer. Safe to run again: what's in
+//! into its own; and yo's workgroup in iTerm2. Safe to run again: what's in
 //! place is left alone, anything else in the way is backed up first, and
 //! `--uninstall` takes out only what yo put there.
 //!
@@ -27,7 +27,7 @@ use crate::{Error, Result, naming};
 #[cfg(test)]
 mod tests;
 
-/// The workgroup peer's name in iTerm2.
+/// The name of the shell beside the session in yo's iTerm2 workgroup.
 const PEER_NAME: &str = "CLI";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -37,7 +37,7 @@ pub struct SetupOpts {
     /// Merge a harness's settings into its own settings file (with
     /// `uninstall`: take the merged keys back out).
     pub merge_settings: bool,
-    /// Add iTerm2's workgroup peer.
+    /// Add yo's workgroup to iTerm2 (with `uninstall`: take it out).
     pub iterm: bool,
     /// Replace links that point somewhere unexpected.
     pub force: bool,
@@ -105,18 +105,20 @@ pub enum Step {
         contents: String,
         what: Wrote,
     },
-    /// Adds a terminal peer to iTerm2's Claude Code workgroup, saving the
-    /// workgroups as they were to `backup`.
-    AddPeer {
-        name: String,
+    /// Adds yo's workgroup to iTerm2's (`add`, with a terminal peer named
+    /// `peer`), or takes it out, saving the workgroups as they were to
+    /// `backup`.
+    Workgroup {
+        add: bool,
+        peer: String,
         old: String,
         new: String,
         backup: PathBuf,
-        /// iTerm2 is running, so it sees the peer after a restart.
+        /// iTerm2 is running, so it sees the change after a restart.
         running: bool,
     },
-    /// The workgroup has a terminal peer already.
-    PeerPresent,
+    /// yo's workgroup is in iTerm2 already.
+    WorkgroupPresent,
     /// Records what's installed (`None`: forgets it).
     Manifest {
         path: PathBuf,
@@ -234,24 +236,29 @@ pub fn plan(sys: &dyn Sys, paths: &Paths, opts: &SetupOpts) -> Result<SetupPlan>
             ctx.merge(&g.path, g.layer, &mut p.steps)?;
         }
     }
-    if opts.iterm && !opts.uninstall {
-        match iterm::peer(sys, PEER_NAME) {
-            iterm::Peer::Present => p.steps.push(Step::PeerPresent),
-            iterm::Peer::NoGroup => p.notes.push(Note::Warn(
-                "iTerm2's Claude Code workgroup isn't in its preferences, so no terminal peer \
-                 was added; set the integration up in iTerm2 and run yo setup again (until \
-                 then yo splits a pane for the shell)"
+    if opts.iterm {
+        let change = |add: bool, old: String, new: String| Step::Workgroup {
+            add,
+            peer: PEER_NAME.into(),
+            old,
+            new,
+            backup: paths
+                .config_dir
+                .join(format!("iterm-workgroups.bak-{stamp}.json")),
+            running: iterm::running(sys),
+        };
+        match (iterm::group(sys, PEER_NAME), opts.uninstall) {
+            (iterm::Group::Present { old, without }, true) => {
+                p.steps.push(change(false, old, without));
+            }
+            (iterm::Group::Present { .. }, false) => p.steps.push(Step::WorkgroupPresent),
+            (iterm::Group::Missing { old, with }, false) => p.steps.push(change(true, old, with)),
+            (iterm::Group::Unreadable, false) => p.notes.push(Note::Warn(
+                "couldn't read iTerm2's workgroups, so yo's wasn't added (yo splits a pane for \
+                 the shell instead); open iTerm2 once and run yo setup again"
                     .into(),
             )),
-            iterm::Peer::Missing { old, new } => p.steps.push(Step::AddPeer {
-                name: PEER_NAME.into(),
-                old,
-                new,
-                backup: paths
-                    .config_dir
-                    .join(format!("iterm-workgroups.bak-{stamp}.json")),
-                running: iterm::running(sys),
-            }),
+            (_, true) => {}
         }
     }
     for h in harness::all() {
@@ -319,7 +326,7 @@ pub fn execute(sys: &dyn Sys, plan: &SetupPlan, each: &mut dyn FnMut(&Step)) -> 
     for step in &plan.steps {
         each(step);
         match step {
-            Step::Keep { .. } | Step::PeerPresent => {}
+            Step::Keep { .. } | Step::WorkgroupPresent => {}
             Step::Backup { path, to, copy } => {
                 let done = if *copy {
                     fs::copy(path, to).map(|_| ())
@@ -337,7 +344,7 @@ pub fn execute(sys: &dyn Sys, plan: &SetupPlan, each: &mut dyn FnMut(&Step)) -> 
                 std::os::unix::fs::symlink(to, path).map_err(|e| Error::io(path, e))?;
             }
             Step::Write { path, contents, .. } => crate::write_atomic(path, contents.as_bytes())?,
-            Step::AddPeer {
+            Step::Workgroup {
                 old, new, backup, ..
             } => {
                 crate::write_atomic(backup, old.as_bytes())?;

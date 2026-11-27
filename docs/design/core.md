@@ -15,7 +15,7 @@
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | done (#34; PRs #36, #37, and mmobeus/homebrew-tap#1): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; a `v*` tag releases both macOS binaries as the tag's version and dispatches to the tap (`cargo xtask release`; from #43 the tag is the version, with `release/X.Y` hotfix branches on demand); `brew install mmobeus/tap/yo` installs them, from v0.1.0 |
-| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48); yo's skills installed for Codex too (#49); a status line like Claude's, through `tui.status_line` (#59) |
+| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48); yo's skills installed for Codex too (#49); a status line like Claude's, through `tui.status_line` (#59); yo's own iTerm2 workgroup, so Codex tabs get a shell too (#58) |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
 | 5 | the daemon, ACP runner and relay | not started |
@@ -783,6 +783,13 @@ pub struct LaunchSpec {
   tty, or else by the tab recorded when it was opened: AppleScript lists
   only the member of a Claude Code workgroup tab that's showing, so a chat
   behind CLI has no listed tty. Works for any harness with a TUI.
+- **yo's workgroup, not iTerm's Claude one** (#58). iTerm2 attaches its
+  Claude Code workgroup (where the shell is the "CLI" peer) by a profile
+  trigger on the job `claude`, so a Codex tab got no shell. yo does the
+  same itself: `yo setup` adds a `yo` workgroup (the session and a CLI
+  peer), and yo's profile swaps the workgroup triggers it copies from
+  Default for ones entering `yo` on each harness's program. `auto` uses it
+  when it has a peer, and splits a pane otherwise.
 - **Closing a tab doesn't always end its session.** A workgroup tab closed
   while it shows CLI leaves the chat running, with no tab (#35; the details
   are in the iTerm runner's docs). So `down` ends its session itself

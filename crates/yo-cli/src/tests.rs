@@ -797,8 +797,8 @@ fn reaching_a_guest_session_dry_neither_clones_nor_registers() {
     );
 }
 
-/// A sandbox where git, jq and gh are there, and iTerm2's Claude Code
-/// workgroup has no peer.
+/// A sandbox where git, jq and gh are there, and iTerm2 has its Claude
+/// Code workgroup but not yo's.
 fn setup_sandbox() -> (TempDir, Arc<FakeSys>) {
     let (t, sys) = sandbox(None);
     for tool in ["git", "jq", "gh"] {
@@ -828,13 +828,43 @@ dry run: nothing will be written
   copy    ~/.claude/skills/yo-down
   copy    ~/.claude/skills/yo-title
   create  ~/.config/yo/config.json (no repos yet)
-  peer    iTerm2's Claude Code workgroup <- terminal peer 'CLI'
+  add     iTerm2 workgroup 'yo' (the session, and a shell as 'CLI')
           (the workgroups as they were: ~/.config/yo/iterm-workgroups.bak-20261126-101500.json)
   record  ~/.local/state/yo/setup.json (what setup installed)
 dry run: nothing changed.
 "
     );
     assert_eq!(fs::read_dir(t.path()).unwrap().count(), 0);
+    assert!(!sys.calls().iter().any(|c| c.program == "defaults"));
+}
+
+/// With yo's workgroup there: setup says so, and uninstalling takes it out.
+#[test]
+fn setup_with_the_yo_workgroup_and_uninstalling_it() {
+    let (t, sys) = setup_sandbox();
+    sys.answer_ok(
+        "osascript",
+        &["-l", "JavaScript", "-"],
+        r#"{"peer": true, "workgroups": "[{\"uniqueIdentifier\":\"yo\",\"sessions\":[]}]"}"#,
+    );
+    let out = yo(&sys, t.path(), &["setup", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains("\n  ok      iTerm2 workgroup 'yo'\n"),
+        "{}",
+        out.out
+    );
+
+    let out = yo(&sys, t.path(), &["setup", "--dry-run", "--uninstall"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains(
+            "\n  rm      iTerm2 workgroup 'yo'
+          (the workgroups as they were: ~/.config/yo/iterm-workgroups.bak-20261126-101500.json)\n"
+        ),
+        "{}",
+        out.out
+    );
     assert!(!sys.calls().iter().any(|c| c.program == "defaults"));
 }
 

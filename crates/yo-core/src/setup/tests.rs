@@ -129,8 +129,8 @@ fn said(t: &T, p: &SetupPlan) -> Vec<String> {
                     Wrote::Unhook { .. } => "unhook",
                 }
             ),
-            Step::AddPeer { .. } => "add-peer".into(),
-            Step::PeerPresent => "peer-present".into(),
+            Step::Workgroup { add, .. } => format!("workgroup {add}"),
+            Step::WorkgroupPresent => "workgroup-present".into(),
             Step::Manifest { contents, .. } => format!("manifest {}", contents.is_some()),
         })
         .collect()
@@ -189,7 +189,7 @@ fn planning_changes_nothing() {
         ..copy()
     };
     let p = t.plan(&opts);
-    assert!(said(&t, &p).contains(&"add-peer".to_string()));
+    assert!(said(&t, &p).contains(&"workgroup true".to_string()));
     let mut left: Vec<_> = walk(&t.home);
     left.sort();
     assert_eq!(
@@ -438,11 +438,13 @@ fn merge_settings_creates_the_file_when_there_is_none() {
     assert!(t.read(".claude/settings.json").contains("statusLine"));
 }
 
+/// yo's workgroup: added beside the others (the workgroups saved first),
+/// left alone once it's there, and taken out by uninstalling.
 #[test]
-fn the_iterm_peer_is_added_once() {
+fn the_yo_workgroup_is_added_once_and_taken_out() {
     let t = T::new();
     t.sys.push_ids(["abcd-1234"]);
-    let old = r#"[{"uniqueIdentifier":"other"},{"uniqueIdentifier":"builtin.claudeCode","sessions":[{"kind":{"kind":"chat"}}]}]"#;
+    let old = r#"[{"uniqueIdentifier":"other"},{"uniqueIdentifier":"builtin.claudeCode","sessions":[{"kind":{"kind":"root"}}]}]"#;
     t.workgroups(old);
     t.sys.answer("pgrep", &["-axq", "iTerm2"], ok(""));
     let iterm = SetupOpts {
@@ -450,61 +452,122 @@ fn the_iterm_peer_is_added_once() {
         ..copy()
     };
     let p = t.plan(&iterm);
-    let Some(Step::AddPeer {
+    let Some(Step::Workgroup {
+        add: true,
         new,
         backup,
         running,
         ..
-    }) = p.steps.iter().find(|s| matches!(s, Step::AddPeer { .. }))
+    }) = p.steps.iter().find(|s| matches!(s, Step::Workgroup { .. }))
     else {
         panic!("{:?}", p.steps)
     };
     assert!(running);
     let groups = OValue::parse(new).unwrap();
     let OValue::Array(gs) = &groups else { panic!() };
-    let peer = gs[1].get("sessions").and_then(OValue::as_array).unwrap()[1].clone();
-    assert_eq!(peer.get("displayName"), Some(&OValue::String("CLI".into())));
+    // The others as they were, yo's after them.
+    assert_eq!(gs[..2], OValue::parse(old).unwrap().as_array().unwrap()[..]);
     assert_eq!(
-        peer.get("uniqueIdentifier"),
-        Some(&OValue::String("ABCD-1234".into()))
+        gs[2].get("uniqueIdentifier"),
+        Some(&OValue::String("yo".into()))
     );
+    let members = gs[2].get("sessions").and_then(OValue::as_array).unwrap();
+    let field = |i: usize, k: &str| members[i].get(k).cloned();
+    let kind = |i: usize| members[i].get("kind").and_then(|k| k.get("kind")).cloned();
+    assert_eq!(kind(0), Some(OValue::String("root".into())));
+    assert_eq!(kind(1), Some(OValue::String("peer".into())));
+    assert_eq!(field(1, "displayName"), Some(OValue::String("CLI".into())));
     assert_eq!(
-        gs[0],
-        OValue::parse(r#"{"uniqueIdentifier":"other"}"#).unwrap()
+        field(1, "uniqueIdentifier"),
+        Some(OValue::String("ABCD-1234".into()))
     );
+    assert_eq!(field(1, "parentID"), field(0, "uniqueIdentifier"));
 
-    let hex: String = new.bytes().map(|b| format!("{b:02x}")).collect();
-    let args = [
-        "write",
-        "com.googlecode.iterm2",
-        "Workgroups",
-        "-data",
-        hex.as_str(),
-    ];
-    t.sys.answer("defaults", &args, ok(""));
+    let hex = |s: &str| -> String { s.bytes().map(|b| format!("{b:02x}")).collect() };
+    let args = |h: &str| -> Vec<String> {
+        ["write", "com.googlecode.iterm2", "Workgroups", "-data", h]
+            .map(str::to_string)
+            .to_vec()
+    };
+    let added = args(&hex(new));
+    let added_strs: Vec<&str> = added.iter().map(String::as_str).collect();
+    t.sys.answer("defaults", &added_strs, ok(""));
     execute(&t.sys, &p, &mut |_| {}).unwrap();
     assert_eq!(fs::read_to_string(backup).unwrap(), old);
     assert!(
         t.sys
             .calls()
             .iter()
-            .any(|c| c.program == "defaults" && c.args == args)
+            .any(|c| c.program == "defaults" && c.args == added)
     );
 
     t.workgroups(&groups.to_compact());
-    assert!(said(&t, &t.plan(&iterm)).contains(&"peer-present".to_string()));
+    assert!(said(&t, &t.plan(&iterm)).contains(&"workgroup-present".to_string()));
+
+    // Uninstalling takes out yo's, and only yo's.
+    let un = t.plan(&SetupOpts {
+        uninstall: true,
+        ..iterm
+    });
+    let Some(Step::Workgroup {
+        add: false, new, ..
+    }) = un
+        .steps
+        .iter()
+        .find(|s| matches!(s, Step::Workgroup { .. }))
+    else {
+        panic!("{:?}", un.steps)
+    };
+    assert_eq!(OValue::parse(new).unwrap(), OValue::parse(old).unwrap());
 }
 
 #[test]
-fn no_workgroup_is_a_warning_not_a_failure() {
+fn an_iterm_with_no_workgroups_yet_gets_yo_s() {
     let t = T::new();
-    t.workgroups(r#"[{"uniqueIdentifier":"other"}]"#);
+    let v = serde_json::json!({ "peer": false, "noWorkgroups": true, "default": { "Name": "Default" } });
+    t.sys
+        .answer_ok("osascript", &["-l", "JavaScript", "-"], &v.to_string());
     let p = t.plan(&SetupOpts {
         iterm: true,
         ..copy()
     });
-    assert!(matches!(&p.notes[..], [Note::Warn(w)] if w.contains("workgroup")));
-    assert!(!said(&t, &p).iter().any(|s| s.contains("peer")));
+    let Some(Step::Workgroup {
+        add: true,
+        old,
+        new,
+        ..
+    }) = p.steps.iter().find(|s| matches!(s, Step::Workgroup { .. }))
+    else {
+        panic!("{:?}", p.steps)
+    };
+    assert_eq!(old, "[]");
+    assert_eq!(OValue::parse(new).unwrap().as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn unreadable_workgroups_are_a_warning_not_a_failure() {
+    // Not the list expected; or there, but not readable as text (so not
+    // "none yet", which would write yo's over them).
+    for prefs in [
+        serde_json::json!({ "peer": false, "workgroups": r#"{"not": "a list"}"# }),
+        serde_json::json!({ "peer": false, "default": { "Name": "Default" } }),
+    ] {
+        let t = T::new();
+        t.sys
+            .answer_ok("osascript", &["-l", "JavaScript", "-"], &prefs.to_string());
+        let p = t.plan(&SetupOpts {
+            iterm: true,
+            ..copy()
+        });
+        assert!(
+            matches!(&p.notes[..], [Note::Warn(w)] if w.contains("workgroups")),
+            "{prefs}"
+        );
+        assert!(
+            !said(&t, &p).iter().any(|s| s.contains("workgroup")),
+            "{prefs}"
+        );
+    }
 }
 
 #[test]

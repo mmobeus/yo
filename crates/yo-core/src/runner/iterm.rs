@@ -13,8 +13,9 @@
 //! terminal, and the shell and claude exit. That holds for a tab closed by
 //! script, by `⌘W` or by the window's close button.
 //!
-//! **Except a workgroup tab closed while it shows CLI.** Claude Code's
-//! workgroup puts a session's chat and a shell (its CLI peer) in one tab,
+//! **Except a workgroup tab closed while it shows CLI.** A workgroup (yo's,
+//! or iTerm's Claude Code one) puts a session's chat and a shell (its CLI
+//! peer) in one tab,
 //! one shown at a time. Closed while CLI shows, iTerm ends only the CLI
 //! session; the chat session is never hung up, isn't buried (Session ›
 //! Buried Sessions stays empty), and runs on with no tab at all: iTerm and
@@ -29,6 +30,21 @@
 //! shares) when it opens it, and looks for that as well as the terminal;
 //! and `down` ends its session itself ([`crate::end`]) rather than trust
 //! the close to.
+//!
+//! # yo's workgroup
+//!
+//! iTerm2's Claude Code integration puts a tab running `claude` into its
+//! workgroup with a trigger: one in each profile, on the job's name, naming
+//! the workgroup. yo does the same for every harness: `yo setup` adds a
+//! workgroup of its own ([`GROUP`]: the session, and a shell as its CLI
+//! peer), and the profile yo launches with ([`profile_json`]) drops the
+//! workgroup triggers it copies from the Default profile and enters yo's
+//! for each harness's program instead. So a Codex tab gets the same shell
+//! as a Claude one, and nothing depends on iTerm's integration being set
+//! up. Without it, yo splits a pane for the shell. iTerm reads workgroups
+//! at launch, so a tab opened after setup adds it but before iTerm restarts
+//! gets neither: yo can't tell from the preferences what the running iTerm
+//! has loaded, so setup says to restart.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -116,6 +132,8 @@ pub struct Iterm {
     pub window_mode: WindowMode,
     pub width: String,
     pub height: String,
+    /// The programs whose tabs enter yo's workgroup (every harness's).
+    pub jobs: Vec<String>,
 }
 
 impl Iterm {
@@ -126,6 +144,7 @@ impl Iterm {
             window_mode: d.window_mode,
             width: d.win_width.clone(),
             height: d.win_height.clone(),
+            jobs: crate::harness::programs(),
         }
     }
 }
@@ -134,9 +153,12 @@ impl Iterm {
 #[derive(Debug, Default)]
 struct Prefs {
     default: Option<Value>,
+    /// yo's workgroup is there, with a terminal peer.
     peer: bool,
     /// The workgroups, as iTerm keeps them (JSON).
     workgroups: Option<String>,
+    /// iTerm has no workgroups yet (rather than ones that couldn't be read).
+    no_workgroups: bool,
     screen: Option<(u64, u64)>,
 }
 
@@ -165,87 +187,96 @@ fn prefs(sys: &dyn Sys) -> Prefs {
             .get("workgroups")
             .and_then(Value::as_str)
             .map(str::to_string),
+        no_workgroups: v.get("noWorkgroups").and_then(Value::as_bool) == Some(true),
         screen,
     }
 }
 
-/// Claude Code's workgroup in iTerm2, and whether it has a terminal peer:
-/// a shell beside every chat, which lets yo open claude alone rather than
-/// split a pane for the shell (`YO_LAYOUT=workgroup`).
+/// yo's workgroup in iTerm2: its id, and its main session's.
+pub const GROUP: &str = "yo";
+const MAIN: &str = "yo.main";
+
+/// yo's workgroup in iTerm2's preferences, for `yo setup`: the workgroups
+/// as they are (`old`), and as they'd be with yo's added or taken out.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Peer {
-    Present,
-    /// No such workgroup (the integration isn't set up, or iTerm2 isn't
-    /// there), so nothing to add a peer to.
-    NoGroup,
-    /// No peer yet: the workgroups as they are, and with one named `name`.
+pub enum Group {
+    /// There: as setup added it, or as someone changed it since.
+    Present {
+        old: String,
+        without: String,
+    },
     Missing {
         old: String,
-        new: String,
+        with: String,
     },
+    /// iTerm2's preferences couldn't be read (it isn't installed, or has
+    /// never run), or its workgroups aren't the JSON list expected.
+    Unreadable,
 }
 
-const CLAUDE_GROUP: &str = "builtin.claudeCode";
-
-pub fn peer(sys: &dyn Sys, name: &str) -> Peer {
-    let Some(raw) = prefs(sys).workgroups else {
-        return Peer::NoGroup;
+/// Where yo's workgroup stands, a new one having a terminal peer named
+/// `peer` beside the session.
+pub fn group(sys: &dyn Sys, peer: &str) -> Group {
+    let p = prefs(sys);
+    let old = match p.workgroups {
+        Some(raw) => raw,
+        // iTerm is there and has no workgroups yet. Any other missing value
+        // couldn't be read, and writing over it would lose it.
+        None if p.no_workgroups && p.default.is_some() => "[]".to_string(),
+        None => return Group::Unreadable,
     };
-    let Ok(mut groups) = OValue::parse(&raw) else {
-        return Peer::NoGroup;
+    let Ok(OValue::Array(mut list)) = OValue::parse(&old) else {
+        return Group::Unreadable;
     };
-    let OValue::Array(list) = &mut groups else {
-        return Peer::NoGroup;
-    };
-    let id = |g: &OValue| match g.get("uniqueIdentifier") {
-        Some(OValue::String(s)) => s == CLAUDE_GROUP,
-        _ => false,
-    };
-    let Some(group) = list.iter_mut().find(|g| id(g)) else {
-        return Peer::NoGroup;
-    };
-    if group.get("sessions").is_none() {
-        group.insert("sessions", OValue::Array(Vec::new()));
-    }
-    let Some(OValue::Array(sessions)) = group.get_mut("sessions") else {
-        return Peer::NoGroup;
-    };
-    let is_peer = |s: &OValue| {
-        matches!(
-            s.get("kind").and_then(|k| k.get("kind")),
-            Some(OValue::String(k)) if k == "peer"
-        )
-    };
-    if sessions.iter().any(is_peer) {
-        return Peer::Present;
+    let ours =
+        |g: &OValue| matches!(g.get("uniqueIdentifier"), Some(OValue::String(s)) if s == GROUP);
+    if list.iter().any(ours) {
+        list.retain(|g| !ours(g));
+        return Group::Present {
+            old,
+            without: OValue::Array(list).to_compact(),
+        };
     }
     let s = |v: &str| OValue::String(v.to_string());
-    sessions.push(OValue::Object(vec![
-        ("mode".into(), s("regular")),
-        (
-            "kind".into(),
-            OValue::Object(vec![("kind".into(), s("peer"))]),
-        ),
-        ("command".into(), s("")),
-        ("perFileCommand".into(), s("")),
-        (
-            "toolbarItems".into(),
-            OValue::Array(vec![OValue::Object(vec![(
-                "kind".into(),
-                s("modeSwitcher"),
-            )])]),
-        ),
-        ("displayName".into(), s(name)),
-        (
-            "uniqueIdentifier".into(),
-            s(&sys.new_session_id().to_uppercase()),
-        ),
-        ("urlString".into(), s("")),
-        ("parentID".into(), s("builtin.claudeCode.main")),
+    let obj = |kv: Vec<(&str, OValue)>| {
+        OValue::Object(kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    };
+    let tool = |k: &str| obj(vec![("kind", s(k))]);
+    let member = |id: String, kind: &str, name: &str, tools: Vec<OValue>| {
+        obj(vec![
+            ("uniqueIdentifier", OValue::String(id)),
+            ("kind", tool(kind)),
+            ("displayName", s(name)),
+            ("mode", s("regular")),
+            ("command", s("")),
+            ("perFileCommand", s("")),
+            ("urlString", s("")),
+            ("toolbarItems", OValue::Array(tools)),
+        ])
+    };
+    let main = member(
+        MAIN.into(),
+        "root",
+        "Chat",
+        vec![tool("modeSwitcher"), tool("gitStatus")],
+    );
+    let OValue::Object(mut shell) = member(
+        sys.new_session_id().to_uppercase(),
+        "peer",
+        peer,
+        vec![tool("modeSwitcher")],
+    ) else {
+        unreachable!()
+    };
+    shell.push(("parentID".into(), s(MAIN)));
+    list.push(obj(vec![
+        ("uniqueIdentifier", s(GROUP)),
+        ("name", s("yo")),
+        ("sessions", OValue::Array(vec![main, OValue::Object(shell)])),
     ]));
-    Peer::Missing {
-        old: raw,
-        new: groups.to_compact(),
+    Group::Missing {
+        old,
+        with: OValue::Array(list).to_compact(),
     }
 }
 
@@ -281,10 +312,44 @@ pub fn running(sys: &dyn Sys) -> bool {
 
 /// The dynamic profile: a copy of the Default profile that ignores titles
 /// apps set (claude sets one unconditionally), with the tab title pinned to
-/// `user.yoTitle`. Keys sorted and two-space indents, as bash wrote it.
-fn profile_json(default: &Value, name: &str) -> String {
+/// `user.yoTitle`, and whose workgroup triggers put a tab running any of
+/// `jobs` in yo's workgroup (and take it out when the job ends) in place of
+/// the ones it copied. Keys sorted and two-space indents, as bash wrote it.
+fn profile_json(default: &Value, name: &str, jobs: &[String]) -> String {
+    const ENTER: &str = "iTermEnterWorkgroupTrigger";
+    const EXIT: &str = "iTermExitWorkgroupTrigger";
+    // As iTerm's Claude Code integration writes its own (113: the job
+    // started; 114: it ended, only for the job leading the session).
+    let trigger = |action: &str, on: u64, job: &str, group: &str| {
+        let mut when = json!({ "jobName": job });
+        if action == EXIT {
+            when["leaderOnly"] = json!(true);
+        }
+        json!({
+            "action": action,
+            "matchType": on,
+            "eventParams": when,
+            "parameter": group,
+            "regex": "",
+            "contentregex": "",
+            "partial": false,
+            "disabled": false,
+        })
+    };
     let mut p = default.clone();
     if let Some(o) = p.as_object_mut() {
+        let workgroup =
+            |t: &Value| matches!(t.get("action").and_then(Value::as_str), Some(ENTER | EXIT));
+        let mut triggers: Vec<Value> = o
+            .get("Triggers")
+            .and_then(Value::as_array)
+            .map(|ts| ts.iter().filter(|t| !workgroup(t)).cloned().collect())
+            .unwrap_or_default();
+        for job in jobs {
+            triggers.push(trigger(ENTER, 113, job, GROUP));
+            triggers.push(trigger(EXIT, 114, job, ""));
+        }
+        o.insert("Triggers".into(), Value::Array(triggers));
         o.insert("Name".into(), json!(name));
         o.insert("Guid".into(), json!(format!("{name}-dynamic-profile")));
         o.insert("Allow Title Setting".into(), json!(false));
@@ -309,7 +374,7 @@ impl Iterm {
     /// load it. `None`: no Default profile to copy, so the default profile
     /// is used (and claude may overwrite the title).
     fn ensure_profile(&self, sys: &dyn Sys, p: &Prefs) -> Option<String> {
-        let content = profile_json(p.default.as_ref()?, &self.profile);
+        let content = profile_json(p.default.as_ref()?, &self.profile, &self.jobs);
         let path = self.profile_path(sys);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(content.as_str()) {
             crate::write_atomic(&path, content.as_bytes()).ok()?;
@@ -339,10 +404,19 @@ impl Runner for Iterm {
             WindowChoice::Tab => false,
             WindowChoice::Config => self.window_mode == WindowMode::Window,
         };
+        // The workgroup's peer is the shell, once it's there.
         let split = match self.layout {
             Layout::Split => true,
-            Layout::Workgroup => false,
             Layout::Auto => !p.peer,
+            Layout::Workgroup if p.peer => false,
+            Layout::Workgroup => {
+                warnings.push(
+                    "layout is 'workgroup', but iTerm2 has no yo workgroup with a terminal \
+                     peer (run yo setup, then restart iTerm2); splitting a pane for the shell"
+                        .into(),
+                );
+                true
+            }
         };
         let (w, h) = p.screen.unwrap_or((0, 0));
         let setup = format!("cd {}", shell_word(&spec.dir.to_string_lossy()));
@@ -468,6 +542,7 @@ mod tests {
             window_mode: WindowMode::Tab,
             width: "1403".into(),
             height: "824".into(),
+            jobs: vec!["claude".into(), "codex".into()],
         }
     }
 
@@ -650,5 +725,101 @@ mod tests {
         let _ = iterm(Layout::Split).launch(&sys, &spec(WindowChoice::Tab));
         let a = open_args(&sys);
         assert_eq!((a[10].as_str(), a[11].as_str()), ("0", "1"));
+    }
+
+    /// The profile drops the workgroup triggers it copied (iTerm's Claude
+    /// Code ones) and enters yo's workgroup for every harness's program;
+    /// other triggers stay.
+    #[test]
+    fn the_profile_puts_every_harness_in_yo_s_workgroup() {
+        let t = TempDir::new().unwrap();
+        let sys = FakeSys::new(t.path());
+        let theirs = json!([
+            {"action": "iTermEnterWorkgroupTrigger", "matchType": 113,
+             "eventParams": {"jobName": "claude"}, "parameter": "builtin.claudeCode"},
+            {"action": "iTermExitWorkgroupTrigger", "matchType": 114,
+             "eventParams": {"jobName": "claude", "leaderOnly": 1}, "parameter": ""},
+            {"action": "HighlightTrigger", "regex": "ERROR"},
+        ]);
+        let prefs = json!({ "default": { "Name": "Default", "Triggers": theirs }, "peer": true });
+        answer_prefs(&sys, &prefs.to_string());
+        let _ = iterm(Layout::Auto).launch(&sys, &spec(WindowChoice::Tab));
+        let written = std::fs::read_to_string(
+            t.path()
+                .join("Library/Application Support/iTerm2/DynamicProfiles/worksesh.json"),
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&written).unwrap();
+        let said: Vec<(String, String, String)> = v["Profiles"][0]["Triggers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+                (
+                    s(&t["action"]),
+                    s(&t["eventParams"]["jobName"]),
+                    s(&t["parameter"]),
+                )
+            })
+            .collect();
+        let row = |a: &str, j: &str, p: &str| (a.to_string(), j.to_string(), p.to_string());
+        assert_eq!(
+            said,
+            [
+                row("HighlightTrigger", "", ""),
+                row("iTermEnterWorkgroupTrigger", "claude", "yo"),
+                row("iTermExitWorkgroupTrigger", "claude", ""),
+                row("iTermEnterWorkgroupTrigger", "codex", "yo"),
+                row("iTermExitWorkgroupTrigger", "codex", ""),
+            ]
+        );
+    }
+
+    /// The layout each setting gives, with yo's workgroup (and its peer)
+    /// there and without it: whatever the harness, since every one's tab
+    /// enters it.
+    #[test]
+    fn the_layout_follows_yo_s_workgroup() {
+        for (layout, peer, split, warned) in [
+            (Layout::Auto, true, false, false),
+            (Layout::Auto, false, true, false),
+            (Layout::Workgroup, true, false, false),
+            (Layout::Workgroup, false, true, true),
+            (Layout::Split, true, true, false),
+            (Layout::Split, false, true, false),
+        ] {
+            let sys = FakeSys::new("/nonexistent-home");
+            answer_prefs(&sys, &json!({ "peer": peer }).to_string());
+            let s = spec(WindowChoice::Tab);
+            for split in ["0", "1"] {
+                let open = [
+                    "-",
+                    &s.title,
+                    "",
+                    "cd '/w/a b'",
+                    "claude --name n",
+                    "1403",
+                    "824",
+                    "0",
+                    "0",
+                    "yo:yo",
+                    "0",
+                    split,
+                ];
+                sys.answer("osascript", &open, ok("pty-W1/40\n"));
+            }
+            let case = format!("{layout:?}, peer {peer}");
+            let Ok(Launched::Opened {
+                split: s, warnings, ..
+            }) = iterm(layout).launch(&sys, &s)
+            else {
+                panic!("{case}")
+            };
+            assert_eq!(s, split, "{case}");
+            assert_eq!(open_args(&sys)[11], u8::from(split).to_string(), "{case}");
+            let about = warnings.iter().any(|w| w.contains("no yo workgroup"));
+            assert_eq!(about, warned, "{case}: {warnings:?}");
+        }
     }
 }

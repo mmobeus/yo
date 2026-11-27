@@ -42,8 +42,11 @@ as `--flag=value` or `--flag value`.
 Installs the skills, the settings layer and the statusline from copies built
 into yo (Codex's copies of the skills too, into `$CODEX_HOME/skills`, when
 Codex has its home, `~/.codex`), creates the config if there is none (with no repos, or listing the
-`--link` checkout as `yo`), and adds a terminal peer ("CLI") to iTerm2's
-Claude Code workgroup if it has none. It's safe to run again:
+`--link` checkout as `yo`), and adds yo's workgroup to iTerm2 if it isn't
+there: the session, with a shell as its terminal peer ("CLI"). The profile yo
+opens tabs with enters that workgroup for every harness's program, in place
+of the workgroup triggers it copies from the Default profile (the Default
+profile itself isn't changed). It's safe to run again:
 
 - what's already in place is left alone, and what setup installed before is
   replaced;
@@ -69,10 +72,10 @@ yo has different copies, every other command says to run `yo setup` again.
 | flag | effect |
 | --- | --- |
 | `--dry-run`, `-n` | say what it would do, and change nothing |
-| `--uninstall` | take out what setup installed: its copies (unless edited since) and links into a yo checkout. The config, iTerm2's peer and yo itself stay |
+| `--uninstall` | take out what setup installed: its copies (unless edited since) and links into a yo checkout, and yo's iTerm2 workgroup (unless `--no-iterm`). The config and yo itself stay |
 | `--link=CHECKOUT` | link the files into a yo checkout instead of copying them, so edits there are live (for working on yo) |
 | `--merge-settings` | also merge yo's Claude settings into `~/.claude/settings.json`, for every claude session: yo's keys win, objects merge key by key, the rest of the file stays (backed up first). With `--uninstall`, its top-level keys are taken back out |
-| `--no-iterm` | leave iTerm2's workgroups alone. Otherwise iTerm2 sees a new peer after it restarts (the old workgroups are saved to `~/.config/yo/iterm-workgroups.bak-<time>.json`) |
+| `--no-iterm` | leave iTerm2's workgroups alone. Otherwise iTerm2 sees yo's workgroup (or, uninstalling, its going) after it restarts (the old workgroups are saved to `~/.config/yo/iterm-workgroups.bak-<time>.json`) |
 | `--force` | replace links that point somewhere unexpected |
 | `--hooks` | add yo's ledger hook to `~/.codex/hooks.json` without asking |
 

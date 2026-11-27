@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Run yo's three review skills (architecture, security, tests) on a pull request, each as a separate reviewer that sees only the diff, the code and the design. Run from a clean checkout of the base branch, never the PR's. Posts one PR comment with the findings and sets the yo-review commit status on the commit reviewed.
+description: Run yo's three review skills (architecture, security, tests) on a pull request, each as a separate reviewer that sees only the diff, the code and the design. Run from a clean checkout of the base branch, never the PR's. Posts one PR comment with the findings and sets the yo-review commit status on the commit reviewed, then confirms the author's fixes in up to three rounds, accepting the PR or handing it to the maintainer.
 argument-hint: "<PR number>"
 disable-model-invocation: true
 ---
@@ -47,6 +47,8 @@ gh pr view "<number>" --json comments --jq '[.comments[] | select(.body | starts
 
 If there is one, this is a re-review (see `docs/dev/review.md`). Note the
 commit it names as `PREV`, and save its body as the previous findings.
+Count the `## yo review:` comments: this review is round that count plus
+one.
 
 ## 2. Checkouts and the diff
 
@@ -111,11 +113,11 @@ reviewers report the same problem, keep both. Then post:
 ## yo review: `<short SHA>`
 
 Commit `<SHA>`, against `<BASE>` (a re-review: changes since `<short PREV>`).
-Each reviewer saw only the diff, the code and the design, not this PR's
-description. Findings are a second opinion: the author weighs them, and the
-maintainer decides what has to change.
+Round <r> of at most 3. Each reviewer saw only the diff, the code and the
+design, not this PR's description. Findings are a second opinion: the author
+weighs them.
 
-**<n> blocking, <m> non-blocking.**
+**<n> blocking, <m> non-blocking.** <verdict>
 
 <architecture output>
 
@@ -125,10 +127,14 @@ maintainer decides what has to change.
 
 ---
 
-The `yo-review` status on `<short SHA>` records that this review ran. It
-doesn't mean the findings were dealt with: that's the maintainer's check
-before merging.
+The `yo-review` status on `<short SHA>` records that this review ran.
 ```
+
+The verdict (see step 7) is one of:
+
+- `**Accepted:** nothing blocking is left; \`<short SHA>\` can merge.`
+- `**Not accepted yet:** the blocking findings above are still open.`
+- `**Not accepted after 3 rounds:** over to the maintainer.`
 
 ```sh
 gh pr comment "$N" --body-file "<dir>/comment.md"
@@ -163,6 +169,34 @@ If `gh pr view "$N" --json headRefOid` now shows a different commit, say so:
 the new head has no `yo-review` status. Tell the user the counts, list the
 blocking findings, and give the comment's URL.
 
-Then stop. One review per request: don't offer to run the next one, don't
-message the author's session, and don't start a re-review because the PR
-moved. Another review runs only when the maintainer asks for one.
+Then tell the author's session too, with `SendMessage` (the session your
+brief says to report to): the verdict, the counts, the blocking findings,
+the comment's URL. Then wait for it: don't start a review because the PR
+moved.
+
+## 7. Rounds
+
+A PR gets at most three rounds, this review included. Each ends with a
+verdict, in the comment and in the message to the author:
+
+- **Accepted** when no blocking finding is left open. A finding is dealt
+  with when it's fixed, or when the author's reason on the PR (or the
+  issue it filed for later) holds up: you judge that, not the reviewers,
+  since they never see the author's reasons. Non-blocking findings don't
+  hold up acceptance; the author fixes them, files them as
+  `review-followup` issues, or declines them (`AGENTS.md`).
+- **Not accepted yet** when one is still open and this was round 1 or 2.
+- **Not accepted after 3 rounds** when one is still open in round 3. Say
+  in your message that it's the maintainer's now, and tell the user too.
+
+When the author's session messages you that its fixes are in, run steps 1
+to 6 again as a re-review of the commit it names (the PR's head, if that
+commit isn't it, saying so in the comment). Its message tells you which
+commit to look at and why each finding wasn't fixed; don't pass any of it
+to the reviewers, who see only the diff, the code, the design and the
+previous review, as in step 3. A first review with no blocking findings is
+accepted straight away; if the author pushes anything after an acceptance,
+that's another round.
+
+After an accepted or a third round, you're done: the author merges an
+accepted PR, and the maintainer takes over the other.

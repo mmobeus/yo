@@ -375,6 +375,17 @@ pub fn all() -> Vec<Box<dyn Harness>> {
     vec![Box::new(claude::Claude), Box::new(codex::Codex)]
 }
 
+/// The program each harness runs (the first word of its default command):
+/// the job names iTerm2's triggers watch for, to put its tab in yo's
+/// workgroup.
+pub fn programs() -> Vec<String> {
+    all()
+        .iter()
+        .filter_map(|h| h.default_command().split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
 /// The harness named `name`, among `all`.
 pub fn find<'a>(all: &'a [Box<dyn Harness>], name: &str) -> Result<&'a dyn Harness> {
     all.iter()
@@ -393,6 +404,11 @@ pub fn find<'a>(all: &'a [Box<dyn Harness>], name: &str) -> Result<&'a dyn Harne
 mod tests {
     use super::*;
     use crate::sys::{CommandSpec, RealSys, Sys};
+
+    #[test]
+    fn programs_are_each_harness_s_first_word() {
+        assert_eq!(programs(), ["claude", "codex"]);
+    }
 
     #[test]
     fn quoting_survives_the_shell() {
