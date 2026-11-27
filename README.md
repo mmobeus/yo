@@ -20,8 +20,8 @@ yo setup --dry-run     # see the plan
 yo setup               # skills, settings layer, statusline, a starting config
 ```
 
-The formula arrives with yo's first release. Until then, or to build it
-yourself, install from source with Rust ([rustup](https://rustup.rs)):
+Upgrade with `brew upgrade yo`, then `yo setup` again. To build it yourself
+instead, install from source with Rust ([rustup](https://rustup.rs)):
 
 ```sh
 git clone https://github.com/mmobeus/yo.git && cd yo
