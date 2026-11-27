@@ -42,6 +42,8 @@ before the command, not after it.
    removes the worktree, writes yo's ledger under `~/.local/state/yo` and
    closes the tab through iTerm2, all of which the sandbox blocks. Ask for
    escalated permissions on the first try; a sandboxed attempt fails partway.
+   Don't suggest a `prefix_rule`: it removes a worktree, so the user approves
+   it each time.
 
    ```sh
    cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" && yo down --yes

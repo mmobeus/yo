@@ -8,7 +8,8 @@ description: Record the current Codex session in yo's session ledger so `yo resu
 Run this, exactly as written, outside the sandbox: it writes yo's ledger
 under `~/.local/state/yo` and asks iTerm2 for this tab's title, which the
 sandbox blocks. Ask for escalated permissions on the first try rather than
-running it sandboxed and retrying.
+running it sandboxed and retrying, and suggest the `prefix_rule`
+`["yo", "adopt"]`, so the user can approve it once for good.
 
 ```sh
 yo adopt

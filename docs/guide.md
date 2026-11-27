@@ -423,7 +423,9 @@ so on (or from `/skills`):
 
 Codex runs commands in a sandbox that keeps them away from iTerm2 and yo's
 state, so its copies ask to run `yo` outside it: approve that when Codex
-asks.
+asks. For `yo title` and `yo adopt`, Codex offers not to ask again for
+commands that start that way (it keeps the answer in `~/.codex/rules`);
+`yo down` asks every time, because it removes a worktree.
 
 The statusline shows the model, the session's Claude name (📡, what you'd
 give `--from` or `yo NAME`), the branch, context used, cost and time.
