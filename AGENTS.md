@@ -115,6 +115,11 @@ round. At most three rounds, the first review included:
 4. **After the third round without acceptance, stop.** Don't merge, and
    don't ask for a fourth. Tell the maintainer what's still open on the
    PR: from here it's theirs to resolve.
+5. **Then tear down the review sessions you started**, once the PR is
+   merged or step 4 stops the rounds: `yo down <review session>` for each
+   (`yo sessions --from=<your session's name>` lists them, and
+   `yo down --children` tears down the ones that are done). After that,
+   tear yourself down (`/yo-down`), or say you're ready to be.
 
 If a bug turns up after merging that review should have caught, file an
 issue labeled `review-miss`. `tune-review-skills` (run at the end of a

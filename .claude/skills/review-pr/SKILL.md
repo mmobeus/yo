@@ -199,4 +199,6 @@ accepted straight away; if the author pushes anything after an acceptance,
 that's another round.
 
 After an accepted or a third round, you're done: the author merges an
-accepted PR, and the maintainer takes over the other.
+accepted PR, and the maintainer takes over the other. The author's session
+tears this one down (`yo down <this session>`) once the PR is merged or the
+rounds end, so wait for that rather than ending yourself.
