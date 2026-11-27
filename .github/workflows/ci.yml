@@ -5,7 +5,8 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    # release/X.Y: hotfix branches, so a hotfix is tagged on a green commit
+    branches: [main, "release/**"]
 
 permissions:
   contents: read

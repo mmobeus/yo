@@ -235,14 +235,14 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "yo-app"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "yo-client",
  "yo-proto",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "yo-cli"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "clap",
  "yo-core",
@@ -258,14 +258,14 @@ dependencies = [
 
 [[package]]
 name = "yo-client"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "yo-proto",
 ]
 
 [[package]]
 name = "yo-core"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "yo-daemon"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "yo-core",
  "yo-proto",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "yo-local"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "yo-core",
  "yo-proto",
@@ -289,11 +289,11 @@ dependencies = [
 
 [[package]]
 name = "yo-proto"
-version = "0.1.1"
+version = "0.0.0-dev"
 
 [[package]]
 name = "yo-tui"
-version = "0.1.1"
+version = "0.0.0-dev"
 dependencies = [
  "yo-proto",
 ]

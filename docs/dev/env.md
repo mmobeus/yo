@@ -40,6 +40,7 @@ whether it's in CI.
 | variable | used by | meaning |
 | --- | --- | --- |
 | `YO_RELEASE_TAG`, `GH_TOKEN`, `HOMEBREW_TAP_TOKEN` | `cargo xtask release` | see [release.md](release.md) |
+| `YO_VERSION` | `cargo xtask dist` | the version the build says to `--version`; see [release.md](release.md) |
 
 Cargo's own variables (`CARGO_TERM_COLOR`, `CARGO_TARGET_DIR`, ...) work as
 usual, and can go in `.env` too.
