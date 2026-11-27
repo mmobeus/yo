@@ -61,7 +61,7 @@ the port is tested. No code comes with it; phase 1 builds against it.
 | background sessions | run over [ACP](https://agentclientprotocol.com) (the Agent Client Protocol), which works for many harnesses, not by driving one harness's own stream format |
 | messages | by typing into the tab, by ACP, or through a relay session that uses Claude's `SendMessage`; see [messages](#messages) |
 | app | a Tauri app (`yo app`): one web UI, wrapped by Tauri, talking to the daemon over its Unix socket. The app holds no yo logic. The same UI can be served over the daemon's opt-in HTTP, for a phone or for UI development. Not Wails |
-| compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records, and a `harness` setting in config |
+| compatibility | yo has one user and isn't public yet, so there is no migration and no backward compatibility to keep. Config and ledger formats stay as they are unless there's a reason to change them; the changes planned are new `machine` and `harness` fields in ledger records (and, as it turned out, `tab` and `from`), and a `harness` setting in config |
 | the port | it keeps today's *effects* (ledger, config, git, files written, commands launched); output may change, deliberately. Each command is tested by `yo-core` unit tests on its plan, with a fake `Sys`, and was compared with `scripts/yo` by hand while porting, since bash `yo` went about a day after the Rust one ran. See [testing the port](#testing-the-port) |
 | daemon | optional for the CLI and the TUI; started on demand by what needs it (`yo app`, background sessions, the relay). Listens only on a Unix socket unless TCP is turned on. A launchd agent can come later |
 | how it's built | gates cheapest first, everything CI runs can run locally (`cargo xtask`), review skills by hand, and only the maintainer loosens a gate; see [how it's built](#how-its-built) |
@@ -420,6 +420,7 @@ pub struct Record {
     pub remote_control: Option<String>,
     pub codename: Option<String>,
     pub brief: Option<String>,
+    pub from: Option<String>,             // new; --from, the session it reports back to (down --children)
     pub by_id: bool,
     pub harness: Option<String>,          // new; absent = claude
     pub machine: Option<MachineId>,       // new; absent = this machine
@@ -528,7 +529,10 @@ printing a plan; `resume` refuses running and gone sessions in `yo-cli` too.
 What a running session without a tab is, and the wait for those still
 exiting, are `yo-core`'s (`reach::tabless`, `reach::await_tabless`). `adopt`, `forget` and `title` write the ledger directly, and
 `title` and `adopt` call the iTerm runner's own methods rather than going
-through `Runner`. `config edit` runs `$EDITOR` outside `Sys`, and `setup` runs a harness's
+through `Runner`. `down --children` is planned in `yo-core`
+(`plan_down_children`: a plan per child, and why each skipped one is
+skipped), but `yo-cli` runs the plans one after another, going on past one
+that fails. `config edit` runs `$EDITOR` outside `Sys`, and `setup` runs a harness's
 command (`codex`) interactively, after a yes, to approve yo's hook there. These move
 into `yo-core` plans (`plan_resume_all` and small ones for the ledger
 commands) when the daemon or the TUI needs them, no later than phase 4.

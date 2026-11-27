@@ -280,7 +280,7 @@ What each harness gets:
 | --- | --- |
 | config | `~/.config/yo/config.json` |
 | base settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
-| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent, and `tab`: the iTerm tab it was last opened in, `<window id>/<tab id>`, recorded at launch and by `yo adopt`) |
+| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent, and `tab`: the iTerm tab it was last opened in, `<window id>/<tab id>`, recorded at launch and by `yo adopt`; and `from`: the session it reports back to, from `--from`, for `yo sessions --from` and `yo down --children`) |
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
 | skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title`; for Codex, the same names in `$CODEX_HOME/skills` (`~/.codex/skills`) |

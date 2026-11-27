@@ -117,10 +117,10 @@ fn go(
                     writeln!(err, "adopted {} ({}) from a live session", a.name, a.id)?;
                 }
             }
-            let mut all = ctx.ledger().all();
-            if let Some(f) = from {
-                all.retain(|e| e.record.from.as_deref() == Some(f.as_str()));
-            }
+            let all = match &from {
+                Some(f) => yo_core::session::started_from(&ctx, f),
+                None => ctx.ledger().all(),
+            };
             render::sessions(&ctx, &all, &live, shown(&ctx, &live).as_ref())
         }
     };

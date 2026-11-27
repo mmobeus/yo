@@ -197,6 +197,12 @@ fn a_tab_is_closed_only_once_it_is_confirmed_to_be_the_sessions() {
     );
     // Hidden in its tab: a workgroup showing CLI, which has no title.
     assert_eq!(tab(&Shows::new(&[("/dev/ttys004", "pty-W/40", "")])), close);
+    // Its terminal shown nowhere (running outside iTerm), and its old tab id
+    // now another session's, with another yo title: not hidden there.
+    assert_eq!(
+        tab(&Shows::new(&[("/dev/ttys004", "pty-W/40", "mine")])),
+        OtherTab::Unconfirmed("pty-W/40".into())
+    );
     // Its terminal is in another tab: that tab id is someone else's now.
     assert_eq!(
         tab(&Shows::new(&[
@@ -347,4 +353,88 @@ fn children_are_the_sessions_naming_this_one_as_from() {
         .collect();
     names.sort();
     assert_eq!(names, ["by-harness-name", "by-id", "by-name"]);
+}
+
+#[test]
+fn a_worktree_a_session_runs_in_is_held_even_without_its_id() {
+    let t = T::new();
+    let shows = Shows::new(&[]);
+    let yes = DownOpts {
+        yes: true,
+        discard: false,
+    };
+    // No id recorded (or another's), but claude runs in the worktree.
+    let mut e = named(&t, Some("idle"));
+    e.record.session_id = None;
+    let (other, plan) = plan_down_named(&t.ctx(), &shows, &e, DownOpts::default()).unwrap();
+    assert_eq!(other.activity, Activity::Unknown);
+    assert_eq!(plan.actions[0], end_s1());
+    let m = refused(plan_down_named(&t.ctx(), &shows, &e, yes).map(|(o, p)| (o.found, p)));
+    assert!(
+        m.contains("can't tell whether feat is still working"),
+        "{m}"
+    );
+
+    // A Codex worker with no id yet, nothing live to match: it may be at
+    // its first prompt.
+    fs::remove_file(t.home.join(".claude/sessions/30.json")).unwrap();
+    e.record.harness = Some("codex".into());
+    let (other, plan) = plan_down_named(&t.ctx(), &shows, &e, DownOpts::default()).unwrap();
+    assert_eq!(other.activity, Activity::Unknown);
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::EndSession { .. }))
+    );
+    refused(plan_down_named(&t.ctx(), &shows, &e, yes).map(|(o, p)| (o.found, p)));
+    // Claude picks its id at launch: none recorded and none live is ended.
+    e.record.harness = None;
+    let (other, _) = plan_down_named(&t.ctx(), &shows, &e, yes).unwrap();
+    assert_eq!(other.activity, Activity::NotRunning);
+}
+
+#[test]
+fn children_that_may_be_working_or_would_lose_work_are_skipped() {
+    let t = T::new();
+    let shows = Shows::new(&[]);
+    let mut e = named(&t, Some("busy"));
+    e.record.from = Some("home".into());
+    t.ctx().ledger().write(&mut e).unwrap();
+    t.record(
+        "id-home",
+        Record {
+            worktree: t.home.join("src/api"),
+            session_id: Some("h1".into()),
+            name: Some("home".into()),
+            mode: Some(Mode::Here),
+            ..Record::default()
+        },
+    );
+    t.sys.set_env("CLAUDE_CODE_SESSION_ID", "h1");
+    let Children { go, skipped } = plan_down_children(&t.ctx(), &shows, false).unwrap();
+    assert!(go.is_empty());
+    assert_eq!(
+        skipped,
+        [Skipped {
+            name: "feat".into(),
+            why: Skip::Working
+        }]
+    );
+    // Done, but dirty: skipped without --discard, torn down with it.
+    fs::remove_file(t.home.join(".claude/sessions/30.json")).unwrap();
+    t.in_worktree(" M src/lib.rs\n");
+    let Children { skipped, .. } = plan_down_children(&t.ctx(), &shows, false).unwrap();
+    assert_eq!(
+        skipped[0].why,
+        Skip::Uncommitted(vec![" M src/lib.rs".into()])
+    );
+    let Children { go, skipped } = plan_down_children(&t.ctx(), &shows, true).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(go[0].0.name, "feat");
+    assert!(go[0].1.actions.contains(&Action::RemoveWorktree {
+        repo: t.home.join("src/api"),
+        path: t.wt(),
+        force: true,
+    }));
 }

@@ -342,21 +342,12 @@ pub fn plan_down_named(
             "{name} is this session: run yo down without a name"
         )));
     }
-    let live = rec
-        .id()
-        .and_then(|id| ctx.live().into_iter().find(|l| l.id == id));
-    let activity = match live.as_ref().map(|l| l.idle) {
-        None => Activity::NotRunning,
-        Some(Some(true)) => Activity::Idle,
-        Some(Some(false)) => Activity::Busy,
-        Some(None) => Activity::Unknown,
-    };
+    let (live, activity) = running(ctx, rec);
     if o.yes && activity.working() {
         return Err(Error::Refused(match activity {
             Activity::Busy => format!("refusing: {name} is still working"),
             _ => format!(
-                "refusing: yo can't tell whether {name} is still working ({} doesn't say); without --yes, yo asks",
-                live.as_ref().map_or("its harness", |l| l.harness.as_str())
+                "refusing: yo can't tell whether {name} is still working; without --yes, yo asks"
             ),
         }));
     }
@@ -402,6 +393,42 @@ pub fn plan_down_named(
     ))
 }
 
+/// The session running for `rec`, and what it's doing. By its id; else,
+/// for a worktree, any session running in it (as sweep keeps a worktree a
+/// live session holds), whose id yo can't match, so it may be working;
+/// else, with no id yet from a harness that reports its own later (Codex,
+/// before its first message), yo can't tell. A session in place is never
+/// found by directory: others run in the same checkout.
+fn running(ctx: &Ctx, rec: &Record) -> (Option<LiveSession>, Activity) {
+    let live = ctx.live();
+    if let Some(l) = rec.id().and_then(|id| live.iter().find(|l| l.id == id)) {
+        let a = match l.idle {
+            Some(true) => Activity::Idle,
+            Some(false) => Activity::Busy,
+            None => Activity::Unknown,
+        };
+        return (Some(l.clone()), a);
+    }
+    if rec.mode_or_default() == Mode::Worktree {
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let wt = real(&rec.worktree);
+        if let Some(l) = live
+            .iter()
+            .find(|l| !l.cwd.as_os_str().is_empty() && real(&l.cwd).starts_with(&wt))
+        {
+            return (Some(l.clone()), Activity::Unknown);
+        }
+    }
+    let reports = crate::harness::all().iter().any(|h| {
+        h.name() == rec.harness.as_deref().unwrap_or(crate::harness::DEFAULT)
+            && h.ids() == crate::harness::IdPolicy::Reported
+    });
+    if rec.id().is_none() && reports {
+        return (None, Activity::Unknown);
+    }
+    (None, Activity::NotRunning)
+}
+
 /// Whether `rec`'s recorded tab is open and still its own: something in it
 /// shows its title or its terminal, or it's running with its terminal shown
 /// nowhere (hidden in that tab: a workgroup showing CLI).
@@ -425,7 +452,15 @@ fn confirm_tab(
     let shows_it = shown.panes.iter().any(|p| {
         p.tab == tab && (title == Some(p.title.as_str()) || tty.as_deref() == Some(p.tty.as_str()))
     });
-    let hidden = tty.as_ref().is_some_and(|t| !shown.ttys.contains(t));
+    // Hidden, only where it could be: its terminal is shown nowhere, and its
+    // tab has a pane that could be its peer (no yo title, as a workgroup's
+    // CLI has none, or its own). Running outside iTerm, its old tab id may
+    // be another session's, showing another title.
+    let peer = shown
+        .panes
+        .iter()
+        .any(|p| p.tab == tab && (p.title.is_empty() || title == Some(p.title.as_str())));
+    let hidden = peer && tty.as_ref().is_some_and(|t| !shown.ttys.contains(t));
     if shows_it || hidden {
         OtherTab::Close(tab.to_string())
     } else {
@@ -433,35 +468,69 @@ fn confirm_tab(
     }
 }
 
-/// The sessions this one started: those whose record names it as `from`,
-/// by its harness's name for it, its yo name or its id. Refused outside a
-/// session.
+/// Why `--children` leaves a child alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Skip {
+    /// It may still be working (busy, or yo can't tell).
+    Working,
+    /// Uncommitted work, and no `--discard`.
+    Uncommitted(Vec<String>),
+    /// `down` refuses it (an agent's home, an unknown repo).
+    Refused(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Skipped {
+    pub name: String,
+    pub why: Skip,
+}
+
+/// What `down --children` found.
+#[derive(Clone, Debug, Default)]
+pub struct Children {
+    /// Each child to tear down, with its plan.
+    pub go: Vec<(Other, Plan)>,
+    pub skipped: Vec<Skipped>,
+}
+
+/// `down --children`: the sessions this one started ([`children`]), each
+/// planned as `down NAME` would, but those that may still be working, or
+/// would lose uncommitted work without `discard`, or that `down` refuses,
+/// are skipped rather than asked about one by one.
+pub fn plan_down_children(ctx: &Ctx, runner: &dyn Runner, discard: bool) -> Result<Children> {
+    let mut c = Children::default();
+    for e in children(ctx)? {
+        let name = e.record.name.clone().unwrap_or_else(|| e.key.0.clone());
+        let why = match plan_down_named(ctx, runner, &e, DownOpts::default()) {
+            Ok((o, _)) if o.activity.working() => Skip::Working,
+            Ok((
+                Other {
+                    found: Found::Worktree { dirty, .. },
+                    ..
+                },
+                _,
+            )) if !dirty.is_empty() && !discard => Skip::Uncommitted(dirty),
+            Ok(p) => {
+                c.go.push(p);
+                continue;
+            }
+            Err(Error::Refused(m)) => Skip::Refused(m),
+            Err(err) => return Err(err),
+        };
+        c.skipped.push(Skipped { name, why });
+    }
+    Ok(c)
+}
+
+/// The sessions this one started ([`crate::session::started_from`]).
+/// Refused outside a session.
 pub fn children(ctx: &Ctx) -> Result<Vec<Entry>> {
     let Some(id) = ctx.own_session() else {
         return Err(Error::Refused(
             "not inside a session: --children finds the sessions this one started".into(),
         ));
     };
-    let all = ctx.ledger().all();
-    let mut me = vec![id.clone()];
-    if let Some(n) = ctx
-        .live()
-        .into_iter()
-        .find(|l| l.id == id)
-        .and_then(|l| l.name)
-    {
-        me.push(n);
-    }
-    me.extend(
-        all.iter()
-            .filter(|e| e.record.id() == Some(id.as_str()))
-            .filter_map(|e| e.record.name.clone()),
-    );
-    Ok(all
-        .into_iter()
-        .filter(|e| e.record.id() != Some(id.as_str()))
-        .filter(|e| e.record.from.as_ref().is_some_and(|f| me.contains(f)))
-        .collect())
+    Ok(crate::session::started_from(ctx, &id))
 }
 
 #[cfg(test)]

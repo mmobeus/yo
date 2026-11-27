@@ -5,7 +5,8 @@ use std::path::Path;
 
 use yo_core::Ctx;
 use yo_core::down::{
-    Activity, DownOpts, Found, Other, OtherTab, children, plan_down, plan_down_named,
+    Activity, Children, DownOpts, Found, Other, OtherTab, Skip, Skipped, plan_down,
+    plan_down_children, plan_down_named,
 };
 use yo_core::plan::{Action, Note, Plan, Report, execute};
 use yo_core::runner::{LaunchSpec, Launched};
@@ -244,6 +245,11 @@ fn say_other(out: &mut dyn Write, o: &Other, plan: &Plan) -> std::io::Result<()>
             _ => "running; yo can't tell whether it's still working",
         };
         writeln!(out, "  end its {harness} session (pid {pid}), {how}")?;
+    } else if o.activity == Activity::Unknown {
+        writeln!(
+            out,
+            "  (it may still be running: no session id recorded yet, so yo can't tell)"
+        )?;
     }
     match &o.tab {
         OtherTab::Close(t) => writeln!(out, "  close its iTerm2 tab ({t})")?,
@@ -322,30 +328,11 @@ fn down_named(ctx: &Ctx, d: &Down, q: &str, cwd: &Path, out: &mut dyn Write) -> 
 /// are done, skipping (and listing) those that may still be working or
 /// would lose uncommitted work.
 fn down_children(ctx: &Ctx, d: &Down, out: &mut dyn Write) -> Res {
-    let kids = children(ctx)?;
-    if kids.is_empty() {
+    let runner = runner(ctx);
+    let Children { go, skipped } = plan_down_children(ctx, &*runner, d.discard)?;
+    if go.is_empty() && skipped.is_empty() {
         writeln!(out, "no sessions in the ledger were started from this one.")?;
         return Ok(0);
-    }
-    let runner = runner(ctx);
-    let opts = DownOpts {
-        // Refuse what --yes refuses: working, or uncommitted work without
-        // --discard. Those are skipped, not asked about one by one.
-        yes: true,
-        discard: d.discard,
-    };
-    let mut go: Vec<(Other, Plan)> = Vec::new();
-    let mut skipped: Vec<(String, String)> = Vec::new();
-    for e in &kids {
-        let name = e.record.name.clone().unwrap_or_else(|| e.key.0.clone());
-        match plan_down_named(ctx, &*runner, e, opts) {
-            Ok(p) => go.push(p),
-            Err(yo_core::Error::Refused(m)) => {
-                let m = m.strip_prefix("refusing: ").unwrap_or(&m).to_string();
-                skipped.push((name, m));
-            }
-            Err(err) => skipped.push((name, err.to_string())),
-        }
     }
     for (other, plan) in &go {
         if d.dry_run {
@@ -358,8 +345,20 @@ fn down_children(ctx: &Ctx, d: &Down, out: &mut dyn Write) -> Res {
     }
     if !skipped.is_empty() {
         writeln!(out, "Skipped:")?;
-        for (name, why) in &skipped {
-            writeln!(out, "  {name}: {}", why.replace('\n', "\n  "))?;
+        for Skipped { name, why } in &skipped {
+            match why {
+                Skip::Working => writeln!(out, "  {name}: may still be working")?,
+                Skip::Uncommitted(files) => {
+                    writeln!(
+                        out,
+                        "  {name}: uncommitted changes (--discard to lose them):"
+                    )?;
+                    for f in files {
+                        writeln!(out, "        {f}")?;
+                    }
+                }
+                Skip::Refused(m) => writeln!(out, "  {name}: {}", m.replace('\n', "\n  "))?,
+            }
         }
     }
     if go.is_empty() {

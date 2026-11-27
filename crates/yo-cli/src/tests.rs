@@ -1397,8 +1397,7 @@ fn down_children_skips_the_working_and_sessions_lists_by_from() {
         out.out
     );
     assert!(
-        out.out
-            .contains("Skipped:\n  busy: busy is still working\n"),
+        out.out.contains("Skipped:\n  busy: may still be working\n"),
         "{}",
         out.out
     );
@@ -1410,4 +1409,103 @@ fn down_children_skips_the_working_and_sessions_lists_by_from() {
     assert!(!rec.exists());
     assert!(ledger.join("id-busy.json").exists());
     assert!(ledger.join("id-home.json").exists());
+}
+
+#[test]
+fn down_name_asks_about_a_busy_session_and_says_what_it_cant_find() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    live_claude(
+        &t,
+        &sys,
+        77,
+        "abcdef12-0000-4000-8000-000000000000",
+        "ttys009",
+        "busy",
+    );
+    let before = snapshot(t.path());
+    // No answer (the tests' stdin is empty): a no.
+    let out = yo(&sys, &api, &["down", "feat"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("  end its claude session (pid 77), STILL WORKING\n"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out
+            .contains("feat may still be working. Tear it down anyway? [y/N] "),
+        "{}",
+        out.out
+    );
+    assert!(out.out.ends_with("aborted.\n"), "{}", out.out);
+    assert_eq!(snapshot(t.path()), before);
+    assert!(sys.signals().is_empty());
+
+    let out = yo(&sys, &api, &["down", "nosuch"]);
+    assert_ne!(out.code, 0);
+    assert!(
+        out.err
+            .contains("no session matches 'nosuch' (yo sessions lists them)"),
+        "{}",
+        out.err
+    );
+    // Two records by one name.
+    let ledger = t.path().join(".local/state/yo/sessions");
+    fs::write(
+        ledger.join("id-twin.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "twin-1", "name": "feat", "mode": "here"}}"#,
+            api.display()
+        ),
+    )
+    .unwrap();
+    let out = yo(&sys, &api, &["down", "feat"]);
+    assert_ne!(out.code, 0);
+    assert!(
+        out.err.contains("ambiguous: 2 sessions match 'feat'"),
+        "{}",
+        out.err
+    );
+}
+
+#[test]
+fn down_children_goes_on_past_one_that_fails() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let ledger = t.path().join(".local/state/yo/sessions");
+    let rec = ledger.join("src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"from": "home-1", "#, 1)).unwrap();
+    // A second child, whose worktree removal git refuses.
+    let two = api.with_file_name("api-worktrees").join("two");
+    fs::create_dir_all(&two).unwrap();
+    fs::write(
+        ledger.join("src__api-worktrees__two.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "two-1", "name": "two", "repo": "api", "from": "home-1"}}"#,
+            two.display()
+        ),
+    )
+    .unwrap();
+    worktree_git(&sys, &api, &two);
+    let (a, w) = (api.display().to_string(), two.display().to_string());
+    sys.answer(
+        "git",
+        &["-C", &a, "worktree", "remove", &w],
+        yo_core::fake::failed(1),
+    );
+    sys.set_env("CLAUDE_CODE_SESSION_ID", "home-1");
+
+    let out = yo(&sys, &api, &["down", "--children", "--yes"]);
+    assert_eq!(out.code, 1, "{}\n{}", out.out, out.err);
+    assert!(out.out.contains("torn down: feat.\n"), "{}", out.out);
+    assert!(out.out.ends_with("not torn down: two.\n"), "{}", out.out);
+    assert!(!rec.exists());
+    assert!(ledger.join("src__api-worktrees__two.json").exists());
+
+    // By id or by name, sessions --from lists the same.
+    let out = yo(&sys, &api, &["sessions", "--from", "home-1"]);
+    assert!(out.out.contains("two"), "{}", out.out);
 }

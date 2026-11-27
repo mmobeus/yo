@@ -131,6 +131,36 @@ pub fn record(
         }))
 }
 
+/// The sessions started to report back to `session` (`--from`): those
+/// whose `from` is any of its names, the one given or another for the same
+/// session (its harness's name, its yo name, its id), so it matches
+/// however it was named. Not the session itself.
+pub fn started_from(ctx: &Ctx, session: &str) -> Vec<Entry> {
+    let all = ctx.ledger().all();
+    let mut names = vec![session.to_string()];
+    for l in ctx.live() {
+        if l.id == session || l.name.as_deref() == Some(session) {
+            names.push(l.id.clone());
+            names.extend(l.name);
+        }
+    }
+    for e in &all {
+        let r = &e.record;
+        if r.id() == Some(session) || r.name.as_deref() == Some(session) {
+            names.extend(r.id().map(str::to_string));
+            names.extend(r.name.clone());
+        }
+    }
+    all.into_iter()
+        .filter(|e| {
+            !e.record
+                .id()
+                .is_some_and(|id| names.iter().any(|n| n == id))
+        })
+        .filter(|e| e.record.from.as_ref().is_some_and(|f| names.contains(f)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
