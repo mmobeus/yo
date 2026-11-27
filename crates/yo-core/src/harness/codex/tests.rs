@@ -16,6 +16,7 @@ fn spec(first: Option<&str>) -> SessionSpec {
         first_message: first.map(str::to_string),
         settings: None,
         remote_control: None,
+        args: Vec::new(),
     }
 }
 
@@ -36,6 +37,38 @@ fn launching_tells_it_its_codename_out_of_band() {
     assert_eq!(
         a.args.last().unwrap(),
         "Briefly introduce yourself by codename, then wait for instructions."
+    );
+}
+
+#[test]
+fn flags_from_prepare_follow_the_codename() {
+    let mut s = spec(Some("hi"));
+    s.args = vec!["-c".into(), "tui.status_line=[]".into()];
+    assert_eq!(
+        Codex.tui_command(&s).args,
+        [
+            "-c",
+            INSTRUCTIONS,
+            "-c",
+            "tui.status_line=[]",
+            "-m",
+            "gpt-6",
+            "hi"
+        ]
+    );
+    assert_eq!(
+        Codex.resume_command("id", &s).args,
+        [
+            "resume",
+            "-c",
+            INSTRUCTIONS,
+            "-c",
+            "tui.status_line=[]",
+            "-m",
+            "gpt-6",
+            "id",
+            "hi"
+        ]
     );
 }
 

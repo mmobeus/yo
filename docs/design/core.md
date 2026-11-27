@@ -15,7 +15,7 @@
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | done (#34; PRs #36, #37, and mmobeus/homebrew-tap#1): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; a `v*` tag releases both macOS binaries as the tag's version and dispatches to the tap (`cargo xtask release`; from #43 the tag is the version, with `release/X.Y` hotfix branches on demand); `brew install mmobeus/tap/yo` installs them, from v0.1.0 |
-| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48); yo's skills installed for Codex too (#49); yo's own iTerm2 workgroup, so Codex tabs get a shell too (#58) |
+| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48); yo's skills installed for Codex too (#49); a status line like Claude's, through `tui.status_line` (#59); yo's own iTerm2 workgroup, so Codex tabs get a shell too (#58) |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
 | 5 | the daemon, ACP runner and relay | not started |
@@ -579,6 +579,9 @@ suggests ending and resuming it. #48 added
 `global_hook` (a ledger hook in the harness's own hooks file, which `yo
 setup` adds when asked: Codex's), and `prepare` may return an `Action::Ask`,
 a step taken only if the person says yes at a terminal (Codex's trust).
+#59 lets `prepare` add flags for the launch (`Prepared::args`, handed on in
+`SessionSpec::args`; Codex's status line), and gives it the configured
+command, so it can see what the person passes already.
 
 ```rust
 pub trait Harness {
@@ -683,6 +686,18 @@ pub struct SessionSpec {
     directory.
   - **Names:** no `--name`; `/rename` only. **The codename** goes in as
     `-c developer_instructions=...`, leaving the first message as it is.
+  - **The status line:** Codex doesn't run Claude's `statusline.sh`, but
+    has its own, `tui.status_line`, a list of item ids (33 in 0.172.0).
+    yo passes `-c tui.status_line=[...]` at launch and resume with the
+    items closest to Claude's line: `model-with-reasoning`, `current-dir`,
+    `git-branch`, `context-used` and `five-hour-limit`. (`estimated-thread-cost`
+    shows nothing on a ChatGPT login, so the five-hour limit stands in
+    for cost.) A `-c` beats `config.toml`, so yo leaves its line out when
+    the file sets `tui.status_line` or the configured command mentions it
+    (`prepare` decides, and hands the flag on in `Prepared::args`). A
+    profile's (`-p`) isn't looked for. yo's name isn't in it: Codex names a
+    thread only with `/rename` (no flag or config at launch), and its
+    `thread-name` item shows Codex's own generated title until then.
   - **Resume:** `codex resume [ID] [PROMPT]`, so a stopped session is
     resumed with the message, like Claude.
   - **Inside a session:** `CODEX_THREAD_ID` (and `CODEX_SESSION_ID`) are set
