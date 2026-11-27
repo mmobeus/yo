@@ -401,6 +401,11 @@ mod tests {
     use crate::sys::{CommandSpec, RealSys, Sys};
 
     #[test]
+    fn programs_are_each_harness_s_first_word() {
+        assert_eq!(programs(), ["claude", "codex"]);
+    }
+
+    #[test]
     fn quoting_survives_the_shell() {
         // Through a real `sh`: what goes in comes back out.
         for s in [

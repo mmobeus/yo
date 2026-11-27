@@ -524,7 +524,7 @@ fn the_yo_workgroup_is_added_once_and_taken_out() {
 #[test]
 fn an_iterm_with_no_workgroups_yet_gets_yo_s() {
     let t = T::new();
-    let v = serde_json::json!({ "peer": false, "default": { "Name": "Default" } });
+    let v = serde_json::json!({ "peer": false, "noWorkgroups": true, "default": { "Name": "Default" } });
     t.sys
         .answer_ok("osascript", &["-l", "JavaScript", "-"], &v.to_string());
     let p = t.plan(&SetupOpts {
@@ -546,14 +546,28 @@ fn an_iterm_with_no_workgroups_yet_gets_yo_s() {
 
 #[test]
 fn unreadable_workgroups_are_a_warning_not_a_failure() {
-    let t = T::new();
-    t.workgroups(r#"{"not": "a list"}"#);
-    let p = t.plan(&SetupOpts {
-        iterm: true,
-        ..copy()
-    });
-    assert!(matches!(&p.notes[..], [Note::Warn(w)] if w.contains("workgroups")));
-    assert!(!said(&t, &p).iter().any(|s| s.contains("workgroup")));
+    // Not the list expected; or there, but not readable as text (so not
+    // "none yet", which would write yo's over them).
+    for prefs in [
+        serde_json::json!({ "peer": false, "workgroups": r#"{"not": "a list"}"# }),
+        serde_json::json!({ "peer": false, "default": { "Name": "Default" } }),
+    ] {
+        let t = T::new();
+        t.sys
+            .answer_ok("osascript", &["-l", "JavaScript", "-"], &prefs.to_string());
+        let p = t.plan(&SetupOpts {
+            iterm: true,
+            ..copy()
+        });
+        assert!(
+            matches!(&p.notes[..], [Note::Warn(w)] if w.contains("workgroups")),
+            "{prefs}"
+        );
+        assert!(
+            !said(&t, &p).iter().any(|s| s.contains("workgroup")),
+            "{prefs}"
+        );
+    }
 }
 
 #[test]

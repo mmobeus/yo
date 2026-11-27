@@ -439,10 +439,12 @@ give `--from` or `yo NAME`), the branch, context used, cost and time.
 - **Layout.** `yo setup` adds a workgroup of yo's to iTerm2: the session,
   with a shell as its terminal peer ("CLI"), one shown at a time. A tab yo
   opens enters it whatever the harness (Claude or Codex), so the session has
-  the tab to itself and the peer is the shell. iTerm2 reads workgroups when
-  it starts, so it appears after iTerm2 restarts; until then the tab is
-  split: the session left, a shell right. Tabs you open yourself keep
-  iTerm2's own Claude Code workgroup.
+  the tab to itself and the peer is the shell. Without the workgroup (setup
+  run with `--no-iterm`, or iTerm2's preferences unreadable), the tab is
+  split: the session left, a shell right. iTerm2 reads workgroups when it
+  starts, so restart it after `yo setup` adds yo's: a tab opened before then
+  has no shell. Tabs you open yourself keep iTerm2's own Claude Code
+  workgroup.
 - **Titles that stick.** claude rewrites the terminal title constantly, so yo
   uses an iTerm profile (`worksesh`) that ignores that and pins the tab title.
 

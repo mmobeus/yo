@@ -41,8 +41,10 @@
 //! workgroup triggers it copies from the Default profile and enters yo's
 //! for each harness's program instead. So a Codex tab gets the same shell
 //! as a Claude one, and nothing depends on iTerm's integration being set
-//! up. iTerm reads workgroups at launch, so a new one shows after a
-//! restart; until then, and without it, yo splits a pane for the shell.
+//! up. Without it, yo splits a pane for the shell. iTerm reads workgroups
+//! at launch, so a tab opened after setup adds it but before iTerm restarts
+//! gets neither: yo can't tell from the preferences what the running iTerm
+//! has loaded, so setup says to restart.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -155,6 +157,8 @@ struct Prefs {
     peer: bool,
     /// The workgroups, as iTerm keeps them (JSON).
     workgroups: Option<String>,
+    /// iTerm has no workgroups yet (rather than ones that couldn't be read).
+    no_workgroups: bool,
     screen: Option<(u64, u64)>,
 }
 
@@ -183,6 +187,7 @@ fn prefs(sys: &dyn Sys) -> Prefs {
             .get("workgroups")
             .and_then(Value::as_str)
             .map(str::to_string),
+        no_workgroups: v.get("noWorkgroups").and_then(Value::as_bool) == Some(true),
         screen,
     }
 }
@@ -215,8 +220,9 @@ pub fn group(sys: &dyn Sys, peer: &str) -> Group {
     let p = prefs(sys);
     let old = match p.workgroups {
         Some(raw) => raw,
-        // iTerm is there and has no workgroups yet.
-        None if p.default.is_some() => "[]".to_string(),
+        // iTerm is there and has no workgroups yet. Any other missing value
+        // couldn't be read, and writing over it would lose it.
+        None if p.no_workgroups && p.default.is_some() => "[]".to_string(),
         None => return Group::Unreadable,
     };
     let Ok(OValue::Array(mut list)) = OValue::parse(&old) else {

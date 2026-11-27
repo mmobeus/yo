@@ -20,10 +20,13 @@ function run() {
   var books = ObjC.deepUnwrap(d.objectForKey("New Bookmarks")) || [];
   books.forEach(function (b) { if (b && b.Name === "Default") out.default = plain(b); });
   // The workgroups are JSON, kept as bytes. Does yo's have a terminal
-  // peer (a shell beside the session)?
+  // peer (a shell beside the session)? `noWorkgroups`: there are none yet,
+  // which isn't the same as a value this couldn't read (then neither is
+  // set, and setup leaves them alone).
   out.peer = false;
   try {
     var raw = d.objectForKey("Workgroups");
+    if (raw.isNil()) { out.noWorkgroups = true; throw 0; }
     var text = raw.isKindOfClass($.NSData)
       ? $.NSString.alloc.initWithDataEncoding(raw, $.NSUTF8StringEncoding).js
       : ObjC.unwrap(raw);
