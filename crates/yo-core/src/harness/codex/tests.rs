@@ -145,6 +145,7 @@ fn a_live_session_without_a_cwd_from_lsof_takes_its_rollouts() {
         Path::new("/w/r"),
         "2026-11-27T03:53:30.908Z",
         "cli",
+        "Plucky Gary",
     );
     // lsof can't say where the process is.
     sys.answer_ok("lsof", &["-a", "-d", "cwd", "-F", "pn", "-p", "10"], "");
@@ -162,6 +163,7 @@ fn where_a_session_ran_is_in_its_rollout() {
         Path::new("/w/a"),
         "2026-11-27T03:53:30.908Z",
         "cli",
+        "Plucky Gary",
     );
     fake.rollout(
         "2025/01/02",
@@ -169,6 +171,7 @@ fn where_a_session_ran_is_in_its_rollout() {
         Path::new("/w/o"),
         "2025-01-02T00:00:00.000Z",
         "cli",
+        "Plucky Gary",
     );
     assert_eq!(Codex.session_cwd(&sys, "aaa"), Some("/w/a".into()));
     assert_eq!(Codex.session_cwd(&sys, "old"), Some("/w/o".into()));
@@ -177,64 +180,99 @@ fn where_a_session_ran_is_in_its_rollout() {
 }
 
 #[test]
-fn the_late_id_is_the_first_new_tui_session_in_its_directory() {
+fn the_late_id_is_the_rollout_of_the_launch() {
     let t = TempDir::new().unwrap();
     let sys = FakeSys::new(t.path());
     let fake = FakeCodex { sys: &sys };
     let dir = t.path().join("wt");
     std::fs::create_dir_all(&dir).unwrap();
     let since = unix_secs("2026-11-27T03:53:00Z").unwrap();
-    // Before the launch, an exec run, another directory: none of them.
-    fake.rollout(
+    let r = |day, id, cwd: &Path, at, source, codename| {
+        fake.rollout(day, id, cwd, at, source, codename);
+    };
+    let gary = "Plucky Gary";
+    // Before the launch, an exec run, another directory, another codename
+    // (a later session there, yo's or not), more than a day later: none.
+    r(
         "2026/11/26",
         "before",
         &dir,
         "2026-11-27T03:40:00.000Z",
         "cli",
+        gary,
     );
-    fake.rollout(
+    r(
         "2026/11/26",
         "exec",
         &dir,
         "2026-11-27T03:53:10.000Z",
         "exec",
+        gary,
     );
-    fake.rollout(
+    r(
         "2026/11/26",
         "other",
         Path::new("/w/x"),
         "2026-11-27T03:53:05.000Z",
         "cli",
+        gary,
     );
-    // Two launched in the same directory: the earlier first.
-    fake.rollout(
+    r(
+        "2026/11/26",
+        "unrelated",
+        &dir,
+        "2026-11-27T03:53:15.000Z",
+        "cli",
+        "Sleepy Osprey",
+    );
+    r(
+        "2026/11/29",
+        "late",
+        &dir,
+        "2026-11-29T03:53:20.000Z",
+        "cli",
+        gary,
+    );
+    let got = |codename: &str, taken: &[&str]| {
+        let taken: Vec<String> = taken.iter().map(|s| s.to_string()).collect();
+        let l = Launch {
+            dir: &dir,
+            since,
+            codename,
+        };
+        Codex.reported_id(&sys, &l, &taken)
+    };
+    assert_eq!(got(gary, &[]), None, "nothing is this launch's yet");
+    // Two with its codename: the earlier first, each to one record.
+    r(
         "2026/11/27",
         "second",
         &dir,
         "2026-11-27T03:54:00.000Z",
         "cli",
+        gary,
     );
-    fake.rollout(
+    r(
         "2026/11/26",
         "first",
         &dir,
         "2026-11-27T03:53:20.000Z",
         "cli",
+        gary,
     );
-    let got = |taken: &[&str]| {
-        let taken: Vec<String> = taken.iter().map(|s| s.to_string()).collect();
-        Codex.reported_id(&sys, &dir, since, &taken)
-    };
-    assert_eq!(got(&[]).as_deref(), Some("first"));
-    assert_eq!(got(&["first"]).as_deref(), Some("second"));
-    assert_eq!(got(&["first", "second"]), None);
+    assert_eq!(got(gary, &[]).as_deref(), Some("first"));
+    assert_eq!(got(gary, &["first"]).as_deref(), Some("second"));
+    assert_eq!(got(gary, &["first", "second"]), None);
+    assert_eq!(got("", &[]), None, "no codename, nothing to tie it to");
     // A path that resolves to the same directory counts.
     let link = t.path().join("link");
     std::os::unix::fs::symlink(&dir, &link).unwrap();
-    assert_eq!(
-        Codex.reported_id(&sys, &link, since, &[]).as_deref(),
-        Some("first")
-    );
+    let l = Launch {
+        dir: &link,
+        since,
+        codename: gary,
+    };
+    assert_eq!(Codex.reported_id(&sys, &l, &[]).as_deref(), Some("first"));
 }
 
 #[test]
@@ -257,7 +295,12 @@ fn a_rollout_that_isnt_one_is_skipped() {
     ] {
         std::fs::write(d.join(n), text).unwrap();
     }
-    assert_eq!(Codex.reported_id(&sys, Path::new("/w"), 0, &[]), None);
+    let l = Launch {
+        dir: Path::new("/w"),
+        since: 0,
+        codename: "Plucky Gary",
+    };
+    assert_eq!(Codex.reported_id(&sys, &l, &[]), None);
 }
 
 #[test]

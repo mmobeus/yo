@@ -996,7 +996,14 @@ fn a_codex_session_learns_its_id_and_resumes_by_it() {
     // Codex records it once it starts.
     let id = "01a21b23-09e9-7f73-a7b7-d687bad4ff87";
     let fake = yo_core::fake::FakeCodex { sys: &sys };
-    fake.rollout("2026/11/26", id, &api, "2026-11-27T03:53:30.908Z", "cli");
+    fake.rollout(
+        "2026/11/26",
+        id,
+        &api,
+        "2026-11-27T03:53:30.908Z",
+        "cli",
+        "Plucky Gary",
+    );
     let listed = yo(&sys, &api, &["sessions"]);
     assert!(listed.out.contains(id), "{}", listed.out);
     let rec = fs::read_to_string(
@@ -1023,4 +1030,79 @@ fn a_codex_session_learns_its_id_and_resumes_by_it() {
     let out = yo(&sys, &api, &["--harness=codex", "--agent=cindy", "x"]);
     assert_eq!(out.code, 1);
     assert_eq!(out.err, "yo: --agent: the codex harness has no agents\n");
+}
+
+#[test]
+fn a_dry_run_leaves_a_codex_record_waiting_for_its_id() {
+    let (t, sys, api) = with_clone();
+    sys.set_env("YO_DRY_LAUNCH", "1");
+    sys.set_now(1_795_751_600);
+    let out = yo(&sys, &api, &["--harness=codex", "--here", "-", "hi"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    let fake = yo_core::fake::FakeCodex { sys: &sys };
+    let id = "01a21b23-09e9-7f73-a7b7-d687bad4ff87";
+    fake.rollout(
+        "2026/11/26",
+        id,
+        &api,
+        "2026-11-27T03:53:30.908Z",
+        "cli",
+        "Plucky Gary",
+    );
+    let state = t.path().join(".local/state");
+    let before = snapshot(&state);
+    for args in [
+        &["--dry-run", "x"][..],
+        &["resume-all", "--dry-run"],
+        &["sweep"],
+    ] {
+        let out = yo(&sys, &api, args);
+        assert_eq!(out.code, 0, "{args:?}: {}", out.err);
+        assert_eq!(snapshot(&state), before, "{args:?} wrote to the ledger");
+    }
+    // Anything that isn't a dry run learns it.
+    assert!(yo(&sys, &api, &["sessions"]).out.contains(id));
+    assert_ne!(snapshot(&state), before);
+}
+
+#[test]
+fn adopt_inside_codex() {
+    let (t, sys, api) = with_clone();
+    let id = "01a21b23-09e9-7f73-a7b7-d687bad4ff87";
+    let fake = yo_core::fake::FakeCodex { sys: &sys };
+    fake.rollout(
+        "2026/11/26",
+        id,
+        &api,
+        "2026-11-27T03:53:30.908Z",
+        "cli",
+        "Plucky Gary",
+    );
+    sys.set_env("CODEX_THREAD_ID", id);
+    let out = yo(&sys, &api, &["adopt"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains(&format!("        session: {id}\n")),
+        "{}",
+        out.out
+    );
+    let rec = fs::read_to_string(
+        t.path()
+            .join(format!(".local/state/yo/sessions/id-{id}.json")),
+    )
+    .unwrap();
+    assert!(rec.contains(r#""harness": "codex""#), "{rec}");
+
+    // Outside any session, --session-id goes to the harness a session here
+    // would run on.
+    let (t, sys, api) = with_clone();
+    sys.set_env("YO_HARNESS", "codex");
+    let out = yo(&sys, &api, &["adopt", "--session-id", id]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    let rec = fs::read_to_string(
+        t.path()
+            .join(format!(".local/state/yo/sessions/id-{id}.json")),
+    )
+    .unwrap();
+    assert!(rec.contains(r#""harness": "codex""#), "{rec}");
 }

@@ -309,8 +309,17 @@ pub struct FakeCodex<'a> {
 impl FakeCodex<'_> {
     /// Session `id`'s rollout, as the TUI (`source: "cli"`, or what's
     /// given) writes it: filed under `day` (`YYYY/MM/DD`), starting `at` (a
-    /// UTC timestamp like `2026-11-27T03:53:30.908Z`) in `cwd`.
-    pub fn rollout(&self, day: &str, id: &str, cwd: &Path, at: &str, source: &str) -> PathBuf {
+    /// UTC timestamp like `2026-11-27T03:53:30.908Z`) in `cwd`, told it's
+    /// `codename` in its developer instructions, as yo tells it.
+    pub fn rollout(
+        &self,
+        day: &str,
+        id: &str,
+        cwd: &Path,
+        at: &str,
+        source: &str,
+        codename: &str,
+    ) -> PathBuf {
         let dir = self.sys.home().join(".codex/sessions").join(day);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join(format!("rollout-{}-{id}.jsonl", at.replace(':', "-")));
@@ -325,7 +334,14 @@ impl FakeCodex<'_> {
         });
         let event =
             r#"{"timestamp":"x","ordinal":1,"type":"event_msg","payload":{"type":"task_started"}}"#;
-        std::fs::write(&f, format!("{meta}\n{event}\n")).unwrap();
+        let dev = serde_json::json!({
+            "timestamp": at, "ordinal": 2, "type": "response_item",
+            "payload": {"type": "message", "role": "developer", "content": [{
+                "type": "input_text",
+                "text": format!("<permissions>...</permissions> Your codename for this session is \"{codename}\". Introduce yourself with it."),
+            }]},
+        });
+        std::fs::write(&f, format!("{meta}\n{event}\n{dev}\n")).unwrap();
         f
     }
 

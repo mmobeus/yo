@@ -299,7 +299,7 @@ mod tests {
         e.record.harness = Some("nope".into());
         let o = ResumeOpts::default();
         match plan_reach(&c, &e, State::Ready, "feat", &o) {
-            Err(Error::Refused(m)) => assert_eq!(m, "no harness 'nope' (yo has: claude)"),
+            Err(Error::Refused(m)) => assert_eq!(m, "no harness 'nope' (yo has: claude, codex)"),
             other => panic!("{other:?}"),
         }
         // No harness recorded: claude, as every record before harnesses were.

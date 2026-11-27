@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{Argv, Capabilities, Harness, IdPolicy, LiveSession, SessionSpec, valid_session_id};
+use super::{
+    Argv, Capabilities, Harness, IdPolicy, Launch, LiveSession, SessionSpec, valid_session_id,
+};
 use crate::sys::{CommandSpec, Sys};
 
 /// Its name, in config and the ledger.
@@ -170,25 +172,54 @@ impl Harness for Codex {
             .filter(|id| valid_session_id(id))
     }
 
-    /// The first TUI session Codex recorded in `dir` from `since` on (less
-    /// a minute, for clocks) that isn't `taken`, from the rollouts.
-    fn reported_id(
-        &self,
-        sys: &dyn Sys,
-        dir: &Path,
-        since: i64,
-        taken: &[String],
-    ) -> Option<String> {
+    /// The first TUI session Codex recorded in the launch's directory, in
+    /// the day from its launch (less a minute, for clocks), whose developer
+    /// instructions carry the codename yo gave it, and that isn't `taken`.
+    /// The codename is what ties a rollout to this launch: another session
+    /// started there later, by yo or not, has a different one.
+    fn reported_id(&self, sys: &dyn Sys, l: &Launch<'_>, taken: &[String]) -> Option<String> {
+        if l.codename.is_empty() {
+            return None;
+        }
         let free = |id: &str| !taken.iter().any(|t| t == id);
-        let from = since - 60;
+        let (from, to) = (l.since - 60, l.since + 86_400);
+        let told = told(l.codename);
         let mut found: Vec<Meta> = rollouts_since(sys, from)
             .into_iter()
-            .filter_map(|p| read_meta(&p))
-            .filter(|m| m.interactive && m.at >= from && same_dir(&m.cwd, dir) && free(&m.id))
+            .filter_map(|p| read_meta(&p).map(|m| (p, m)))
+            .filter(|(_, m)| {
+                m.interactive
+                    && (from..=to).contains(&m.at)
+                    && free(&m.id)
+                    && same_dir(&m.cwd, l.dir)
+            })
+            .filter(|(p, _)| mentions(p, &told))
+            .map(|(_, m)| m)
             .collect();
         found.sort_by_key(|m| m.at);
         found.into_iter().next().map(|m| m.id)
     }
+}
+
+/// What a session is told of its codename: the start of its developer
+/// instructions.
+fn told(codename: &str) -> String {
+    format!("Your codename for this session is \"{codename}\".")
+}
+
+/// Whether the rollout at `path` says `text` in its opening lines, where
+/// Codex writes the developer instructions (JSON-escaped, as there).
+fn mentions(path: &Path, text: &str) -> bool {
+    let Ok(f) = fs::File::open(path) else {
+        return false;
+    };
+    let quoted = serde_json::to_string(text).unwrap_or_default();
+    let needle = &quoted[1..quoted.len().saturating_sub(1).max(1)];
+    BufReader::new(f)
+        .lines()
+        .take(32)
+        .map_while(|l| l.ok())
+        .any(|l| l.contains(needle))
 }
 
 /// The flags new and resumed sessions share.
@@ -199,8 +230,8 @@ fn flags(s: &SessionSpec) -> Vec<String> {
         args.push(format!(
             "developer_instructions={}",
             toml_string(&format!(
-                "Your codename for this session is \"{}\". Introduce yourself with it, and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.",
-                s.codename
+                "{} Introduce yourself with it, and use it whenever you identify this session, e.g. in notes, PR comments you're asked to post, or messages.",
+                told(&s.codename)
             ))
         ));
     }

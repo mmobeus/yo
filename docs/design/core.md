@@ -632,9 +632,12 @@ pub struct SessionSpec {
   until Codex offers it. What Codex 0.172.0 turned out to offer:
   - **Ids:** Codex picks them (UUIDs) and has no flag to take one, so
     `ids()` is `Reported`. The record is written at launch with none, and
-    `Ctx::learn_ids` (run by the commands that read the ledger) fills it in
-    with `reported_id`: the first TUI rollout in the session's directory
-    from its `createdAt` on that no other record has. A rollout
+    `Ctx::learn_ids` (run by the commands that read the ledger, but not on
+    a dry run, which writes nothing) fills it in with `reported_id`: the
+    first TUI rollout in the session's directory, within a day of its
+    `createdAt`, whose developer instructions carry the record's codename,
+    that no other record has. The codename ties the rollout to the launch,
+    so a later session in the same directory is never taken for it. A rollout
     (`~/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`) starts with a
     `session_meta` line (`id`, `cwd`, a UTC `timestamp`, `source: cli`).
     Codex writes it only with the first message, so a Codex session always

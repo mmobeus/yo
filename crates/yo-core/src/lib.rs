@@ -113,13 +113,19 @@ impl Ctx {
             let Ok(h) = self.harness_of(&e.record) else {
                 continue;
             };
-            let Some(since) = e.record.created_at else {
+            let (Some(since), Some(codename)) = (e.record.created_at, e.record.codename.clone())
+            else {
                 continue;
             };
             if h.ids() != harness::IdPolicy::Reported {
                 continue;
             }
-            if let Some(id) = h.reported_id(&*self.sys, &e.record.worktree, since, &taken) {
+            let launch = harness::Launch {
+                dir: &e.record.worktree,
+                since,
+                codename: &codename,
+            };
+            if let Some(id) = h.reported_id(&*self.sys, &launch, &taken) {
                 e.record.session_id = Some(id.clone());
                 if ledger.write(&mut e).is_ok() {
                     taken.push(id);

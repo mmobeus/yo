@@ -29,15 +29,10 @@ pub trait Harness: Send + Sync {
     }
     /// Who picks a new session's id.
     fn ids(&self) -> IdPolicy;
-    /// For a harness that reports its ids: the id of the session it started
-    /// in `dir` at about `since` (unix seconds), other than those `taken`.
-    fn reported_id(
-        &self,
-        _sys: &dyn Sys,
-        _dir: &Path,
-        _since: i64,
-        _taken: &[String],
-    ) -> Option<String> {
+    /// For a harness that reports its ids: the id of the session yo
+    /// launched (`l`), if the harness has recorded it, other than those
+    /// `taken`.
+    fn reported_id(&self, _sys: &dyn Sys, _l: &Launch<'_>, _taken: &[String]) -> Option<String> {
         None
     }
     /// What a session asked to report back (`--from`) to session `to` is
@@ -93,6 +88,17 @@ pub trait Harness: Send + Sync {
     fn bundle(&self, _sys: &dyn Sys, _paths: &Paths) -> Bundle {
         Bundle::default()
     }
+}
+
+/// A session yo launched, as a harness that reports its ids is asked for
+/// the one it started.
+#[derive(Clone, Copy, Debug)]
+pub struct Launch<'a> {
+    pub dir: &'a Path,
+    /// When yo launched it, in unix seconds.
+    pub since: i64,
+    /// The codename yo told it, which only this launch has been given.
+    pub codename: &'a str,
 }
 
 /// Who picks a new session's id.
