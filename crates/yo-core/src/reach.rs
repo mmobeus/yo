@@ -320,6 +320,24 @@ mod tests {
     }
 
     #[test]
+    fn a_resumed_codex_session_keeps_yos_status_line() {
+        let t = TempDir::new().unwrap();
+        let (c, _) = ctx(&t);
+        let mut e = entry(&t);
+        e.record.harness = Some("codex".into());
+        e.record.agent = None;
+        let p = plan_reach(&c, &e, State::Ready, "feat", &ResumeOpts::default()).unwrap();
+        let a = &launch(&p).argv.args;
+        assert_eq!(a[0], "resume");
+        let i = a
+            .iter()
+            .position(|x| x.starts_with("tui.status_line=["))
+            .unwrap_or_else(|| panic!("{a:?}"));
+        assert_eq!(a[i - 1], "-c");
+        assert!(i < a.iter().position(|x| x == ID).unwrap(), "{a:?}");
+    }
+
+    #[test]
     fn resuming_relaunches_with_its_repo_profile_and_message() {
         let t = TempDir::new().unwrap();
         let (c, _) = ctx(&t);
