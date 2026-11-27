@@ -4,11 +4,19 @@
 
 use clap::{Args, Parser, Subcommand};
 
+/// What `yo --version` says. A release build has it from its tag (`cargo
+/// xtask dist` sets `YO_VERSION`); any other build says the placeholder in
+/// Cargo.toml.
+pub const VERSION: &str = match option_env!("YO_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Start, find and tear down coding sessions, each on its own git worktree.
 #[derive(Debug, Parser)]
 #[command(
     name = "yo",
-    version,
+    version = VERSION,
     disable_help_subcommand = true,
     args_conflicts_with_subcommands = true,
     after_help = "`yo help` prints the full guide, with the repos yo can see."
@@ -340,7 +348,7 @@ mod tests {
     fn version() {
         let e = parse(&["--version"]).unwrap_err();
         assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion);
-        assert_eq!(e.to_string(), format!("yo {}\n", env!("CARGO_PKG_VERSION")));
+        assert_eq!(e.to_string(), format!("yo {VERSION}\n"));
     }
 
     #[test]

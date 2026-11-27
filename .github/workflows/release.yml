@@ -1,6 +1,8 @@
-# A `v*` tag releases yo: `cargo xtask release` builds both macOS binaries,
-# puts them on a GitHub Release, and tells mmobeus/homebrew-tap the new
-# version and checksums. The logic is in xtask; see docs/dev/release.md.
+# A `v*` tag, on main or a release/X.Y hotfix branch, releases yo as the
+# tag's version: `cargo xtask release` builds both macOS binaries, puts them
+# on a GitHub Release, and (unless it's a pre-release) tells
+# mmobeus/homebrew-tap the new version and checksums. The logic is in xtask;
+# see docs/dev/release.md.
 name: release
 
 on:
