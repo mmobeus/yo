@@ -342,7 +342,11 @@ pub fn plan_down_named(
             "{name} is this session: run yo down without a name"
         )));
     }
-    let (live, activity) = running(ctx, rec);
+    let Some((live, activity)) = running(ctx, rec) else {
+        return Err(Error::Refused(format!(
+            "{name} is this session (it runs in that worktree): run yo down without a name"
+        )));
+    };
     if o.yes && activity.working() {
         return Err(Error::Refused(match activity {
             Activity::Busy => format!("refusing: {name} is still working"),
@@ -398,25 +402,31 @@ pub fn plan_down_named(
 /// live session holds), whose id yo can't match, so it may be working;
 /// else, with no id yet from a harness that reports its own later (Codex,
 /// before its first message), yo can't tell. A session in place is never
-/// found by directory: others run in the same checkout.
-fn running(ctx: &Ctx, rec: &Record) -> (Option<LiveSession>, Activity) {
+/// found by directory: others run in the same checkout. Nor is the one yo
+/// runs in: `None` when it's the only session in the worktree.
+fn running(ctx: &Ctx, rec: &Record) -> Option<(Option<LiveSession>, Activity)> {
     let live = ctx.live();
+    let own = ctx.own_session();
     if let Some(l) = rec.id().and_then(|id| live.iter().find(|l| l.id == id)) {
         let a = match l.idle {
             Some(true) => Activity::Idle,
             Some(false) => Activity::Busy,
             None => Activity::Unknown,
         };
-        return (Some(l.clone()), a);
+        return Some((Some(l.clone()), a));
     }
     if rec.mode_or_default() == Mode::Worktree {
         let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
         let wt = real(&rec.worktree);
-        if let Some(l) = live
+        let (mine, others): (Vec<&LiveSession>, Vec<&LiveSession>) = live
             .iter()
-            .find(|l| !l.cwd.as_os_str().is_empty() && real(&l.cwd).starts_with(&wt))
-        {
-            return (Some(l.clone()), Activity::Unknown);
+            .filter(|l| !l.cwd.as_os_str().is_empty() && real(&l.cwd).starts_with(&wt))
+            .partition(|l| own.as_deref() == Some(l.id.as_str()));
+        if let Some(l) = others.first() {
+            return Some((Some((*l).clone()), Activity::Unknown));
+        }
+        if !mine.is_empty() {
+            return None;
         }
     }
     let reports = crate::harness::all().iter().any(|h| {
@@ -424,9 +434,9 @@ fn running(ctx: &Ctx, rec: &Record) -> (Option<LiveSession>, Activity) {
             && h.ids() == crate::harness::IdPolicy::Reported
     });
     if rec.id().is_none() && reports {
-        return (None, Activity::Unknown);
+        return Some((None, Activity::Unknown));
     }
-    (None, Activity::NotRunning)
+    Some((None, Activity::NotRunning))
 }
 
 /// Whether `rec`'s recorded tab is open and still its own: something in it
@@ -496,7 +506,9 @@ pub struct Children {
 /// `down --children`: the sessions this one started ([`children`]), each
 /// planned as `down NAME` would, but those that may still be working, or
 /// would lose uncommitted work without `discard`, or that `down` refuses,
-/// are skipped rather than asked about one by one.
+/// are skipped rather than asked about one by one. Any other error (yo
+/// couldn't read its own state) stops it, before anything has changed:
+/// planning changes nothing, and a broken ledger isn't a child to skip.
 pub fn plan_down_children(ctx: &Ctx, runner: &dyn Runner, discard: bool) -> Result<Children> {
     let mut c = Children::default();
     for e in children(ctx)? {

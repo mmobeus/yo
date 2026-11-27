@@ -807,10 +807,16 @@ pub struct LaunchSpec {
   window's id and a small number, so after iTerm restarts an old record's
   id can name another tab: yo closes it only when something in it shows the
   session's title (`user.yoTitle`) or terminal, or the session runs with its
-  terminal shown nowhere (hidden in that tab). Whether a session is still
-  working comes from its harness (Claude's session files say `idle` or
-  `busy`; Codex says nothing, so yo asks). Records keep `--from`, so a
-  session can find the ones it started (`down --children`).
+  terminal shown nowhere and the tab has a pane that could be its hidden
+  peer (no yo title, as a workgroup's CLI has none, or its own). Whether a
+  session is still working comes from its harness (Claude's session files
+  say `idle` or `busy`; Codex says nothing, so yo asks). A worktree is
+  held by any session running in it, even one whose id the record doesn't
+  have (as sweep keeps it), other than the one yo runs in; and a record
+  with no id yet from a harness that reports its own later (Codex, before
+  its first message) may be working too. Records keep `--from`, so a
+  session can find the ones it started (`down --children`), however it was
+  named (`session::started_from`).
 - **ACP** (phase 5): for sessions nobody is watching. The daemon runs the
   harness's ACP command (`claude-agent-acp`, `codex-acp`, ...) as a child
   process and talks JSON-RPC to it over stdin and stdout, through the

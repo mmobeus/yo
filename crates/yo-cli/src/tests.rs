@@ -1509,3 +1509,74 @@ fn down_children_goes_on_past_one_that_fails() {
     let out = yo(&sys, &api, &["sessions", "--from", "home-1"]);
     assert!(out.out.contains("two"), "{}", out.out);
 }
+
+#[test]
+fn down_name_says_a_codex_session_with_no_id_may_be_running() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let rec = t
+        .path()
+        .join(".local/state/yo/sessions/src__api-worktrees__feat.json");
+    fs::write(
+        &rec,
+        format!(
+            r#"{{"worktree": "{}", "name": "feat", "repo": "api", "harness": "codex"}}"#,
+            wt.display()
+        ),
+    )
+    .unwrap();
+    let out = yo(&sys, &api, &["down", "feat", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains(
+            "  (it may still be running: no session id recorded yet, so yo can't tell)\n"
+        ),
+        "{}",
+        out.out
+    );
+    let out = yo(&sys, &api, &["down", "feat", "--yes"]);
+    assert_ne!(out.code, 0);
+    assert!(
+        out.err.contains("can't tell whether feat is still working"),
+        "{}",
+        out.err
+    );
+    assert!(rec.exists());
+}
+
+#[test]
+fn down_children_says_why_it_skips_each() {
+    let (t, sys, api, wt) = with_session();
+    worktree_git(&sys, &api, &wt);
+    let w = wt.display().to_string();
+    sys.answer_ok("git", &["-C", &w, "status", "--porcelain"], " M a.rs\n");
+    let ledger = t.path().join(".local/state/yo/sessions");
+    let rec = ledger.join("src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"from": "home-1", "#, 1)).unwrap();
+    fs::write(
+        ledger.join("id-cindy.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "cindy-1", "name": "cindy-home", "home": true, "agent": "cindy", "mode": "here", "from": "home-1"}}"#,
+            api.display()
+        ),
+    )
+    .unwrap();
+    sys.set_env("CLAUDE_CODE_SESSION_ID", "home-1");
+    let out = yo(&sys, &api, &["down", "--children", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("  feat: uncommitted changes (--discard to lose them):\n         M a.rs\n"),
+        "{}",
+        out.out
+    );
+    assert!(
+        out.out.contains(
+            "  cindy-home: cindy-home is cindy's home, which yo keeps; quit its session with /exit instead\n"
+        ),
+        "{}",
+        out.out
+    );
+    assert!(out.out.ends_with("nothing to tear down.\n"), "{}", out.out);
+}

@@ -137,18 +137,26 @@ pub fn record(
 /// however it was named. Not the session itself.
 pub fn started_from(ctx: &Ctx, session: &str) -> Vec<Entry> {
     let all = ctx.ledger().all();
-    let mut names = vec![session.to_string()];
-    for l in ctx.live() {
-        if l.id == session || l.name.as_deref() == Some(session) {
-            names.push(l.id.clone());
-            names.extend(l.name);
+    let live = ctx.live();
+    // Its ids, by any name it goes by; then every name those ids have.
+    let mut ids: Vec<String> = vec![session.to_string()];
+    for l in &live {
+        if l.name.as_deref() == Some(session) {
+            ids.push(l.id.clone());
         }
     }
     for e in &all {
-        let r = &e.record;
-        if r.id() == Some(session) || r.name.as_deref() == Some(session) {
-            names.extend(r.id().map(str::to_string));
-            names.extend(r.name.clone());
+        if e.record.name.as_deref() == Some(session) {
+            ids.extend(e.record.id().map(str::to_string));
+        }
+    }
+    let mut names = ids.clone();
+    for l in live.iter().filter(|l| ids.contains(&l.id)) {
+        names.extend(l.name.clone());
+    }
+    for e in &all {
+        if e.record.id().is_some_and(|id| ids.iter().any(|i| i == id)) {
+            names.extend(e.record.name.clone());
         }
     }
     all.into_iter()

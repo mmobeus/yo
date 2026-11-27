@@ -438,3 +438,80 @@ fn children_that_may_be_working_or_would_lose_work_are_skipped() {
         force: true,
     }));
 }
+
+#[test]
+fn started_from_matches_a_session_however_it_is_named() {
+    let t = T::new();
+    let rec = |name: &str, id: &str, from: Option<&str>| {
+        t.record(
+            &format!("id-{name}"),
+            Record {
+                worktree: t.home.join("src/api"),
+                session_id: Some(id.into()),
+                name: Some(name.into()),
+                from: from.map(str::to_string),
+                ..Record::default()
+            },
+        );
+    };
+    // The home: yo name "home", id m1, Claude name sesh_1 (live).
+    rec("home", "m1", None);
+    rec("by-name", "c1", Some("home"));
+    rec("by-id", "c2", Some("m1"));
+    rec("by-harness-name", "c3", Some("sesh_1"));
+    rec("someone-elses", "c4", Some("other"));
+    let dir = t.home.join(".claude/sessions");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("50.json"),
+        r#"{"pid":50,"sessionId":"m1","cwd":"/w","kind":"interactive","name":"sesh_1"}"#,
+    )
+    .unwrap();
+    t.sys.add_process(50, "claude", Some("ttys020"));
+    let names = |q: &str| {
+        let mut v: Vec<String> = crate::session::started_from(&t.ctx(), q)
+            .into_iter()
+            .filter_map(|e| e.record.name)
+            .collect();
+        v.sort();
+        v
+    };
+    for q in ["m1", "home", "sesh_1"] {
+        assert_eq!(names(q), ["by-harness-name", "by-id", "by-name"], "{q}");
+    }
+    assert_eq!(names("other"), ["someone-elses"]);
+}
+
+#[test]
+fn the_session_yo_runs_in_isnt_found_by_directory() {
+    let t = T::new();
+    let shows = Shows::new(&[]);
+    // A record with no id for the worktree yo itself runs in.
+    let mut e = named(&t, Some("idle"));
+    e.record.session_id = None;
+    t.sys.set_env("CLAUDE_CODE_SESSION_ID", "s1");
+    let m = refused(
+        plan_down_named(&t.ctx(), &shows, &e, DownOpts::default()).map(|(o, p)| (o.found, p)),
+    );
+    assert!(m.starts_with("feat is this session"), "{m}");
+    // Another session in there too: that one holds it, and yo isn't ended.
+    let dir = t.home.join(".claude/sessions");
+    fs::write(
+        dir.join("31.json"),
+        format!(
+            r#"{{"pid":31,"sessionId":"s2","cwd":"{}","kind":"interactive"}}"#,
+            t.wt().display()
+        ),
+    )
+    .unwrap();
+    t.sys.add_process(31, "claude", Some("ttys011"));
+    let (other, plan) = plan_down_named(&t.ctx(), &shows, &e, DownOpts::default()).unwrap();
+    assert_eq!(other.activity, Activity::Unknown);
+    assert!(plan.actions.contains(&Action::EndSession {
+        harness: "claude".into(),
+        id: "s2".into(),
+        pid: 31,
+        after_close: false,
+    }));
+    assert!(!plan.actions.contains(&end_s1()));
+}
