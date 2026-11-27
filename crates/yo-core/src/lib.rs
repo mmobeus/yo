@@ -93,6 +93,41 @@ impl Ctx {
         self.harness(rec.harness.as_deref().unwrap_or(harness::DEFAULT))
     }
 
+    /// Gives each record of a harness that reports its own ids, and has
+    /// none yet, the id the harness has reported since: oldest records
+    /// first, each id to one record. Best effort: a ledger that can't be
+    /// written stays as it was.
+    pub fn learn_ids(&self) {
+        let ledger = self.ledger();
+        let all = ledger.all();
+        let mut taken: Vec<String> = all
+            .iter()
+            .filter_map(|e| e.record.id().map(str::to_string))
+            .collect();
+        let mut waiting: Vec<ledger::Entry> = all
+            .into_iter()
+            .filter(|e| e.record.id().is_none())
+            .collect();
+        waiting.sort_by_key(|e| e.record.created_at);
+        for mut e in waiting {
+            let Ok(h) = self.harness_of(&e.record) else {
+                continue;
+            };
+            let Some(since) = e.record.created_at else {
+                continue;
+            };
+            if h.ids() != harness::IdPolicy::Reported {
+                continue;
+            }
+            if let Some(id) = h.reported_id(&*self.sys, &e.record.worktree, since, &taken) {
+                e.record.session_id = Some(id.clone());
+                if ledger.write(&mut e).is_ok() {
+                    taken.push(id);
+                }
+            }
+        }
+    }
+
     /// Whether yo runs inside a session of any harness.
     pub fn inside_session(&self) -> bool {
         self.harnesses.iter().any(|h| h.inside(&*self.sys))

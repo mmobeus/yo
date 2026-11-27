@@ -217,9 +217,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         add(e);
     }
     if let Some(f) = &req.from {
-        add(&format!(
-            "When you finish, or get blocked on something only a person can decide, report back to the Claude session named \"{f}\" with SendMessage: a few lines on the outcome and where the work is (branch, PR, files). Do the work in this session; don't hand it back."
-        ));
+        add(&harness.report_back(f));
     }
     let mut codename = naming::codename(sys);
     if let Some(d) = &agent_display {

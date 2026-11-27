@@ -845,3 +845,58 @@ impl Report for Notes {
     fn doing(&mut self, _: &Action) {}
     fn launched(&mut self, _: &LaunchSpec, _: &Launched) {}
 }
+
+#[test]
+fn a_codex_session() {
+    let t = T::new(r#", "harnesses": {"codex": {"args": ["--search"]}}"#);
+    let p = t
+        .plan(|r| {
+            r.args = args(&["feat", "do it"]);
+            r.harness = Some("codex".into());
+            r.from = Some("home".into());
+        })
+        .unwrap();
+    let r = &record(&p).record;
+    assert_eq!(r.harness.as_deref(), Some("codex"));
+    assert_eq!(r.session_id, None, "Codex reports its own, later");
+    assert!(r.created_at.is_some(), "what the id is learned against");
+    // No settings layer, memory or trust: Claude's.
+    assert!(!p.actions.iter().any(|a| matches!(
+        a,
+        Action::MakeDir { .. } | Action::WriteFile { .. } | Action::Prepare(_)
+    )));
+    let l = launch(&p);
+    assert_eq!(l.argv.command, "codex --search");
+    assert_eq!(l.argv.args[0], "-c");
+    assert!(l.argv.args[1].contains("Plucky Gary"));
+    // The brief as it is, with a report-back it can do: yo types it.
+    let brief = l.argv.args.last().unwrap();
+    assert!(brief.starts_with("do it When you finish"), "{brief}");
+    assert!(brief.contains("by running `yo home '<report>'`"), "{brief}");
+    assert!(!brief.contains("SendMessage"), "{brief}");
+
+    // In place, it's keyed by the id yo made up, which it never passes.
+    let t = T::new("");
+    let p = t
+        .plan(|r| {
+            r.args = args(&["-"]);
+            r.mode = Some(Mode::Here);
+            r.harness = Some("codex".into());
+        })
+        .unwrap();
+    assert_eq!(record(&p).key.0, format!("id-{ID}"));
+    assert_eq!(record(&p).record.session_id, None);
+    assert!(!launch(&p).argv.args.iter().any(|a| a.contains(ID)));
+
+    // Flags it has nothing for name it.
+    let t = T::new("");
+    let m = refused(t.plan(|r| {
+        r.args = args(&["x"]);
+        r.harness = Some("codex".into());
+        r.agent = Some("cindy".into());
+    }));
+    assert!(
+        m.starts_with("--agent: the codex harness has no agents"),
+        "{m}"
+    );
+}

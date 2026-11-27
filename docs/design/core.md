@@ -16,7 +16,7 @@
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | done (#34; PRs #36, #37, and mmobeus/homebrew-tap#1): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; a `v*` tag releases both macOS binaries as the tag's version and dispatches to the tap (`cargo xtask release`; from #43 the tag is the version, with `release/X.Y` hotfix branches on demand); `brew install mmobeus/tap/yo` installs them, from v0.1.0 |
-| 2 | a second harness: Codex | in progress (#39): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` (agents' `.claude/agents`, `CLAUDE_CODE_SESSION_ID`, `CLAUDECODE`, the trust steps' wording) behind `Harness` methods; the Codex harness next |
+| 2 | a second harness: Codex | in progress (#39; PR #45, and the Codex PR): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (PR #45); the Codex harness, with ids learned late from its rollouts, live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (the Codex PR) |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
 | 5 | the daemon, ACP runner and relay | not started |
@@ -571,7 +571,8 @@ session ran, from the harness's own records: Claude's session files, else its tr
 Phase 2 added `default_command` and `command` (its configured command), `ids`,
 `inside` (yo runs inside one of its sessions: Claude's `CLAUDECODE`) and
 `persona_dir` (where its agents are defined: Claude's `.claude/agents`, in a
-checkout and under `HOME`).
+checkout and under `HOME`), `reported_id` (an id learned after launch) and
+`report_back` (how a session reaches the one `--from` names).
 
 ```rust
 pub trait Harness {
@@ -624,12 +625,41 @@ pub struct SessionSpec {
   passing `--name <yo name>`, so other sessions (and the relay) can address
   it by yo's name. Another harness tells the session its codename however it
   can.
-- **The Codex harness** (phase 2) is the second implementation: launch, resume,
-  live sessions, a ledger record with an id learned after launch, and
-  messages typed into its tab. Its ACP command (`codex-acp`) is used from
-  phase 5. Everything else is "not available" until Codex offers it. Its details (how it names sessions, what
-  it reports while running, whether it has hooks) are checked when that phase
-  starts, against what Codex ships then.
+- **The Codex harness** (phase 2, `harness/codex.rs`) is the second
+  implementation: launch, resume, live sessions, a ledger record with an id
+  learned after launch, and messages typed into its tab. Its ACP command
+  (`codex-acp`) is used from phase 5. Everything else is "not available"
+  until Codex offers it. What Codex 0.172.0 turned out to offer:
+  - **Ids:** Codex picks them (UUIDs) and has no flag to take one, so
+    `ids()` is `Reported`. The record is written at launch with none, and
+    `Ctx::learn_ids` (run by the commands that read the ledger) fills it in
+    with `reported_id`: the first TUI rollout in the session's directory
+    from its `createdAt` on that no other record has. A rollout
+    (`~/.codex/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`) starts with a
+    `session_meta` line (`id`, `cwd`, a UTC `timestamp`, `source: cli`).
+    Codex writes it only with the first message, so a Codex session always
+    gets one (with no brief, it's asked to introduce itself).
+  - **Live sessions:** no status command and no pid files. A running TUI
+    holds a lock on `~/.codex/thread-writer-locks/<id>.lock` (removed when
+    it exits, left unheld by a crash); `lsof` says which process holds it,
+    and where that process is.
+  - **Hooks:** Codex has them (`SessionStart`, `SessionEnd` and a dozen
+    more, in `hooks.json` or `config.toml`), but each must be approved in
+    its `/hooks` screen before it runs, and `-c` doesn't get past that. yo
+    doesn't use them, so a `/quit` isn't seen as a deliberate end.
+  - **Names:** no `--name`; `/rename` only. **The codename** goes in as
+    `-c developer_instructions=...`, leaving the first message as it is.
+  - **Resume:** `codex resume [ID] [PROMPT]`, so a stopped session is
+    resumed with the message, like Claude.
+  - **Inside a session:** `CODEX_THREAD_ID` (and `CODEX_SESSION_ID`) are set
+    for the commands it runs (`own_session`).
+  - **Not available:** personas, a settings layer, shared memory, Remote
+    Control, ledger hooks. Trust: a `-c projects...` override doesn't skip
+    its folder-trust prompt; pre-trusting would mean writing to
+    `~/.codex/config.toml`, not done yet.
+  - **`--from`:** a Codex session has no `SendMessage`, so it's told to run
+    `yo SESSION 'report'`, which types the report into that session
+    (`report_back`, which Claude overrides with `SendMessage`).
 - **Flags that don't apply** to a session's harness (`--agent` on Codex, say)
   are an error that names the harness, not silently ignored.
 - **Status** comes from whatever the harness offers. For Claude that's

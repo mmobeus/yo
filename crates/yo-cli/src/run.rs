@@ -57,19 +57,19 @@ fn go(
     match &cli.command {
         None => return up(&cli.up, sys, cwd, out),
         Some(Command::Resume(r)) => {
-            return ledger_cmds::resume(&mut Ctx::load(sys, cwd)?, r, cwd, out);
+            return ledger_cmds::resume(&mut loaded(sys, cwd)?, r, cwd, out);
         }
         Some(Command::ResumeAll(r)) => {
-            return ledger_cmds::resume_all(&mut Ctx::load(sys, cwd)?, r, out);
+            return ledger_cmds::resume_all(&mut loaded(sys, cwd)?, r, out);
         }
         Some(Command::Adopt(a)) => return ledger_cmds::adopt(&Ctx::load(sys, cwd)?, a, cwd, out),
         Some(Command::Forget { query }) => {
-            return ledger_cmds::forget(&Ctx::load(sys, cwd)?, query, cwd, out);
+            return ledger_cmds::forget(&loaded(sys, cwd)?, query, cwd, out);
         }
         Some(Command::Title { title }) => {
             return ledger_cmds::title(&Ctx::load(sys, cwd)?, title.as_deref(), cwd, out);
         }
-        Some(Command::Agent(a)) => return agent(&Ctx::load(sys, cwd)?, a, out),
+        Some(Command::Agent(a)) => return agent(&loaded(sys, cwd)?, a, out),
         Some(Command::Config {
             command:
                 Some(ConfigCmd::AddRepo {
@@ -86,14 +86,14 @@ fn go(
         Some(Command::Config {
             command: Some(ConfigCmd::Edit),
         }) => return config_edit(&Ctx::load(sys, cwd)?, out),
-        Some(Command::Down(d)) => return teardown::down(&Ctx::load(sys, cwd)?, d, cwd, out),
+        Some(Command::Down(d)) => return teardown::down(&loaded(sys, cwd)?, d, cwd, out),
         Some(Command::EndSession { id, pid }) => {
             let ctx = Ctx::load(sys, cwd)?;
             yo_core::end::end_session(&ctx, id, *pid, yo_core::end::AFTER_CLOSE);
             return Ok(0);
         }
         Some(Command::Sweep(s)) => {
-            return teardown::sweep(&Ctx::load(sys, cwd)?, s, cwd, out, err);
+            return teardown::sweep(&loaded(sys, cwd)?, s, cwd, out, err);
         }
         Some(_) => {}
     }
@@ -101,7 +101,7 @@ fn go(
     let Some(name) = read_only(cli.command.as_ref()) else {
         return Ok(0);
     };
-    let ctx = Ctx::load(sys, cwd)?;
+    let ctx = loaded(sys, cwd)?;
     let text = match name {
         ReadOnly::Help => render::help(&ctx),
         ReadOnly::ConfigShow => render::config_show(&ctx),
@@ -125,6 +125,14 @@ fn go(
     };
     out.write_all(text.as_bytes())?;
     Ok(0)
+}
+
+/// The context, with the ids harnesses reported since yo last looked
+/// written to the ledger: for the commands that read it.
+fn loaded(sys: Arc<dyn Sys>, cwd: &Path) -> yo_core::Result<Ctx> {
+    let ctx = Ctx::load(sys, cwd)?;
+    ctx.learn_ids();
+    Ok(ctx)
 }
 
 /// The runner commands use: iTerm, or with `YO_DRY_LAUNCH` one that only
@@ -185,7 +193,7 @@ fn up(
     cwd: &Path,
     out: &mut dyn Write,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    let mut ctx = Ctx::load(sys, cwd)?;
+    let mut ctx = loaded(sys, cwd)?;
     let live = ctx.live();
     let entries = ctx.ledger().all();
     let message = up.args.get(1).cloned();

@@ -11,6 +11,7 @@ use crate::sys::Sys;
 use crate::{Ctx, Result};
 
 pub mod claude;
+pub mod codex;
 
 /// The harness a ledger record without one ran on: every record before
 /// harnesses were recorded.
@@ -28,6 +29,26 @@ pub trait Harness: Send + Sync {
     }
     /// Who picks a new session's id.
     fn ids(&self) -> IdPolicy;
+    /// For a harness that reports its ids: the id of the session it started
+    /// in `dir` at about `since` (unix seconds), other than those `taken`.
+    fn reported_id(
+        &self,
+        _sys: &dyn Sys,
+        _dir: &Path,
+        _since: i64,
+        _taken: &[String],
+    ) -> Option<String> {
+        None
+    }
+    /// What a session asked to report back (`--from`) to session `to` is
+    /// told: how it can reach `to` from here. By default it runs `yo TO
+    /// 'REPORT'`, which types the report into `to`'s tab.
+    fn report_back(&self, to: &str) -> String {
+        format!(
+            "When you finish, or get blocked on something only a person can decide, report back to the session named \"{to}\" by running `yo {} '<report>'`, which types the report into that session: a few lines on the outcome and where the work is (branch, PR, files). Do the work in this session; don't hand it back.",
+            shell_word(to)
+        )
+    }
     /// Its sessions that are running now.
     fn live(&self, sys: &dyn Sys) -> Vec<LiveSession>;
     fn capabilities(&self) -> Capabilities;
@@ -293,7 +314,7 @@ pub fn valid_session_id(id: &str) -> bool {
 
 /// Every harness yo has.
 pub fn all() -> Vec<Box<dyn Harness>> {
-    vec![Box::new(claude::Claude)]
+    vec![Box::new(claude::Claude), Box::new(codex::Codex)]
 }
 
 /// The harness named `name`, among `all`.

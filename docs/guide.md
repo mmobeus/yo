@@ -126,6 +126,26 @@ To run one session on a different model without changing your default:
 yo --model=sonnet my-fix
 ```
 
+### Codex
+
+Sessions run on Claude Code unless you pick another coding agent. To run one on
+the Codex CLI:
+
+```sh
+yo --harness=codex my-fix 'make the retry test pass'
+```
+
+To make it the default for a repo, a profile or everywhere, set `"harness":
+"codex"` there (see the [reference](reference.md#harnesses)). yo remembers
+each session's harness, so `yo resume`, `resume-all` and `yo my-fix 'and
+now?'` bring a Codex session back on Codex.
+
+A Codex session gets less than a Claude one. There are no agents, settings
+layer or shared memory, and Codex asks you to trust each new worktree. Codex
+picks its own session id, which yo picks up from Codex's records the next time
+it looks, for example with `yo sessions`. yo can't tell `/quit` from a closed
+tab, so a session you quit stays resumable; `yo down` or `yo forget` removes it.
+
 ## 3. Coming back to sessions
 
 ### How a session ends matters
