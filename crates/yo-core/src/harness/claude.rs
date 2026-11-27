@@ -81,6 +81,14 @@ impl Harness for Claude {
         )
     }
 
+    /// By Remote Control, if it has a name there, or with `SendMessage`.
+    fn reach_hint(&self, remote_control: Option<&str>) -> Option<String> {
+        let rc = remote_control
+            .map(|r| format!("by Remote Control as {r}, or "))
+            .unwrap_or_default();
+        Some(format!("{rc}with SendMessage from another session"))
+    }
+
     /// Interactive sessions from `~/.claude/sessions/<pid>.json` whose
     /// process is alive and is still `claude` (a pid can be reused after a
     /// reboot). Background sessions (`kind` other than `interactive`) are

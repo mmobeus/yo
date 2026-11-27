@@ -226,7 +226,15 @@ fn up(
         Resolved::Live(l) => {
             let name = &up.args[0];
             (
-                plan_focus(&ctx, l.pid, None, name, None, message.as_deref()),
+                plan_focus(
+                    &ctx,
+                    &l.harness,
+                    l.pid,
+                    None,
+                    name,
+                    None,
+                    message.as_deref(),
+                ),
                 false,
             )
         }
@@ -257,6 +265,7 @@ fn up(
                 HomeTarget::Live(l) => (
                     plan_focus(
                         &ctx,
+                        &l.harness,
                         l.pid,
                         None,
                         &format!("{name}'s home"),
