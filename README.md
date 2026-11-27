@@ -1,7 +1,7 @@
 # Yo
 
-Personal dev environment: an iTerm2 + Claude Code work-session launcher and the
-config that goes with it, installed into `~` as symlinks back into this checkout.
+An iTerm2 + Claude Code work-session launcher: each session on its own git
+worktree, tracked, and brought back after a restart.
 
 ```
 crates/                 yo itself: a Rust workspace; crates/yo-cli is the `yo` binary
@@ -10,35 +10,42 @@ docs/                   the user guide and reference
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
 claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt, yo-title)
-install.sh              builds yo and wires it all up
 ```
 
 ## Install
 
 ```sh
-git clone git@github.com:mmobeus/yo.git
-cd yo
-./install.sh --dry-run     # see the plan
-./install.sh               # builds yo with cargo, then links everything
+brew install mmobeus/tap/yo
+yo setup --dry-run     # see the plan
+yo setup               # skills, settings layer, statusline, a starting config
+```
+
+The formula arrives with yo's first release. Until then, or to build it
+yourself, install from source with Rust ([rustup](https://rustup.rs)):
+
+```sh
+git clone https://github.com/mmobeus/yo.git && cd yo
+cargo install --locked --path crates/yo-cli
+yo setup
 ```
 
 That's enough to start: `cd` into any clone and run `yo my-fix 'what to do'`
-(see [Start here](docs/guide.md#1-start-here)). Register more repos when you
-want them (`yo config add-repo <clone|owner/repo>`). The installer creates
-`~/.config/yo/config.json` once, listing this checkout, and never touches it
-again: it names your repos, so it lives outside this one.
+(see [Start here](docs/guide.md#1-start-here)). Register repos when you want
+them (`yo config add-repo <clone|owner/repo>`). `yo setup` creates
+`~/.config/yo/config.json` once and never touches it again: it names your
+repos, so it's yours.
 
 | what | where it lands |
 | --- | --- |
-| `yo` | `~/.local/bin/yo`, a link to `target/release/yo` in this checkout |
 | yo config | `~/.config/yo/config.json` (a plain file, yours) |
 | settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
 | skills | `~/.claude/skills/` |
 | terminal peer | iTerm2's "Claude Code" workgroup (only if it has none) |
 
-Useful flags: `--dry-run`, `--uninstall`, `--copy` (no dependency on this
-checkout staying put), `--force`, `--merge-settings`, `--no-iterm`,
-`--bin=PATH`. `./install.sh --help` has the rest.
+The files are copies built into yo, so run `yo setup` again after upgrading
+(yo says so when they're out of date). Useful flags: `--dry-run`,
+`--uninstall`, `--merge-settings`, `--no-iterm`, `--force`; `yo setup --help`
+has the rest.
 
 ## A quick tour
 
@@ -75,14 +82,21 @@ yo config                                # what's configured
 [`AGENTS.md`](AGENTS.md) has the conventions, the gates to run before a PR,
 and the review checklists. The short version for trying a change:
 
-Installed files are symlinks into this checkout, so an edit here is live
-immediately (and `yo` is, once rebuilt) — which is what you want for a
-finished change, and not while one is half-done. Keep this checkout on `main`
-and do the work in a worktree:
+Keep your main checkout on `main` and do the work in a worktree. To have
+your installed skills and settings follow a checkout, link them into it, and
+install yo from it:
 
 ```sh
-yo yo tweak-the-installer     # worktree + session, this checkout untouched
-cd ../yo-worktrees/tweak-the-installer
+cargo install --locked --path crates/yo-cli   # yo, built from this checkout
+yo setup --link .                              # the claude/ files, as links here
+```
+
+Then an edit to a skill or the statusline here is live immediately, and `yo`
+is once it's reinstalled. Try a change by path from its worktree:
+
+```sh
+yo yo tweak-the-statusline     # worktree + session, the main checkout untouched
+cd ../yo-worktrees/tweak-the-statusline
 cargo build && target/debug/yo help    # test by path
 cargo xtask ci                         # the gates, as CI runs them
 ```
@@ -90,11 +104,8 @@ cargo xtask ci                         # the gates, as CI runs them
 To exercise `yo` without opening iTerm, set `YO_DRY_LAUNCH=1`: it prints the
 tab title, directory and `claude` command instead of launching. Point `HOME`,
 `XDG_STATE_HOME` and `YO_CONFIG` at a throwaway directory as well, so the test
-leaves your ledger and `~/.claude.json` alone.
-
-Merge to `main`, pull here, and the installed symlinks pick it up; `yo`
-itself needs `cargo build --release -p yo-cli` (or `./install.sh` again).
-`install.sh` is otherwise only needed again when a *new* file needs linking.
+leaves your ledger and `~/.claude.json` alone (and give `yo setup`
+`--no-iterm`: iTerm2's preferences aren't under `HOME`).
 
 ## yo without this repo
 
@@ -104,8 +115,6 @@ you are standing in. `yo help` prints the repos it can currently see.
 
 ## Requirements
 
-macOS with iTerm2, `git`, `jq` (the statusline), and Rust
-([rustup](https://rustup.rs)) to build yo; `rust-toolchain.toml` pins the
-toolchain. `python3` is used only by `install.sh`, to add iTerm2's workgroup
-peer (skip it with `--no-iterm`). `gh` is optional (PR and issue titles in
-window titles).
+macOS with iTerm2, `git` and `jq` (the statusline). `gh` is optional (PR and
+issue titles in window titles). Building from source needs Rust
+([rustup](https://rustup.rs)); `rust-toolchain.toml` pins the toolchain.

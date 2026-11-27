@@ -24,9 +24,10 @@ claude/           Claude Code files yo installs for its users (skills, settings)
 docs/             the user guide, the reference, the design, docs/dev/
 ```
 
-`install.sh` builds `yo` and links it into `~/.local/bin`. The guide and
-the reference describe it: a change to what a command does or prints
-updates them in the same PR.
+`yo setup` installs `claude/` from copies built into the binary (`yo setup
+--link <checkout>` links them instead). The guide and the reference describe
+every command: a change to what a command does or prints updates them in the
+same PR.
 
 ## Before opening a PR
 
@@ -37,8 +38,8 @@ updates them in the same PR.
    (`target/debug/yo`) in a sandbox (`YO_DRY_LAUNCH=1`, with `HOME`,
    `XDG_STATE_HOME` and `YO_CONFIG` pointed at a throwaway directory; see
    the README's "Making changes"), and say in the PR what you tried. If you
-   changed `install.sh`, try it with `--bin`, `--claude-dir`,
-   `--config-dir` and `--no-iterm` pointed at a throwaway directory.
+   changed `yo setup`, try it the same way, with `--no-iterm` (iTerm2's
+   preferences aren't under `HOME`).
 4. Go through the three checklists in `docs/dev/` for your diff.
 5. Fill in the PR template.
 

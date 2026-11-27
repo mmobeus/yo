@@ -21,15 +21,23 @@ the [reference](reference.md).
 ### Install
 
 ```sh
-git clone git@github.com:mmobeus/yo.git && cd yo
-./install.sh --dry-run    # see what it would do
-./install.sh
+brew install mmobeus/tap/yo
+yo setup --dry-run    # see what it would do
+yo setup
 ```
 
-This builds `yo` (with cargo) and puts it in `~/.local/bin`, plus a few
-skills and settings described later. You need git, jq, Rust
-([rustup](https://rustup.rs)), and iTerm2 on macOS; the installer also uses
-python3 to set up iTerm2's workgroup.
+The formula arrives with yo's first release. Until then, or to build it
+yourself, install from source with Rust ([rustup](https://rustup.rs)):
+
+```sh
+git clone https://github.com/mmobeus/yo.git && cd yo
+cargo install --locked --path crates/yo-cli
+yo setup
+```
+
+`yo setup` installs a few skills and settings, described later, and is safe
+to run again; run it again after upgrading yo. You need git, jq and iTerm2 on
+macOS; `gh` is optional.
 
 ### Your first session
 
@@ -347,7 +355,7 @@ yo never edits `~/.claude/settings.json`; Claude Code and iTerm2 both write
 it. Each session gets `claude --settings <file>` instead, composed from yo's
 `claude-settings.json`, the profile's `settings` file, the session's memory
 directory, and the ledger's hooks. It outranks your settings files, and lists
-like permissions merge with yours. `./install.sh --merge-settings` applies the
+like permissions merge with yours. `yo setup --merge-settings` applies the
 same settings to every claude session.
 
 ### Memory
@@ -380,7 +388,7 @@ give `--from` or `yo NAME`), the branch, context used, cost and time.
   `"windowGroup"` names the window (`{repo}` in it gives one per repo).
 - **Layout.** With iTerm2's Claude Code workgroup set up with a terminal peer
   ("CLI"), claude has the tab to itself and the peer is the shell. Otherwise
-  the tab is split: claude left, a shell right. The installer adds the peer;
+  the tab is split: claude left, a shell right. `yo setup` adds the peer;
   it appears after iTerm2 restarts.
 - **Titles that stick.** claude rewrites the terminal title constantly, so yo
   uses an iTerm profile (`worksesh`) that ignores that and pins the tab title.

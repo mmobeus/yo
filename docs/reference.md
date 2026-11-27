@@ -33,7 +33,35 @@ as `--flag=value` or `--flag value`.
 | `yo config path` | the config file's path |
 | `yo config edit` | open it in `$EDITOR`, then validate |
 | `yo config add-repo <dir\|url\|owner/repo> [--profile=P] [--key=K]` | list a repo, cloning it first unless it's a directory |
+| `yo setup [--dry-run] [--uninstall] [--link=CHECKOUT] [--merge-settings] [--no-iterm] [--force]` | install what yo needs besides its binary ([`yo setup`](#yo-setup)) |
 | `yo help` | yo's guide, and what's configured |
+
+### `yo setup`
+
+Installs the skills, the settings layer and the statusline from copies built
+into yo, creates the config if there is none (with no repos, or listing the
+`--link` checkout as `yo`), and adds a terminal peer ("CLI") to iTerm2's
+Claude Code workgroup if it has none. It's safe to run again:
+
+- what's already in place is left alone, and what setup installed before is
+  replaced;
+- anything else in the way is moved aside to `<path>.bak-<time>` first;
+- a link that points somewhere yo didn't make is left alone (`--force`
+  replaces it);
+- `~/.local/bin/yo`, if it's a link to a checkout's build (an old
+  `install.sh`), is removed, unless it's the yo running.
+
+What it installed is recorded in `~/.local/state/yo/setup.json`. When a newer
+yo has different copies, every other command says to run `yo setup` again.
+
+| flag | effect |
+| --- | --- |
+| `--dry-run`, `-n` | say what it would do, and change nothing |
+| `--uninstall` | take out what setup installed: its copies (unless edited since) and links into a yo checkout. The config, iTerm2's peer and yo itself stay |
+| `--link=CHECKOUT` | link the files into a yo checkout instead of copying them, so edits there are live (for working on yo) |
+| `--merge-settings` | also merge yo's Claude settings into `~/.claude/settings.json`, for every claude session: yo's keys win, objects merge key by key, the rest of the file stays (backed up first). With `--uninstall`, its top-level keys are taken back out |
+| `--no-iterm` | leave iTerm2's workgroups alone. Otherwise iTerm2 sees a new peer after it restarts (the old workgroups are saved to `~/.config/yo/iterm-workgroups.bak-<time>.json`) |
+| `--force` | replace links that point somewhere unexpected |
 
 ### INPUT
 
@@ -192,6 +220,7 @@ setting's environment variable, if set, beats the file.
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
 | skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title` |
+| what `yo setup` installed | `~/.local/state/yo/setup.json` |
 | worktrees | `<clone>-worktrees/<name>`, branch `<name>` (or `<prefix>/<name>`) |
 | an agent's home | `<clone>-worktrees/agent-<name>`, Remote Control and session name `<name>-home` |
 | unknown repos | `<cloneRoot>/<owner>/<repo>` |
@@ -204,7 +233,12 @@ replaced it with a Rust binary. What a command does is the same; these are
 the differences you'd notice (the design's "Testing the port" has the full
 list):
 
-- `install.sh` builds yo with cargo, so installing needs Rust.
+- yo is installed with Homebrew (or `cargo install`), and `yo setup` does
+  what `install.sh` did besides installing the binary; it needs neither
+  python3 nor jq itself. Its files are copies built into yo unless `--link` is given; there's
+  no `--copy`, `--bin`, `--claude-dir` or `--config-dir` (`HOME` and
+  `XDG_CONFIG_HOME` move them), and the starting config lists no repos
+  unless `--link` names a checkout.
 - Flags are parsed by clap: `--flag value` works as well as `--flag=value`,
   usage errors read differently, and there's `yo --help` and
   `yo <command> --help`. `yo help` still prints the guide and the registry.
