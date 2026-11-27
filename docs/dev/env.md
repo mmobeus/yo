@@ -8,6 +8,7 @@ below, and calls `cargo xtask <gate>`.
 cargo xtask ci          # every default gate, in CI's order
 cargo xtask <gate>      # one gate: lint, arch, deny, test
 cargo xtask advisories  # needs the network
+cargo xtask dist        # release tarballs, on macOS (see release.md)
 cargo xtask help
 ```
 
@@ -38,7 +39,7 @@ whether it's in CI.
 
 | variable | used by | meaning |
 | --- | --- | --- |
-| _none yet_ | | |
+| `YO_RELEASE_TAG`, `GH_TOKEN`, `HOMEBREW_TAP_TOKEN` | `cargo xtask release` | see [release.md](release.md) |
 
 Cargo's own variables (`CARGO_TERM_COLOR`, `CARGO_TARGET_DIR`, ...) work as
 usual, and can go in `.env` too.

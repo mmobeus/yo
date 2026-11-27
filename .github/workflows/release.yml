@@ -1,0 +1,38 @@
+# A `v*` tag releases yo: `cargo xtask release` builds both macOS binaries,
+# puts them on a GitHub Release, and tells mmobeus/homebrew-tap the new
+# version and checksums. The logic is in xtask; see docs/dev/release.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      # A token that can only dispatch to the tap (the org's Homebrew app).
+      - id: tap
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.HOMEBREW_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: mmobeus
+          repositories: homebrew-tap
+      - run: cargo xtask release
+        env:
+          YO_RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap.outputs.token }}

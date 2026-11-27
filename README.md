@@ -118,3 +118,7 @@ you are standing in. `yo help` prints the repos it can currently see.
 macOS with iTerm2, `git` and `jq` (the statusline). `gh` is optional (PR and
 issue titles in window titles). Building from source needs Rust
 ([rustup](https://rustup.rs)); `rust-toolchain.toml` pins the toolchain.
+
+## License
+
+[MIT](LICENSE).

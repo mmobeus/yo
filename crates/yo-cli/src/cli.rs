@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "yo",
+    version,
     disable_help_subcommand = true,
     args_conflicts_with_subcommands = true,
     after_help = "`yo help` prints the full guide, with the repos yo can see."
@@ -317,6 +318,13 @@ mod tests {
         assert!(parse(&["--agent=a b"]).is_err());
         assert!(parse(&["--title="]).is_err());
         assert!(parse(&["resume", "x", "--model=a b"]).is_err());
+    }
+
+    #[test]
+    fn version() {
+        let e = parse(&["--version"]).unwrap_err();
+        assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(e.to_string(), format!("yo {}\n", env!("CARGO_PKG_VERSION")));
     }
 
     #[test]
