@@ -25,7 +25,7 @@ pub fn setup(sys: Arc<dyn Sys>, s: &Setup, cwd: &Path, out: &mut dyn Write) -> R
         link: s.link.as_ref().map(|l| cwd.join(l)),
         hooks: s.hooks,
     };
-    let asking = at_terminal(&*sys);
+    let asking = yo_core::harness::can_ask(&*sys);
     let offers = if s.uninstall || s.hooks {
         Vec::new()
     } else {
@@ -59,6 +59,13 @@ pub fn setup(sys: Arc<dyn Sys>, s: &Setup, cwd: &Path, out: &mut dyn Write) -> R
     if s.dry_run {
         for step in &p.steps {
             out.write_all(line(&t, step).as_bytes())?;
+        }
+        for a in &p.approve {
+            writeln!(
+                out,
+                "  then    offer to open {} to approve yo's {} hook",
+                a.command, a.harness
+            )?;
         }
         for o in offers.iter().filter(|_| !opts.hooks) {
             writeln!(
@@ -129,15 +136,6 @@ pub fn setup(sys: Arc<dyn Sys>, s: &Setup, cwd: &Path, out: &mut dyn Write) -> R
         )?;
     }
     Ok(0)
-}
-
-/// Whether the person can be asked: at a terminal, outside a harness's
-/// session (whose terminal isn't the person's).
-fn at_terminal(sys: &dyn Sys) -> bool {
-    use std::io::IsTerminal;
-    std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && !yo_core::harness::all().iter().any(|h| h.inside(sys))
 }
 
 /// Paths under `HOME` as `~/...`.

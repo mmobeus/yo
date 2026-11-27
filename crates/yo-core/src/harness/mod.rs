@@ -359,6 +359,12 @@ pub fn valid_session_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Whether the person can be asked a question: at a terminal, and outside
+/// a harness's session (whose terminal isn't the person's).
+pub fn can_ask(sys: &dyn Sys) -> bool {
+    sys.interactive() && !all().iter().any(|h| h.inside(sys))
+}
+
 /// Every harness yo has.
 pub fn all() -> Vec<Box<dyn Harness>> {
     vec![Box::new(claude::Claude), Box::new(codex::Codex)]

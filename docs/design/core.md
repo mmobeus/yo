@@ -528,7 +528,8 @@ printing a plan; `resume` refuses running and gone sessions in `yo-cli` too.
 What a running session without a tab is, and the wait for those still
 exiting, are `yo-core`'s (`reach::tabless`, `reach::await_tabless`). `adopt`, `forget` and `title` write the ledger directly, and
 `title` and `adopt` call the iTerm runner's own methods rather than going
-through `Runner`. `config edit` runs `$EDITOR` outside `Sys`. These move
+through `Runner`. `config edit` runs `$EDITOR` outside `Sys`, and `setup` runs a harness's
+command (`codex`) interactively, after a yes, to approve yo's hook there. These move
 into `yo-core` plans (`plan_resume_all` and small ones for the ledger
 commands) when the daemon or the TUI needs them, no later than phase 4.
 

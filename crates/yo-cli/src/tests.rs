@@ -838,6 +838,87 @@ dry run: nothing changed.
     assert!(!sys.calls().iter().any(|c| c.program == "defaults"));
 }
 
+/// yo's Codex hook: offered when Codex is installed, shown in dry runs,
+/// added with --hooks (still to be approved), kept, and taken out.
+#[test]
+fn setup_and_codex_hook() {
+    let (t, sys) = setup_sandbox();
+    sys.answer_ok("codex", &["--version"], "codex-cli 0.172.0");
+    let out = yo(&sys, t.path(), &["setup", "--dry-run", "--no-iterm"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains(
+            "    not added: yo's codex hook (setup asks at a terminal; --hooks adds it)\n"
+        ),
+        "{}",
+        out.out
+    );
+    let out = yo(
+        &sys,
+        t.path(),
+        &["setup", "--dry-run", "--no-iterm", "--hooks"],
+    );
+    assert_eq!(out.code, 0, "{}", out.err);
+    for want in [
+        "  hook    ~/.codex/hooks.json (yo's codex hook; the rest kept)\n",
+        "  then    offer to open codex to approve yo's codex hook\n",
+    ] {
+        assert!(out.out.contains(want), "{want}\n{}", out.out);
+    }
+    assert!(!out.out.contains("not added"), "{}", out.out);
+    assert!(
+        !t.path().join(".codex").exists(),
+        "a dry run writes nothing"
+    );
+
+    let out = yo(&sys, t.path(), &["setup", "--no-iterm", "--hooks"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    for want in [
+        "  hook    ~/.codex/hooks.json (yo's codex hook; the rest kept)\n",
+        "yo: yo's codex hook isn't approved yet, so codex stops at its hook review until it is: \
+         run codex and approve it there (or run yo setup again)\n",
+    ] {
+        assert!(out.out.contains(want), "{want}\n{}", out.out);
+    }
+    assert!(
+        fs::read_to_string(t.path().join(".codex/hooks.json"))
+            .unwrap()
+            .contains(" _session-hook codex")
+    );
+    // Once Codex has approved it, a plain run keeps it and says so.
+    fs::write(
+        t.path().join(".codex/config.toml"),
+        format!(
+            "[hooks.state.\"{}:session_end:0:0\"]\ntrusted_hash = \"sha256:x\"\n",
+            t.path().join(".codex/hooks.json").display()
+        ),
+    )
+    .unwrap();
+    let out = yo(&sys, t.path(), &["setup", "--no-iterm"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("  ok      ~/.codex/hooks.json (has yo's hook)\n"),
+        "{}",
+        out.out
+    );
+    assert!(!out.out.contains("approved"), "{}", out.out);
+
+    let out = yo(&sys, t.path(), &["setup", "--uninstall"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("  unhook  ~/.codex/hooks.json (dropping yo's codex hook)\n"),
+        "{}",
+        out.out
+    );
+    assert!(
+        !fs::read_to_string(t.path().join(".codex/hooks.json"))
+            .unwrap()
+            .contains("_session-hook")
+    );
+}
+
 #[test]
 fn setup_then_uninstall() {
     let (t, sys) = setup_sandbox();
@@ -1023,6 +1104,19 @@ fn a_codex_session_learns_its_id_and_resumes_by_it() {
     let listed = yo(&sys, &api, &["sessions"]);
     assert!(
         listed.out.starts_with("STATUS") && listed.out.contains("\nno-id "),
+        "{}",
+        listed.out
+    );
+    assert!(!listed.out.contains("waiting?"), "{}", listed.out);
+    // Still no id half a minute on: likely stopped at a prompt in its tab.
+    sys.set_now(1_795_751_631);
+    let listed = yo(&sys, &api, &["sessions"]);
+    assert!(listed.out.contains("\nwaiting? "), "{}", listed.out);
+    assert!(
+        listed.out.contains(
+            "waiting? = no session id yet, a while after launch: Codex records a session once its first\n\
+             message goes in, so its tab is likely stopped at a prompt (trust, hook review, login)\n"
+        ),
         "{}",
         listed.out
     );

@@ -228,7 +228,9 @@ impl Harness for Codex {
             Ok(t) => OValue::parse(&t)
                 .ok()
                 .filter(|v| matches!(v, OValue::Object(_))),
-            Err(_) => Some(OValue::object()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(OValue::object()),
+            // There but unreadable (not UTF-8, say): not a file to replace.
+            Err(_) => None,
         };
         let found = v.as_ref().and_then(hooks::find);
         let approved = found.as_ref().is_some_and(|(g, i, _)| {

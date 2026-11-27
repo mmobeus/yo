@@ -36,6 +36,11 @@ pub trait Sys: Send + Sync {
     fn exe(&self) -> PathBuf;
     /// Waits (iTerm loading a profile yo just wrote).
     fn sleep(&self, d: Duration);
+    /// Whether yo's stdin and stdout are a terminal, so a question can be
+    /// asked there. `false` unless a `Sys` says otherwise (tests never ask).
+    fn interactive(&self) -> bool {
+        false
+    }
 }
 
 impl dyn Sys + '_ {
@@ -222,6 +227,11 @@ impl Sys for RealSys {
 
     fn sleep(&self, d: Duration) {
         std::thread::sleep(d);
+    }
+
+    fn interactive(&self) -> bool {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 }
 

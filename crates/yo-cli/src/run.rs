@@ -539,15 +539,14 @@ fn can_ask(ctx: &Ctx) -> bool {
     at_terminal(ctx) && ctx.paths.config.is_file()
 }
 
-/// Whether the person can be asked: at a terminal, outside a harness's
-/// session (whose terminal isn't the person's).
+/// Whether the person can be asked (`harness::can_ask`).
 pub fn at_terminal(ctx: &Ctx) -> bool {
-    use std::io::IsTerminal;
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && !ctx.inside_session()
+    yo_core::harness::can_ask(&*ctx.sys)
 }
 
 /// Asks `question` on the terminal, `[Y/n]` or `[y/N]` by `default`. The
-/// default when nothing can be read.
+/// default is only for an empty line the person entered: a terminal that
+/// can't be opened, written or read, or ctrl-d, is a no.
 pub fn ask_yes(question: &str, default: bool) -> bool {
     use std::io::BufRead;
     let Ok(mut tty) = std::fs::OpenOptions::new()
@@ -555,14 +554,17 @@ pub fn ask_yes(question: &str, default: bool) -> bool {
         .write(true)
         .open("/dev/tty")
     else {
-        return default;
+        return false;
     };
     let hint = if default { "[Y/n]" } else { "[y/N]" };
     if write!(tty, "{question} {hint} ").is_err() {
-        return default;
+        return false;
     }
     let mut ans = String::new();
-    let _ = std::io::BufReader::new(&mut tty).read_line(&mut ans);
+    match std::io::BufReader::new(&mut tty).read_line(&mut ans) {
+        Ok(n) if n > 0 => {}
+        _ => return false,
+    }
     match ans.trim() {
         "" => default,
         a => matches!(a, "y" | "Y" | "yes" | "YES" | "Yes"),

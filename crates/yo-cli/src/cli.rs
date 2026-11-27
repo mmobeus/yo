@@ -364,6 +364,7 @@ mod tests {
         assert!(parse(&["forget"]).is_err());
         assert!(parse(&["down", "--discard"]).is_err());
         assert!(parse(&["setup", "--uninstall", "--link", "."]).is_err());
+        assert!(parse(&["setup", "--uninstall", "--hooks"]).is_err());
         assert!(parse(&["sweep", "--nope"]).is_err());
         let s = parse(&["sweep", "--repo", "a", "--repo=b"]).unwrap();
         let Some(Command::Sweep(s)) = s.command else {

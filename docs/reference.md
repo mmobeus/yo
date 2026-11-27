@@ -59,7 +59,7 @@ every Codex session, so at a terminal setup asks, and `--hooks` adds it
 without asking; otherwise it's left out. A hook that's there is kept current
 on every run, and `--uninstall` takes it out. Codex runs a hook only after
 it's approved in Codex's hook review, so setup then offers to open `codex` for
-that: at "Hooks need review", choose "Trust all and continue" (or "Review
+that (`codex` itself, not `harnesses.codex.command`): at "Hooks need review", choose "Trust all and continue" (or "Review
 hooks" to trust only yo's), then `/quit`.
 
 What it installed is recorded in `~/.local/state/yo/setup.json`. When a newer

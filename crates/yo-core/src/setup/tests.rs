@@ -628,3 +628,21 @@ fn codex_hook_isnt_offered_without_codex() {
         .answer("codex", &["--version"], crate::fake::failed(127));
     assert!(hook_offers(&t.sys).is_empty());
 }
+
+#[test]
+fn a_misshapen_codex_hooks_file_is_warned_about_and_left_alone() {
+    let t = T::new();
+    t.write(HOOKS, r#"{"hooks":[]}"#);
+    let p = t.plan(&SetupOpts {
+        hooks: true,
+        ..copy()
+    });
+    assert!(p.notes.iter().any(|n| matches!(n,
+        Note::Warn(s) if s.ends_with("isn't shaped like a hooks file, so yo's hook wasn't added; fix or move it first"))));
+    assert!(
+        !said(&t, &p).iter().any(|s| s.contains(HOOKS)),
+        "{:?}",
+        said(&t, &p)
+    );
+    assert!(p.approve.is_empty());
+}
