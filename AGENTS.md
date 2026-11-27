@@ -21,11 +21,12 @@ crates/           the Rust workspace (see "Crates" in the design); yo-cli is
                   the `yo` binary
 xtask/            the gates: cargo xtask <gate>
 claude/           Claude Code files yo installs for its users (skills, settings)
+codex/            Codex files yo installs for its users (the same skills, for Codex)
 .claude/          Claude Code files for working on this repo
 docs/             the user guide, the reference, the design, docs/dev/
 ```
 
-`yo setup` installs `claude/` from copies built into the binary (`yo setup
+`yo setup` installs `claude/` and `codex/` from copies built into the binary (`yo setup
 --link <checkout>` links them instead). The guide and the reference describe
 every command: a change to what a command does or prints updates them in the
 same PR.
