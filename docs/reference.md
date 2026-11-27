@@ -79,7 +79,7 @@ yo has different copies, every other command says to run `yo setup` again.
 
 | INPUT | session |
 | --- | --- |
-| omitted, or `-` | `sesh_<YYYYmmdd_HHMMSS>`, titled with its codename |
+| omitted, or `-` | `sesh_<YYYYmmdd_HHMMSS>` (`_2`, `_3`, ... if a session already has it), titled with its codename |
 | `.../pull/<n>` URL | `review_pr_<n>`: a worktree at the PR's head that tracks `refs/pull/<n>/head`, seeded with `<reviewCmd> <url>` |
 | `.../issues/<n>` URL | `issue_<n>` off the base branch, seeded to work the issue |
 | an existing branch | that branch, checked out as-is |

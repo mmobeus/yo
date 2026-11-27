@@ -69,7 +69,7 @@ pub fn plan_down(ctx: &Ctx, runner: &dyn Runner, cwd: &Path, o: DownOpts) -> Res
 
     let Some(top) = top.filter(|_| is_worktree) else {
         let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-        let key = here_key(ctx, &dir);
+        let key = here_key(ctx, runner, &dir)?;
         let rec = key.as_ref().and_then(|k| record(ctx, k));
         if let Some(k) = &key {
             plan.actions.push(Action::DropRecord(k.clone()));
@@ -205,10 +205,15 @@ fn end_and_close(ctx: &Ctx, runner: &dyn Runner, rec: Option<&Record>, plan: &mu
 
 /// The record for the session running in place in `dir`: the one
 /// `YO_SESSION_KEY` names, else the one holding this session's id, else
-/// the only in-place record holding `dir`. bash's `_yo_here_session_key`.
-fn here_key(ctx: &Ctx, dir: &Path) -> Option<Key> {
+/// the in-place record holding `dir` whose tab is the one yo runs in (the
+/// tab's CLI, which has neither), else the only in-place record holding
+/// `dir`. bash's `_yo_here_session_key`, plus the tab.
+///
+/// Several there and none of them picked is refused: closing the tab would
+/// leave its session running with no tab and its record kept (#52).
+fn here_key(ctx: &Ctx, runner: &dyn Runner, dir: &Path) -> Result<Option<Key>> {
     if let Some(k) = ctx.sys.env_nonempty("YO_SESSION_KEY") {
-        return Some(Key(k));
+        return Ok(Some(Key(k)));
     }
     let all = ctx.ledger().all();
     let id = ctx.own_session();
@@ -217,16 +222,36 @@ fn here_key(ctx: &Ctx, dir: &Path) -> Option<Key> {
         .rev()
         .find(|e| id.is_some() && e.record.session_id == id)
     {
-        return Some(e.key.clone());
+        return Ok(Some(e.key.clone()));
     }
     let here: Vec<&Entry> = all
         .iter()
         .filter(|e| e.record.mode_or_default() == Mode::Here && dir.starts_with(&e.record.worktree))
         .collect();
-    match here.as_slice() {
-        [one] => Some(one.key.clone()),
-        _ => None,
+    if let [one] = here.as_slice() {
+        return Ok(Some(one.key.clone()));
     }
+    if here.is_empty() {
+        return Ok(None);
+    }
+    // Only asked with more than one to pick from: it's a round trip to iTerm.
+    let mine = own_tab(ctx).and_then(|s| runner.own_tab(&*ctx.sys, &s));
+    if let Some(e) = mine
+        .as_deref()
+        .and_then(|t| here.iter().find(|e| e.record.tab() == Some(t)))
+    {
+        return Ok(Some(e.key.clone()));
+    }
+    let names: String = here
+        .iter()
+        .map(|e| {
+            let name = e.record.name.as_deref().unwrap_or(&e.key.0);
+            format!("\n        {name}")
+        })
+        .collect();
+    Err(Error::Refused(format!(
+        "refusing: yo can't tell which of the sessions in place here is this one:{names}\n    Run yo down from the session's own tab, or yo forget the one to drop."
+    )))
 }
 
 #[cfg(test)]

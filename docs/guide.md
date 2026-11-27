@@ -261,7 +261,9 @@ yo --here - 'read HANDOFF.md and pick up where it left off'
 The session runs where you are, on whatever is checked out; nothing is
 fetched or created. Name a repo (`yo --here --repo=backend`) to run in its
 clone instead. `yo down` in such a session only closes it; the directory is
-left alone.
+left alone. With several sessions in place in one directory, `yo down` from a
+tab's CLI finds its session by the tab; if it still can't tell which one it's
+in, it says so and leaves the tab open.
 
 To make in place the default for a repo, set `"mode": "here"` on it in the
 config; `--worktree` then asks for a worktree for one session.

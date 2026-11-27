@@ -125,9 +125,15 @@ pub fn truncate_title(s: &str) -> String {
     }
 }
 
-/// An unnamed session's name: `sesh_YYYYmmdd_HHMMSS`.
-pub fn unnamed(sys: &dyn Sys) -> String {
-    format!("sesh_{}", stamp(sys))
+/// An unnamed session's name: `sesh_YYYYmmdd_HHMMSS`, with `_2`, `_3`, ...
+/// after it when `taken` says a session already has it (two started in the
+/// same second, #52).
+pub fn unnamed(sys: &dyn Sys, taken: &dyn Fn(&str) -> bool) -> String {
+    let base = format!("sesh_{}", stamp(sys));
+    std::iter::once(base.clone())
+        .chain((2..).map(|n| format!("{base}_{n}")))
+        .find(|n| !taken(n))
+        .unwrap_or(base)
 }
 
 /// `YYYYmmdd_HHMMSS`, in local time as `date` gives it, else UTC from the
@@ -211,11 +217,22 @@ mod tests {
     #[test]
     fn unnamed_uses_date_else_utc() {
         let sys = FakeSys::new("/h");
-        assert_eq!(unnamed(&sys), "sesh_20261126_085422");
+        let free = |_: &str| false;
+        assert_eq!(unnamed(&sys, &free), "sesh_20261126_085422");
         sys.answer_ok("date", &["+%Y%m%d_%H%M%S"], "20261126_095422\n");
-        assert_eq!(unnamed(&sys), "sesh_20261126_095422");
+        assert_eq!(unnamed(&sys, &free), "sesh_20261126_095422");
         sys.answer("date", &["+%Y%m%d_%H%M%S"], ok("garbage\n"));
-        assert_eq!(unnamed(&sys), "sesh_20261126_085422");
+        assert_eq!(unnamed(&sys, &free), "sesh_20261126_085422");
+    }
+
+    #[test]
+    fn unnamed_names_get_a_suffix_on_a_clash() {
+        let sys = FakeSys::new("/h");
+        let taken = ["sesh_20261126_085422", "sesh_20261126_085422_2"];
+        assert_eq!(
+            unnamed(&sys, &|n| taken.contains(&n)),
+            "sesh_20261126_085422_3"
+        );
     }
 
     #[test]
