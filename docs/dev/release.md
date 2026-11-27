@@ -6,6 +6,10 @@ build from a checkout (`cargo build`, `cargo install --path`) says
 on `main` for a normal release, on a `release/X.Y` branch for a hotfix. There
 is no release PR, and nothing to bump.
 
+Since any `v*` tag publishes, the repo's "release tags" ruleset lets only
+repository admins create, move or delete `v*` tags. A released tag never
+moves: its tarballs and the formula's checksums are tied to it.
+
 Pushing the tag runs `.github/workflows/release.yml`, which calls
 `cargo xtask release`:
 
