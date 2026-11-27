@@ -13,7 +13,8 @@ description: Set this session's iTerm2 tab title, which is also what iTerm's Ses
 2. **Set it** (quote it as one argument), outside the sandbox: it talks to
    iTerm2 and writes yo's ledger under `~/.local/state/yo`, which the sandbox
    blocks. Ask for escalated permissions on the first try rather than running
-   it sandboxed and retrying.
+   it sandboxed and retrying, and suggest the `prefix_rule` `["yo", "title"]`,
+   so the user can approve it once for good.
 
    ```sh
    yo title '<title>'

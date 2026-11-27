@@ -710,7 +710,10 @@ pub struct SessionSpec {
     installs yo's three there (`codex/skills/` in the repo), only when
     Codex's home exists. They're Claude's rewritten: Codex's sandbox blocks
     `osascript` and writes outside the workspace, so each asks to run its
-    `yo` command outside the sandbox (#49).
+    `yo` command outside the sandbox (#49). `yo-title` and `yo-adopt`
+    suggest a `prefix_rule`, so one approval lasts (Codex keeps it in
+    `~/.codex/rules`); `yo-down` doesn't, since it removes a worktree. yo
+    doesn't write those rules itself: an approval is the person's.
   - **Not available:** personas, a settings layer, shared memory, Remote
     Control.
   - **`--from`:** a Codex session has no `SendMessage`, so it's told to run
