@@ -194,10 +194,13 @@ pub fn adopt(ctx: &Ctx, a: &Adopt, cwd: &Path, out: &mut dyn Write) -> Res {
         .clone()
         .or_else(|| own.as_ref().map(|(_, id)| id.clone()))
         .ok_or("no session id: run this from inside a coding session, or pass --session-id=ID")?;
-    // The harness it runs inside, else the one sessions run on by default.
+    // The harness it runs inside, else the one a session here would run on.
     let harness = match own {
         Some((h, _)) => h,
-        None => ctx.harness(&ctx.registry.defaults.harness)?,
+        None => {
+            let repo = ctx.registry.detect_repo(sys, cwd);
+            ctx.harness(&ctx.registry.harness(None, repo, None))?
+        }
     };
     let dir: PathBuf = harness
         .session_cwd(sys, &id)

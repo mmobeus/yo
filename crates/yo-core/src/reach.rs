@@ -292,6 +292,23 @@ mod tests {
     }
 
     #[test]
+    fn a_session_resumes_on_the_harness_it_started_on() {
+        let t = TempDir::new().unwrap();
+        let (c, _) = ctx(&t);
+        let mut e = entry(&t);
+        e.record.harness = Some("nope".into());
+        let o = ResumeOpts::default();
+        match plan_reach(&c, &e, State::Ready, "feat", &o) {
+            Err(Error::Refused(m)) => assert_eq!(m, "no harness 'nope' (yo has: claude)"),
+            other => panic!("{other:?}"),
+        }
+        // No harness recorded: claude, as every record before harnesses were.
+        e.record.harness = None;
+        let p = plan_reach(&c, &e, State::Ready, "feat", &o).unwrap();
+        assert!(launch(&p).argv.command.starts_with("claude"));
+    }
+
+    #[test]
     fn resuming_relaunches_with_its_repo_profile_and_message() {
         let t = TempDir::new().unwrap();
         let (c, _) = ctx(&t);

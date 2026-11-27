@@ -197,3 +197,117 @@ fn an_existing_home_is_refreshed_and_resumed_or_reached() {
             .any(|a| matches!(a, Action::AddWorktree { .. }))
     );
 }
+
+/// A harness with agents but no `--model`, run as `persona-cli`.
+struct Personas;
+
+impl crate::harness::Harness for Personas {
+    fn name(&self) -> &str {
+        "personas"
+    }
+    fn default_command(&self) -> &str {
+        "persona-cli"
+    }
+    fn ids(&self) -> crate::harness::IdPolicy {
+        IdPolicy::Picked
+    }
+    fn live(&self, _: &dyn crate::sys::Sys) -> Vec<crate::harness::LiveSession> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> crate::harness::Capabilities {
+        crate::harness::Capabilities {
+            personas: true,
+            ..Default::default()
+        }
+    }
+    fn persona_dir(&self) -> Option<&'static str> {
+        Some(".claude/agents")
+    }
+    fn tui_command(&self, s: &SessionSpec) -> crate::harness::Argv {
+        crate::harness::Argv {
+            env: Vec::new(),
+            command: s.command.clone(),
+            args: vec![s.persona.clone().unwrap_or_default()],
+        }
+    }
+    fn resume_command(&self, _: &str, s: &SessionSpec) -> crate::harness::Argv {
+        self.tui_command(s)
+    }
+}
+
+/// A harness with none of the extras.
+struct Bare;
+
+impl crate::harness::Harness for Bare {
+    fn name(&self) -> &str {
+        "bare"
+    }
+    fn default_command(&self) -> &str {
+        "bare"
+    }
+    fn ids(&self) -> crate::harness::IdPolicy {
+        IdPolicy::Picked
+    }
+    fn live(&self, _: &dyn crate::sys::Sys) -> Vec<crate::harness::LiveSession> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> crate::harness::Capabilities {
+        crate::harness::Capabilities::default()
+    }
+    fn tui_command(&self, _: &SessionSpec) -> crate::harness::Argv {
+        crate::harness::Argv::default()
+    }
+    fn resume_command(&self, _: &str, _: &SessionSpec) -> crate::harness::Argv {
+        crate::harness::Argv::default()
+    }
+}
+
+#[test]
+fn a_home_runs_on_its_repos_harness() {
+    let t = T::new();
+    t.merged();
+    let ctx = |h: &str| {
+        // The repo has no harness of its own: the default is it.
+        t.sys.set_env("YO_HARNESS", h);
+        let mut c = t.ctx();
+        c.harnesses = vec![
+            Box::new(crate::harness::claude::Claude),
+            Box::new(Personas),
+            Box::new(Bare),
+        ];
+        c
+    };
+    let o = ResumeOpts::default();
+    let p = plan_home(&ctx("personas"), "cindy", &o).unwrap();
+    let l = launch(&p);
+    assert_eq!(
+        (l.argv.command.as_str(), l.argv.args.as_slice()),
+        ("persona-cli", &["cindy".to_string()][..])
+    );
+    let rec = p
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            Action::PutRecord(e) => Some(&e.record),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(rec.harness.as_deref(), Some("personas"));
+    // Its refusals name the harness.
+    let model = ResumeOpts {
+        model: Some("opus".into()),
+        ..ResumeOpts::default()
+    };
+    assert_eq!(
+        refused(plan_home(&ctx("personas"), "cindy", &model)),
+        "--model: the personas harness can't pick a model"
+    );
+    assert_eq!(
+        refused(plan_home(&ctx("bare"), "cindy", &o)),
+        "agent 'cindy': the bare harness has no agents"
+    );
+    assert_eq!(
+        refused(plan_home(&ctx("nope"), "cindy", &o)),
+        "no harness 'nope' (yo has: claude, personas, bare)"
+    );
+}

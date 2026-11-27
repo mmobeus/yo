@@ -737,7 +737,7 @@ impl Defaults {
             Some(s) => Some(PathBuf::from(s)),
         };
 
-        let harness = or(get("YO_HARNESS", &d.harness), "claude");
+        let harness = or(get("YO_HARNESS", &d.harness), crate::harness::DEFAULT);
         if !valid_key(&harness) {
             return Err(bad(
                 "YO_HARNESS",
