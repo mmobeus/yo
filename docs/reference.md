@@ -27,7 +27,7 @@ as `--flag=value` or `--flag value`.
 | `yo resume [<name\|id\|dir>] [--model=M] [--new-window\|--tab]` | reopen one session; bare, list them |
 | `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live; waits a few seconds for sessions whose tab was just closed, and lists those still running without a tab instead of resuming them |
 | `yo title ["T"]` | retitle the session this runs in; bare, reset every yo tab's name |
-| `yo adopt [--title=T] [--session-id=ID]` | record the session this runs in |
+| `yo adopt [--title=T] [--session-id=ID]` | record the session this runs in. In a worktree whose record holds another session that is still running, it refuses and names that session |
 | `yo forget <name\|id\|dir>` | drop a session from the ledger |
 | `yo agent [NAME] [--model=M] [--new-window\|--tab] [--dry-run] ['message']` | start or reach agent NAME's home; bare, list agents |
 | `yo sweep [--apply] [--repo=R]... [--include-stale] [--include-suspended] [--delete-branches]` | find (and remove) worktrees whose work has landed |

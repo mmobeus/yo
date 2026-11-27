@@ -120,7 +120,7 @@ pub fn record(
         harness: Some(harness.to_string()),
     };
     let ledger = ctx.ledger();
-    let key = ledger.adopt(&a)?;
+    let key = ledger.adopt(&a, &ctx.live())?;
     Ok(ledger
         .all()
         .into_iter()

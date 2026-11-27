@@ -438,7 +438,7 @@ impl Ledger {
     pub fn all(&self) -> Vec<Entry>;                          // Entry = key + record
     pub fn write(&self, e: &mut Entry) -> Result<()>;         // back to its own file; stamps updatedAt, machine
     pub fn put(&self, rec: Record) -> Result<Key>;
-    pub fn adopt(&self, a: &Adopt) -> Result<Key>;
+    pub fn adopt(&self, a: &Adopt, live: &[LiveSession]) -> Result<Key>;  // refuses a worktree's record its running session holds
     pub fn drop(&self, key: &Key) -> Result<bool>;            // false: there was none
     pub fn drop_dir(&self, worktree: &Path) -> Result<bool>;
     pub fn retitle(&self, key: Option<&str>, id: Option<&str>, cwd: &Path, title: &str) -> Result<bool>;
@@ -474,6 +474,16 @@ keys and two-space indents. One difference: Python escaped non-ASCII text
 goes back to the file it came from, even when its session id has changed
 (after a `/clear`). `sync` returns what it adopted, for the CLI to report,
 rather than printing it.
+
+**One session per worktree record.** A worktree's record is keyed by its
+path, so a second session running in the same worktree (a test session
+started there, a `yo adopt` from another tab) would otherwise take it over.
+Neither `sync` nor `adopt` replaces a record whose own session is still
+running: `sync` skips the newcomer, and `adopt` refuses, naming the session
+that holds it. A record whose session isn't running is replaced as before.
+Launches can't collide: a worktree launch refuses a worktree path that
+exists, and one in place is keyed by an id yo made up (#66). The ledger hook
+started without `YO_SESSION_KEY` still matches by directory (#72).
 
 **Session ids known late.** yo picks a Claude session's id before launching it
 (`--session-id`), which is how the ledger knows a session before it has
