@@ -15,7 +15,7 @@
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | done (#34; PRs #36, #37, and mmobeus/homebrew-tap#1): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; a `v*` tag releases both macOS binaries as the tag's version and dispatches to the tap (`cargo xtask release`; from #43 the tag is the version, with `release/X.Y` hotfix branches on demand); `brew install mmobeus/tap/yo` installs them, from v0.1.0 |
-| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46) |
+| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48) |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
 | 5 | the daemon, ACP runner and relay | not started |
@@ -571,7 +571,10 @@ Phase 2 added `default_command` and `command` (its configured command), `ids`,
 `inside` (yo runs inside one of its sessions: Claude's `CLAUDECODE`) and
 `persona_dir` (where its agents are defined: Claude's `.claude/agents`, in a
 checkout and under `HOME`), `reported_id` (an id learned after launch) and
-`report_back` (how a session reaches the one `--from` names).
+`report_back` (how a session reaches the one `--from` names). #48 added
+`global_hook` (a ledger hook in the harness's own hooks file, which `yo
+setup` adds when asked: Codex's), and `prepare` may return an `Action::Ask`,
+a step taken only if the person says yes at a terminal (Codex's trust).
 
 ```rust
 pub trait Harness {
@@ -587,6 +590,7 @@ pub trait Harness {
     // optional: what a harness has, it says here
     fn capabilities(&self) -> Capabilities;
     fn hook_event(&self, payload: &str) -> Option<HookEvent> { None }  // its ledger hook's payload, made neutral
+    fn global_hook(&self, sys: &dyn Sys) -> Option<GlobalHook> { None } // a hook yo setup adds to its own hooks file
     fn prepare(&self, ctx: &Ctx, s: &SessionSpec) -> Result<Vec<HarnessPrep>> { Ok(vec![]) }
     fn status(&self, sys: &dyn Sys) -> Vec<(SessionId, HarnessStatus)> { vec![] }
     fn relay(&self) -> Option<&dyn Relay> { None }
@@ -596,7 +600,7 @@ pub struct Capabilities {
     pub settings_layer: bool,     // Claude: --settings, composed per session
     pub memory: bool,             // Claude: autoMemoryDirectory
     pub personas: bool,           // Claude: --agent; yo's `agents`
-    pub ledger_hooks: bool,       // Claude: SessionStart / SessionEnd call yo (`_session-hook`, then `_hook`)
+    pub ledger_hooks: bool,       // Claude: SessionStart / SessionEnd call yo (`_session-hook`, then `_hook`); Codex: SessionEnd, from yo setup
     pub remote_control: bool,
     pub models: bool,             // --model
 }
@@ -646,19 +650,59 @@ pub struct SessionSpec {
     it exits, left unheld by a crash); `lsof` says which process holds it,
     and where that process is.
   - **Hooks:** Codex has them (`SessionStart`, `SessionEnd` and a dozen
-    more, in `hooks.json` or `config.toml`), but each must be approved in
-    its `/hooks` screen before it runs, and `-c` doesn't get past that. yo
-    doesn't use them, so a `/quit` isn't seen as a deliberate end.
+    more, in `hooks.json` or `config.toml`), but each must be approved
+    before it runs. An approval is kept in `config.toml` as
+    `hooks.state."<file>:session_end:<group>:<index>".trusted_hash`, keyed
+    by the hook's place in its file. The hash isn't one yo can reproduce,
+    so yo never writes an approval. A hook given with `-c` still needs one.
+    `--dangerously-bypass-hook-trust` runs hooks without approval, but it
+    does that for every hook in the session, a repo's own included, so yo
+    doesn't use it. Until a new hook is approved, Codex opens on a blocking
+    review screen, whoever started it.
+    `SessionEnd` fires on `/quit` and ctrl-d (`reason: "other"`), and not
+    when the terminal closes or on SIGTERM, so any `SessionEnd` is a
+    deliberate end. The rollouts and thread locks don't show the
+    difference. It fires only in a TUI that runs its own threads. A plain
+    `codex` attaches to Codex's shared background daemon
+    (`app-server-daemon`), where `/quit` only disconnects and the thread
+    lives on. A `-c` override keeps the TUI off the daemon, and yo always
+    passes one.
+    So yo's hook is opt-in: `yo setup` asks at a terminal (or takes
+    `--hooks`), adds a `SessionEnd` hook running `yo _session-hook codex` to
+    `~/.codex/hooks.json` (yo's entry keeps its place, so its approval
+    holds), then offers to open `codex` to approve it. With the hook in
+    but not approved, a launch warns that the tab will stop at the review.
+    The hook runs for every Codex session, yo's or not, so it's only an
+    end: it matches a record by id, or the record `YO_SESSION_KEY` names
+    (where it also records the id, for a session quit before yo learned
+    it). There's no `SessionStart` hook, which would match records by
+    directory.
   - **Names:** no `--name`; `/rename` only. **The codename** goes in as
     `-c developer_instructions=...`, leaving the first message as it is.
   - **Resume:** `codex resume [ID] [PROMPT]`, so a stopped session is
     resumed with the message, like Claude.
   - **Inside a session:** `CODEX_THREAD_ID` (and `CODEX_SESSION_ID`) are set
     for the commands it runs (`own_session`).
+  - **Trust:** Codex asks once per git repo (a plain directory isn't
+    asked about), and keeps the answer in `~/.codex/config.toml` as
+    `[projects."<main clone>"]` with `trust_level`. Accepting in a worktree
+    writes the main clone's entry, and every worktree of that clone, and
+    every directory under it, inherits it. So the prompt comes once per
+    repo, not per worktree. Only that file counts: a `-c projects...`
+    override, `-s`/`-a` and `--dangerously-bypass-approvals-and-sandbox`
+    all still prompt. The prompt in a tab nobody's looking at is the
+    problem, so before launch yo reads the file (`codex/config.rs`, a
+    narrow line reader, not a TOML parser). For a worktree of a repo yo
+    trusts, it asks at a terminal (`Action::Ask`), and on a yes appends
+    the clone's entry. It appends only, never rewrites, and skips a file
+    it can't follow or that has an entry for the clone already. Otherwise,
+    or with no terminal, it warns that Codex will ask in the tab. The
+    entry is never removed: it's the clone's, and outlives a worktree.
+    `yo sessions` shows a Codex record with no id 30s after launch as
+    `waiting?`: Codex writes its rollout with the first message, so
+    something (trust, the hook review, a login) is holding it.
   - **Not available:** personas, a settings layer, shared memory, Remote
-    Control, ledger hooks. Trust: a `-c projects...` override doesn't skip
-    its folder-trust prompt; pre-trusting would mean writing to
-    `~/.codex/config.toml`, not done yet.
+    Control.
   - **`--from`:** a Codex session has no `SendMessage`, so it's told to run
     `yo SESSION 'report'`, which types the report into that session
     (`report_back`, which Claude overrides with `SendMessage`).

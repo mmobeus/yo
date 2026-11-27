@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use yo_core::Ctx;
 use yo_core::harness::LiveSession;
-use yo_core::ledger::{Entry, Record, State, state_of};
+use yo_core::ledger::{Entry, Record, State, state_of, waiting};
 use yo_core::plan::{Action, BranchSpec, Note, Plan, Report};
 use yo_core::reach::tabless;
 use yo_core::registry::Mode;
@@ -109,10 +109,13 @@ pub fn sessions(
             ctx.ledger().dir().display()
         );
     }
+    let now = ctx.sys.unix_now();
     let status = |r: &Record| {
         let state = state_of(r, live);
         if tabless(ctx, r, live, shown).is_some() {
             (state, "running (no tab)")
+        } else if waiting(r, state, now) {
+            (state, "waiting?")
         } else {
             (state, state.as_str())
         }
@@ -187,6 +190,12 @@ pub fn sessions(
     s.push_str(
         "(yo resume <name> still reopens it; resume-all skips it); gone = directory removed\n",
     );
+    if rows.iter().any(|(_, _, w)| *w == "waiting?") {
+        s.push_str(
+            "waiting? = no session id yet, a while after launch: Codex records a session once its first\n\
+             message goes in, so its tab is likely stopped at a prompt (trust, hook review, login)\n",
+        );
+    }
     if rows.iter().any(|(_, _, w)| *w == "running (no tab)") {
         s.push_str(
             "running (no tab) = still running, but its tab was closed (iTerm can leave a chat running when\n\
@@ -246,6 +255,9 @@ fn action(a: &Action) -> String {
         Action::MakeDir { path, what } => format!("make the {what} directory {}", path.display()),
         Action::WriteFile { path, .. } => format!("write the settings layer {}", path.display()),
         Action::Prepare(p) => p.planned().to_string(),
+        Action::Ask { question, prep, .. } => {
+            format!("ask: {question}\n      (yes: {})", prep.planned())
+        }
         Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
         Action::DropRecord(k) => format!("forget the ledger record {}", k.0),
         Action::RemoveWorktree { path, force, .. } => format!(
@@ -322,11 +334,19 @@ fn branch_words(b: &BranchSpec) -> String {
 /// Progress as a plan runs, in bash's words where it had them.
 pub struct Progress<'a> {
     out: &'a mut dyn std::io::Write,
+    /// Whether the person can be asked, on the terminal.
+    asking: bool,
 }
 
 impl<'a> Progress<'a> {
     pub fn new(out: &'a mut dyn std::io::Write) -> Self {
-        Progress { out }
+        Progress { out, asking: false }
+    }
+
+    /// Asks the plan's questions on the terminal (`/dev/tty`).
+    pub fn asking(mut self, yes: bool) -> Self {
+        self.asking = yes;
+        self
     }
 
     fn put(&mut self, s: &str) {
@@ -343,6 +363,11 @@ impl Report for Progress<'_> {
         let mut s = String::new();
         note(&mut s, n);
         self.put(&s);
+    }
+
+    /// A yes unless the answer is no.
+    fn ask(&mut self, question: &str) -> bool {
+        self.asking && crate::run::ask_yes(question, true)
     }
 
     fn doing(&mut self, a: &Action) {
@@ -363,6 +388,7 @@ impl Report for Progress<'_> {
             }
             Action::MakeDir { path, what } => format!("==> {what}: {}\n", path.display()),
             Action::Prepare(p) => format!("==> {}\n", p.doing()),
+            Action::Ask { .. } => String::new(),
             Action::MirrorFiles { .. } | Action::WriteFile { .. } => String::new(),
             Action::PutRecord(e) => {
                 let r = &e.record;

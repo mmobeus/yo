@@ -70,6 +70,14 @@ pub enum Action {
     },
     /// A harness's own setup.
     Prepare(Prep),
+    /// A harness's setup that touches the harness's own files, done only
+    /// when the person says yes to `question` (the caller asks, where it
+    /// can ask). Otherwise, `otherwise` is said instead.
+    Ask {
+        question: String,
+        prep: Prep,
+        otherwise: String,
+    },
     PutRecord(Box<Entry>),
     DropRecord(Key),
     /// `git worktree remove`; `force` only when losing uncommitted work was
@@ -160,6 +168,11 @@ pub trait Report {
     /// An action is about to run.
     fn doing(&mut self, action: &Action);
     fn launched(&mut self, spec: &LaunchSpec, launched: &Launched);
+    /// A yes-or-no question for the person. `false` where nobody can be
+    /// asked (no terminal, or inside a session).
+    fn ask(&mut self, _question: &str) -> bool {
+        false
+    }
 }
 
 /// Runs `plan`'s actions in order, stopping at the first that fails. A
@@ -234,6 +247,20 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
             Action::Prepare(p) => {
                 if let Err(err) = p.run(sys) {
                     out.note(&Note::Warn(format!("{} ({err})", p.failed())));
+                }
+            }
+            Action::Ask {
+                question,
+                prep,
+                otherwise,
+            } => {
+                if out.ask(question) {
+                    out.doing(&Action::Prepare(prep.clone()));
+                    if let Err(err) = prep.run(sys) {
+                        out.note(&Note::Warn(format!("{} ({err})", prep.failed())));
+                    }
+                } else {
+                    out.note(&Note::Warn(otherwise.clone()));
                 }
             }
             Action::PutRecord(e) => {

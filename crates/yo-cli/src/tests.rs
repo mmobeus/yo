@@ -259,6 +259,22 @@ fn with_clone() -> (TempDir, Arc<FakeSys>, std::path::PathBuf) {
 }
 
 #[test]
+fn a_codex_dry_run_shows_the_trust_question_and_writes_nothing() {
+    let (t, sys, api) = with_clone();
+    let out = yo(&sys, &api, &["--dry-run", "--harness=codex", "feat"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    let want = format!("  - ask: Codex hasn't trusted {} yet", api.display());
+    assert!(out.out.contains(&want), "{}", out.out);
+    assert!(
+        out.out
+            .contains("      (yes: trust the main clone in Codex's config.toml)\n"),
+        "{}",
+        out.out
+    );
+    assert!(!t.path().join(".codex").exists(), "nothing written");
+}
+
+#[test]
 fn create_dry_run_shows_the_plan_and_changes_nothing() {
     let (t, sys, api) = with_clone();
     let out = yo(&sys, &api, &["--dry-run", "feat", "do it"]);
@@ -353,6 +369,7 @@ fn the_session_hook_updates_its_record_and_never_fails() {
     let cwd = wt.display();
     crate::run::session_hook(
         sys.clone(),
+        None,
         &format!(
             r#"{{"hook_event_name": "SessionStart", "session_id": "new-id", "cwd": "{cwd}"}}"#
         ),
@@ -364,8 +381,25 @@ fn the_session_hook_updates_its_record_and_never_fails() {
     .unwrap();
     assert!(rec.contains(r#""sessionId": "new-id""#), "{rec}");
     for junk in ["", "{", "null", r#"{"session_id": "a b"}"#] {
-        crate::run::session_hook(sys.clone(), junk);
+        crate::run::session_hook(sys.clone(), None, junk);
+        crate::run::session_hook(sys.clone(), Some("codex"), junk);
     }
+    // The same end, as Claude sends it (a closed tab) and as Codex's hook
+    // does: only Codex's is a deliberate end.
+    let end = format!(
+        r#"{{"hook_event_name": "SessionEnd", "session_id": "new-id", "cwd": "{cwd}", "reason": "other"}}"#
+    );
+    let rec = || {
+        fs::read_to_string(
+            t.path()
+                .join(".local/state/yo/sessions/src__api-worktrees__feat.json"),
+        )
+        .unwrap()
+    };
+    crate::run::session_hook(sys.clone(), None, &end);
+    assert!(!rec().contains("endedAt"), "{}", rec());
+    crate::run::session_hook(sys.clone(), Some("codex"), &end);
+    assert!(rec().contains("endedAt"), "{}", rec());
 }
 
 #[test]

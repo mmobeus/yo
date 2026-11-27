@@ -18,11 +18,23 @@
 //!   runs.
 //! - **The codename** goes in as developer instructions
 //!   (`-c developer_instructions=...`), so the first message stays as it is.
+//! - **Trust:** Codex asks to trust a git repo once, and keeps the answer
+//!   in `~/.codex/config.toml` under the main clone (`[projects."<clone>"]`),
+//!   which every worktree of it inherits. A `-c projects...` override
+//!   doesn't count. For a worktree of a repo yo trusts, yo asks the person
+//!   at launch and adds the clone's entry itself; otherwise it says Codex
+//!   will ask, so a tab waiting on the prompt isn't a surprise.
+//! - **The ledger hook:** Codex has hooks, but only from its own files
+//!   (`~/.codex/hooks.json`), and each must be approved in its `/hooks`
+//!   screen before it runs. `yo setup` adds one, `SessionEnd` running
+//!   `yo _session-hook codex`, when asked. Codex fires it on `/quit` and
+//!   ctrl-d, not on a closed tab or a crash, so any `SessionEnd` is a
+//!   deliberate end. It fires only in a TUI that runs its own threads: a
+//!   `-c` override (yo always passes one) keeps the TUI off Codex's shared
+//!   daemon, where `/quit` only disconnects.
 //! - **Not used, or not offered:** a settings layer, shared memory,
-//!   personas, Remote Control, and ledger hooks. Codex does have hooks
-//!   (`SessionStart`, `SessionEnd`, ...), but each needs approving in its
-//!   `/hooks` screen before it runs, so yo learns ids from the rollouts
-//!   instead. It has no `--name`: names come from `/rename` only.
+//!   personas and Remote Control. It has no `--name`: names come from
+//!   `/rename` only.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -31,9 +43,18 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    Argv, Capabilities, Harness, IdPolicy, Launch, LiveSession, SessionSpec, valid_session_id,
+    Argv, Capabilities, GlobalHook, Harness, IdPolicy, Launch, LiveSession, PrepareAsk, Prepared,
+    SessionSpec, valid_session_id,
 };
+use crate::ledger::HookEvent;
+use crate::ojson::OValue;
+use crate::plan::{Action, Note};
+use crate::registry::Mode;
 use crate::sys::{CommandSpec, Sys};
+use crate::{Ctx, Error, Result};
+
+mod config;
+mod hooks;
 
 /// Its name, in config and the ledger.
 pub const NAME: &str = "codex";
@@ -119,12 +140,125 @@ impl Harness for Codex {
         out
     }
 
-    /// Only `--model`.
+    /// `--model`, and the ledger hook (once `yo setup` has added it).
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             models: true,
+            ledger_hooks: true,
             ..Capabilities::default()
         }
+    }
+
+    /// For a session in a git repo Codex hasn't trusted: for a worktree of
+    /// a repo yo trusts, a question whether to trust its main clone in
+    /// Codex's config; otherwise, a warning that Codex will ask in the
+    /// tab. And a warning when yo's hook is in Codex's hooks file but not
+    /// approved yet, so Codex will stop at its review first.
+    fn prepare(&self, ctx: &Ctx, p: &PrepareAsk<'_>) -> Result<Prepared> {
+        let sys = &*ctx.sys;
+        let home = codex_home(sys);
+        let text = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+        let cfg = config::read(&text);
+        let mut out = Prepared::default();
+
+        let root = match (p.mode, p.trusted_clone, p.repo) {
+            (_, Some(c), _) => Some(c.to_path_buf()),
+            (Mode::Worktree, None, Some(r)) => Some(r.path.clone()),
+            _ => crate::git::primary_clone(sys, p.dir),
+        };
+        if let Some(root) = root {
+            let real = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+            if cfg.trust(&root).is_none() && cfg.trust(&real).is_none() {
+                let otherwise = format!(
+                    "Codex will ask to trust {} in the new tab: accept it there once, and its worktrees inherit that",
+                    root.display()
+                );
+                if p.trusted_clone.is_some() {
+                    out.actions.push(Action::Ask {
+                        question: format!(
+                            "Codex hasn't trusted {} yet, so the new tab would stop at its trust prompt. \
+                             Trust it for Codex now (one entry in {}; its worktrees inherit it)?",
+                            root.display(),
+                            home.join("config.toml").display()
+                        ),
+                        prep: super::Prep::Codex(Prep::Trust { root: real }),
+                        otherwise,
+                    });
+                } else {
+                    out.notes.push(Note::Warn(otherwise));
+                }
+            }
+        }
+
+        if let Some(h) = self.global_hook(sys)
+            && h.installed.is_some()
+            && !h.approved
+        {
+            out.notes.push(Note::Warn(
+                "yo's Codex hook isn't approved yet, so the new tab stops at Codex's hook review \
+                 first: approve it there once (or run yo setup)"
+                    .into(),
+            ));
+        }
+        Ok(out)
+    }
+
+    /// A `SessionEnd`, which Codex sends only for `/quit` and ctrl-d. yo
+    /// adds no `SessionStart` hook: Codex's hooks run for every Codex
+    /// session, and the id is learned from the rollouts anyway.
+    fn hook_event(&self, payload: &str) -> Option<HookEvent> {
+        let d: Value = serde_json::from_str(payload).ok()?;
+        let s = |k: &str| d.get(k).and_then(Value::as_str);
+        let id = s("session_id").filter(|s| valid_session_id(s))?.to_string();
+        let cwd = PathBuf::from(s("cwd").unwrap_or(""));
+        (s("hook_event_name")? == "SessionEnd").then_some(HookEvent::End {
+            id,
+            cwd,
+            deliberate: true,
+        })
+    }
+
+    /// `~/.codex/hooks.json`, and whether Codex has approved yo's hook in
+    /// it: an approval is kept in its `config.toml`, under the hook's
+    /// place in the file.
+    fn global_hook(&self, sys: &dyn Sys) -> Option<GlobalHook> {
+        let home = codex_home(sys);
+        let path = home.join("hooks.json");
+        let v = match fs::read_to_string(&path) {
+            Ok(t) => OValue::parse(&t)
+                .ok()
+                .filter(|v| matches!(v, OValue::Object(_))),
+            Err(_) => Some(OValue::object()),
+        };
+        let found = v.as_ref().and_then(hooks::find);
+        let approved = found.as_ref().is_some_and(|(g, i, _)| {
+            let text = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+            let cfg = config::read(&text);
+            let real = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            [&path, &real]
+                .iter()
+                .any(|p| cfg.hook_approved(&format!("{}:session_end:{g}:{i}", p.display())))
+        });
+        let command = hooks::command(&sys.exe());
+        Some(GlobalHook {
+            with: v
+                .as_ref()
+                .and_then(|v| hooks::with_hook(v, &command))
+                .map(|v| v.to_pretty()),
+            without: v
+                .as_ref()
+                .and_then(hooks::without_hook)
+                .map(|v| v.to_pretty()),
+            path,
+            command,
+            installed: found.map(|(_, _, c)| c),
+            approved,
+            offer: "yo can add a hook to Codex so that a Codex session quit with /quit shows \
+                    as ended. It runs for every Codex session (it only touches yo's ledger), \
+                    and Codex runs it once you've approved it in its hook review.",
+            approve: "Codex opens on \"Hooks need review\": choose Trust all and continue (or \
+                      Review hooks, to trust only yo's), then /quit",
+        })
     }
 
     /// `<command> -c developer_instructions=<codename> [-m M] MESSAGE`. With
@@ -198,6 +332,59 @@ impl Harness for Codex {
             .collect();
         found.sort_by_key(|m| m.at);
         found.into_iter().next().map(|m| m.id)
+    }
+}
+
+/// A step of Codex's setup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Prep {
+    /// Adds `[projects."<root>"]` with `trust_level = "trusted"` to the end
+    /// of Codex's `config.toml`, leaving the rest as it is.
+    Trust { root: PathBuf },
+}
+
+impl Prep {
+    pub fn run(&self, sys: &dyn Sys) -> Result<()> {
+        match self {
+            Prep::Trust { root } => {
+                let path = codex_home(sys).join("config.toml");
+                let text = match fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => return Err(Error::io(&path, e)),
+                };
+                let next = config::with_trust(&text, root).ok_or_else(|| {
+                    Error::Failed(format!(
+                        "{} has an entry for it already, or a shape yo doesn't add to",
+                        path.display()
+                    ))
+                })?;
+                if let Some(dir) = path.parent() {
+                    fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+                }
+                crate::write_atomic(&path, next.as_bytes())
+            }
+        }
+    }
+
+    pub fn planned(&self) -> &'static str {
+        match self {
+            Prep::Trust { .. } => "trust the main clone in Codex's config.toml",
+        }
+    }
+
+    pub fn doing(&self) -> &'static str {
+        match self {
+            Prep::Trust { .. } => "trusting the main clone in Codex's config.toml",
+        }
+    }
+
+    pub fn failed(&self) -> &'static str {
+        match self {
+            Prep::Trust { .. } => {
+                "couldn't trust the main clone in Codex's config.toml (Codex will ask in the tab)"
+            }
+        }
     }
 }
 

@@ -60,9 +60,10 @@ pub enum Command {
     /// Install yo's skills, settings layer and statusline (run again after
     /// upgrading yo).
     Setup(Setup),
-    /// The ledger hook, run by the harness with its payload on stdin.
+    /// The ledger hook, run by the harness with its payload on stdin. The
+    /// harness is named by Codex's hook; Claude's names none.
     #[command(name = "_session-hook", hide = true)]
-    SessionHook,
+    SessionHook { harness: Option<String> },
     /// Run by `down` from inside a session, detached: ends session ID
     /// (process PID) if it's still running once its tab has closed.
     #[command(name = "_end-session", hide = true)]
@@ -237,6 +238,10 @@ pub struct Setup {
     /// Replace links that point somewhere unexpected.
     #[arg(long)]
     pub force: bool,
+    /// Add yo's ledger hook to Codex's hooks file without asking (at a
+    /// terminal, setup asks).
+    #[arg(long, conflicts_with = "uninstall")]
+    pub hooks: bool,
 }
 
 fn nonempty(v: &str) -> Result<String, String> {

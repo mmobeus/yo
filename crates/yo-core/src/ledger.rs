@@ -188,6 +188,23 @@ pub fn state_of(rec: &Record, live: &[LiveSession]) -> State {
     }
 }
 
+/// How long after launch a session whose harness reports its id is taken
+/// to be stuck without one, in seconds.
+const WAIT: i64 = 30;
+
+/// Whether a record without an id is likely stuck at a prompt in its tab:
+/// its harness reports ids (Codex records a session once its first message
+/// goes in), and it's had a while since launch to do so. Anything that
+/// stops the harness before that message (its trust prompt, its hook
+/// review, a login) leaves it here.
+pub fn waiting(rec: &Record, state: State, now: i64) -> bool {
+    let reports = crate::harness::all().iter().any(|h| {
+        h.name() == rec.harness.as_deref().unwrap_or(crate::harness::DEFAULT)
+            && h.ids() == crate::harness::IdPolicy::Reported
+    });
+    state == State::NoId && reports && rec.created_at.is_some_and(|t| now - t > WAIT)
+}
+
 /// A session starting or ending, as a harness's hook reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookEvent {
@@ -309,8 +326,9 @@ impl Ledger {
     /// The record it updates is the one `YO_SESSION_KEY` names (a session yo
     /// launched), else every record whose worktree holds the event's `cwd`
     /// (a session in place only by its own id). A start records the session
-    /// id and clears `endedAt`; a deliberate end sets `endedAt`. Any other
-    /// end (a closed tab, a crash) leaves it resumable.
+    /// id and clears `endedAt`; a deliberate end sets `endedAt` (and the
+    /// id, on the record `YO_SESSION_KEY` names when it has none yet). Any
+    /// other end (a closed tab, a crash) leaves it resumable.
     pub fn hook(&self, ev: &HookEvent) {
         let (id, cwd) = match ev {
             HookEvent::Start { id, cwd } | HookEvent::End { id, cwd, .. } => (id.as_str(), cwd),
@@ -333,7 +351,12 @@ impl Ledger {
             }
             match ev {
                 HookEvent::End { deliberate, .. } => {
-                    if *deliberate && e.record.id() == Some(id) {
+                    // A harness that reports its ids can end before yo
+                    // has learned the id: the record YO_SESSION_KEY names
+                    // is this session's, so it learns it here.
+                    let learns = key.is_some() && e.record.id().is_none();
+                    if *deliberate && (learns || e.record.id() == Some(id)) {
+                        e.record.session_id = Some(id.to_string());
                         e.record.ended_at = Some(self.sys.unix_now());
                         let _ = self.write(&mut e);
                     }
@@ -779,6 +802,59 @@ mod tests {
         // Matched by key, a deliberate end with another id leaves it alone.
         t.ledger.hook(&end("zzz", Path::new("/nowhere"), true));
         assert_eq!(t.get("other").ended_at, None);
+    }
+
+    #[test]
+    fn a_codex_session_with_no_id_a_while_on_is_waiting() {
+        let rec = |harness: &str, at: i64| Record {
+            harness: Some(harness.into()),
+            created_at: Some(at),
+            ..Record::default()
+        };
+        assert!(waiting(&rec("codex", 100), State::NoId, 131));
+        assert!(
+            !waiting(&rec("codex", 100), State::NoId, 130),
+            "just launched"
+        );
+        assert!(!waiting(&rec("codex", 100), State::Ready, 500));
+        assert!(
+            !waiting(&rec("claude", 100), State::NoId, 500),
+            "yo picks Claude's"
+        );
+        assert!(!waiting(&Record::default(), State::NoId, 500));
+    }
+
+    #[test]
+    fn a_deliberate_end_before_the_id_is_learned_records_both() {
+        // A Codex session quit before any yo command learned its id: the
+        // record its key names takes the id with the end.
+        let t = setup();
+        let wt = t.worktree("w");
+        t.put(
+            "k",
+            Record {
+                worktree: wt.clone(),
+                ..Record::default()
+            },
+        );
+        t.put(
+            "same-dir",
+            Record {
+                worktree: wt.clone(),
+                ..Record::default()
+            },
+        );
+        // Without a key, a record with no id is nobody's.
+        t.ledger.hook(&end("cx", &wt, true));
+        assert_eq!(t.get("k").ended_at, None);
+        t.sys.set_env("YO_SESSION_KEY", "k");
+        // A closed tab isn't an end, even with the key.
+        t.ledger.hook(&end("cx", &wt, false));
+        assert_eq!(t.get("k").session_id, None);
+        t.ledger.hook(&end("cx", &wt, true));
+        assert_eq!(t.get("k").session_id.as_deref(), Some("cx"));
+        assert!(t.get("k").ended_at.is_some());
+        assert_eq!(t.get("same-dir").session_id, None, "only the keyed record");
     }
 
     #[test]

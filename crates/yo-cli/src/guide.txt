@@ -111,8 +111,10 @@ Usage:
   "harness". The ledger records it, so resume and `yo NAME` reopen it on the
   same one. A flag H has nothing for (--agent on codex) is an error. Codex
   picks its own session id, which yo reads from ~/.codex/sessions the next
-  time it looks; Codex gets no settings layer, memory or pre-trust (it asks to
-  trust each new directory), and a session quit with /quit stays resumable.
+  time it looks; Codex gets no settings layer or memory. Codex asks once per
+  repo to trust it (for a trusted repo, yo offers to answer for it), and a
+  session quit with /quit is seen as ended only with yo's hook, which yo setup
+  adds when asked.
   The config's "harnesses" sets each one's command and extra args.
 
   --new-window (--window) put this session in a NEW iTerm window instead of a
@@ -244,12 +246,13 @@ Usage:
                        $EDITOR (validated after); or list a repo, cloning it
                        first unless it's a directory.
   yo setup [--dry-run] [--uninstall] [--link=CHECKOUT] [--merge-settings]
-           [--no-iterm] [--force]
+           [--no-iterm] [--force] [--hooks]
                        Install yo's skills, settings layer and statusline
                        (copies built into yo; --link links them into a yo
                        checkout instead), a starting config if there's none,
-                       and iTerm2's workgroup peer. Run it again after
-                       upgrading yo. --uninstall takes them out again.
+                       and iTerm2's workgroup peer; and, when asked (or with
+                       --hooks), yo's hook in ~/.codex/hooks.json. Run it
+                       again after upgrading yo. --uninstall takes them out.
   yo help              Show this help, plus the configured repos and profiles.
 
 Session ledger: yo records each session's id under

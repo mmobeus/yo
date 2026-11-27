@@ -140,11 +140,25 @@ To make it the default for a repo, a profile or everywhere, set `"harness":
 each session's harness, so `yo resume`, `resume-all` and `yo my-fix 'and
 now?'` bring a Codex session back on Codex.
 
-A Codex session gets less than a Claude one. There are no agents, settings
-layer or shared memory, and Codex asks you to trust each new worktree. Codex
-picks its own session id, which yo picks up from Codex's records the next time
-it looks, for example with `yo sessions`. yo can't tell `/quit` from a closed
-tab, so a session you quit stays resumable; `yo down` or `yo forget` removes it.
+A Codex session gets less than a Claude one: there are no agents, settings
+layer or shared memory. Codex picks its own session id, which yo picks up
+from Codex's records the next time it looks, for example with `yo sessions`.
+Until then, `yo sessions` shows it as `waiting?`, which a while after launch
+usually means its tab is stopped at one of Codex's prompts.
+
+Codex asks once per repo whether to trust it, and every worktree of that repo
+inherits the answer. When it hasn't been asked yet, yo says so before the tab
+opens. For a repo yo trusts, it offers to answer for you: at a terminal, yo
+asks, and on a yes it adds the repo's main clone to `~/.codex/config.toml`
+(one entry at the end; nothing else there changes).
+
+To tell `/quit` from a closed tab, Codex needs yo's hook, which only `yo setup`
+adds, and only when asked (it runs for every Codex session, yo's or not). Codex
+runs a hook only once you've approved it, so setup then offers to open Codex
+for that. With the hook, a session you quit shows as `ended`, like a Claude
+one. Without it, a quit session stays resumable, and `yo down` or `yo forget`
+removes it. Until the hook is approved, yo warns that the new tab will stop
+at Codex's hook review.
 
 ## 3. Coming back to sessions
 

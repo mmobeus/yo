@@ -75,10 +75,10 @@ fn resuming_passes_the_id_and_message() {
 }
 
 #[test]
-fn only_models_are_available() {
+fn models_and_ledger_hooks_are_available() {
     let c = Codex.capabilities();
-    assert!(c.models);
-    assert!(!c.personas && !c.settings_layer && !c.memory && !c.ledger_hooks && !c.remote_control);
+    assert!(c.models && c.ledger_hooks);
+    assert!(!c.personas && !c.settings_layer && !c.memory && !c.remote_control);
     assert_eq!(Codex.persona_dir(), None);
     assert_eq!(Codex.ids(), IdPolicy::Reported);
 }
@@ -321,4 +321,43 @@ fn dates() {
         assert_eq!(days_from_civil(y, m, d), days);
     }
     assert_eq!(civil(20_419), (2025, 11, 27));
+}
+
+#[test]
+fn any_session_end_is_a_deliberate_one() {
+    // What Codex 0.172.0 sends for /quit and ctrl-d (and nothing for a
+    // closed tab or a crash).
+    let quit = r#"{"session_id":"01a2-b","transcript_path":"/h/.codex/sessions/r.jsonl","cwd":"/w/a","hook_event_name":"SessionEnd","reason":"other"}"#;
+    assert_eq!(
+        Codex.hook_event(quit),
+        Some(HookEvent::End {
+            id: "01a2-b".into(),
+            cwd: "/w/a".into(),
+            deliberate: true
+        })
+    );
+    for other in [
+        r#"{"session_id":"01a2-b","cwd":"/w/a","hook_event_name":"SessionStart"}"#,
+        r#"{"session_id":"01a2-b","cwd":"/w/a"}"#,
+        r#"{"session_id":"a b","cwd":"/w/a","hook_event_name":"SessionEnd"}"#,
+        "",
+    ] {
+        assert_eq!(Codex.hook_event(other), None, "{other}");
+    }
+}
+
+#[test]
+fn trusting_writes_the_clone_into_codex_config() {
+    let dir = TempDir::new().unwrap();
+    let sys = FakeSys::new(dir.path());
+    let cfg = dir.path().join(".codex/config.toml");
+    let root = PathBuf::from("/w/repo");
+    // No file yet: one is made.
+    Prep::Trust { root: root.clone() }.run(&sys).unwrap();
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        "[projects.\"/w/repo\"]\ntrust_level = \"trusted\"\n"
+    );
+    // Once there, it isn't added twice.
+    assert!(Prep::Trust { root }.run(&sys).is_err());
 }
