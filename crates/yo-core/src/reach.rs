@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::harness::{Harness, LiveSession, PrepareAsk, SessionSpec};
+use crate::harness::{LiveSession, PrepareAsk, SessionSpec};
 use crate::ledger::{Entry, Record, State, state_of};
 use crate::place::{self, PlaceTo};
 use crate::plan::{Action, Note, Plan};
@@ -154,27 +154,12 @@ fn repo_of<'a>(ctx: &'a Ctx, e: &Entry) -> Option<&'a Repo> {
 pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
     let reg = &ctx.registry;
     let r = &e.record;
-    let harness: &dyn Harness = ctx
-        .harnesses
-        .iter()
-        .find(|h| h.name() == r.harness.as_deref().unwrap_or("claude"))
-        .map(|h| &**h)
-        .ok_or_else(|| {
-            Error::Refused(format!(
-                "no harness '{}' to resume it with",
-                r.harness.as_deref().unwrap_or("")
-            ))
-        })?;
+    let harness = ctx.harness_of(r)?;
     let name = r.name.clone().unwrap_or_else(|| e.key.0.clone());
     let id = r
         .id()
         .ok_or_else(|| Error::Refused(format!("{name} has no session id to resume")))?;
-    if o.model.is_some() && !harness.capabilities().models {
-        return Err(Error::Refused(format!(
-            "--model: the {} harness can't pick a model",
-            harness.name()
-        )));
-    }
+    crate::create::check_flags(harness, o.model.is_some(), None)?;
     let mut plan = Plan::default();
     let repo = repo_of(ctx, e);
     if let (Some(k), None) = (&r.repo, repo) {
@@ -219,7 +204,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
     plan.notes.extend(prepared.notes);
     plan.actions.extend(prepared.actions);
     let spec = SessionSpec {
-        command: reg.claude_cmd(repo, picked),
+        command: harness.command(reg, repo, picked),
         dir: r.worktree.clone(),
         name: name.clone(),
         id: Some(id.to_string()),

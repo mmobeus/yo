@@ -16,7 +16,7 @@
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | done (#34; PRs #36, #37, and mmobeus/homebrew-tap#1): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; a `v*` tag releases both macOS binaries and dispatches to the tap (`cargo xtask release`); `brew install mmobeus/tap/yo` installs them, from v0.1.0 |
-| 2 | a second harness: Codex | not started |
+| 2 | a second harness: Codex | in progress (#39): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` (agents' `.claude/agents`, `CLAUDE_CODE_SESSION_ID`, `CLAUDECODE`, the trust steps' wording) behind `Harness` methods; the Codex harness next |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
 | 5 | the daemon, ACP runner and relay | not started |
@@ -379,9 +379,10 @@ setting's environment variable beats the file when it's set, even to nothing,
 as bash's `${X+x}` does; `Defaults` holds the global settings resolved that
 way. Today that's spread over `*_for` functions.
 
-Harnesses are looked up through `Ctx::harnesses`, not the registry, since
-they aren't configured yet; per-harness settings (`harnesses.<name>`) join the
-registry in phase 2.
+Harnesses are looked up through `Ctx::harnesses` (`Ctx::harness(name)`,
+`Ctx::harness_of(record)`); their settings (`harnesses.<name>`: `command`
+and `args`) are in the registry's `Defaults`, and `Registry::harness` layers
+the `harness` setting like `mode`.
 
 Two small differences from bash, both deliberate: a profile's `owners`
 written as one string is split into words (bash scanned it a character at a
@@ -390,10 +391,12 @@ time, which no one meant), and keys made only of dots are refused.
 The machine id isn't in `Ctx`: it's read (and made, the first time) when a
 ledger record is written, so commands that write nothing never create it.
 
-A new setting, `harness` (default `claude`), sits at every level like `mode`
-does, with a `--harness=H` flag. It comes with phase 2, with Codex. Today's `claude` setting stays, as the
-command for the `claude` harness; `harnesses.<name>.command` is the same for
-any harness.
+A setting, `harness` (default `claude`, `YO_HARNESS`), sits at every level
+like `mode` does, with a `--harness=H` flag (phase 2). The `claude` setting
+stays, as the `claude` harness's command: a profile's `claude`, then
+`YO_CLAUDE_CMD` or `defaults.claude`, beat `harnesses.claude.command`, which
+is the same setting for any harness. The Claude harness does that layering
+itself (`Harness::command`), so the registry names no harness.
 
 ### The ledger
 
@@ -565,6 +568,10 @@ it: phase 1's foundations have `name`, `live`, `capabilities` and `hook_event`, 
 settings layer and memory directory are plain `WriteFile` and `MakeDir` actions), and
 reaching and the ledger commands added `resume_command` and `session_cwd` (where a
 session ran, from the harness's own records: Claude's session files, else its transcript).
+Phase 2 added `default_command` and `command` (its configured command), `ids`,
+`inside` (yo runs inside one of its sessions: Claude's `CLAUDECODE`) and
+`persona_dir` (where its agents are defined: Claude's `.claude/agents`, in a
+checkout and under `HOME`).
 
 ```rust
 pub trait Harness {

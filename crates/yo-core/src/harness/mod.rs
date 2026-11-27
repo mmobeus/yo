@@ -1,25 +1,33 @@
-//! Harnesses: the coding agents' CLIs yo runs (`claude`, later `codex`).
-//! What's specific to one lives in its module; the core asks through
-//! [`Harness`].
-//!
-//! The trait holds what's ported so far: launching (`tui_command`) came
-//! with create. Resuming, preparing a session and the rest of the design's
-//! trait arrive with the commands that use them.
+//! Harnesses: the coding agents' CLIs yo runs (`claude`, `codex`). What's
+//! specific to one lives in its module; the core asks through [`Harness`].
 
 use std::path::{Path, PathBuf};
 
 use crate::ledger::HookEvent;
 use crate::paths::Paths;
 use crate::plan::{Action, Note};
-use crate::registry::Repo;
+use crate::registry::{Registry, Repo};
 use crate::sys::Sys;
 use crate::{Ctx, Result};
 
 pub mod claude;
 
+/// The harness a ledger record without one ran on: every record before
+/// harnesses were recorded.
+pub const DEFAULT: &str = claude::NAME;
+
 pub trait Harness: Send + Sync {
     /// `"claude"`, `"codex"`: what a ledger record's `harness` says.
     fn name(&self) -> &str;
+    /// Its command when nothing configures one, as shell words.
+    fn default_command(&self) -> &str;
+    /// Its command for a session of `repo` under profile `picked`, as
+    /// configured (`harnesses.<name>`).
+    fn command(&self, reg: &Registry, _repo: Option<&Repo>, _picked: Option<&str>) -> String {
+        reg.command(self.name(), None, self.default_command())
+    }
+    /// Who picks a new session's id.
+    fn ids(&self) -> IdPolicy;
     /// Its sessions that are running now.
     fn live(&self, sys: &dyn Sys) -> Vec<LiveSession>;
     fn capabilities(&self) -> Capabilities;
@@ -43,6 +51,16 @@ pub trait Harness: Send + Sync {
     fn own_session(&self, _sys: &dyn Sys) -> Option<String> {
         None
     }
+    /// Whether yo is running inside one of its sessions, id or not.
+    fn inside(&self, sys: &dyn Sys) -> bool {
+        self.own_session(sys).is_some()
+    }
+    /// Where its personas (yo's agents) are defined, relative to a
+    /// checkout and to `HOME` alike (Claude: `.claude/agents`). `None`
+    /// without `personas`.
+    fn persona_dir(&self) -> Option<&'static str> {
+        None
+    }
     /// Its ledger hook's payload as a start or an end, for a harness with
     /// `ledger_hooks`. `None` for anything it doesn't recognize.
     fn hook_event(&self, _payload: &str) -> Option<HookEvent> {
@@ -54,6 +72,16 @@ pub trait Harness: Send + Sync {
     fn bundle(&self, _sys: &dyn Sys, _paths: &Paths) -> Bundle {
         Bundle::default()
     }
+}
+
+/// Who picks a new session's id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdPolicy {
+    /// yo does, and passes it at launch (Claude: `--session-id`), so the
+    /// ledger has it from the start.
+    Picked,
+    /// The harness does, and yo learns it after launch.
+    Reported,
 }
 
 /// A harness's part of `yo setup`.
@@ -170,6 +198,20 @@ impl Prep {
         }
     }
 
+    /// The step, for a dry run.
+    pub fn planned(&self) -> &'static str {
+        match self {
+            Prep::Claude(p) => p.planned(),
+        }
+    }
+
+    /// The step, as it runs.
+    pub fn doing(&self) -> &'static str {
+        match self {
+            Prep::Claude(p) => p.doing(),
+        }
+    }
+
     /// What its failure means, for a warning: a failed step doesn't stop
     /// the session, the harness just asks.
     pub fn failed(&self) -> &'static str {
@@ -252,6 +294,20 @@ pub fn valid_session_id(id: &str) -> bool {
 /// Every harness yo has.
 pub fn all() -> Vec<Box<dyn Harness>> {
     vec![Box::new(claude::Claude)]
+}
+
+/// The harness named `name`, among `all`.
+pub fn find<'a>(all: &'a [Box<dyn Harness>], name: &str) -> Result<&'a dyn Harness> {
+    all.iter()
+        .find(|h| h.name() == name)
+        .map(|h| &**h)
+        .ok_or_else(|| {
+            let names: Vec<&str> = all.iter().map(|h| h.name()).collect();
+            crate::Error::Refused(format!(
+                "no harness '{name}' (yo has: {})",
+                names.join(", ")
+            ))
+        })
 }
 
 #[cfg(test)]

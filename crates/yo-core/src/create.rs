@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::github::{self, GhKind, GhRef};
-use crate::harness::{Harness, PrepareAsk, SessionSpec};
+use crate::harness::{Harness, IdPolicy, PrepareAsk, SessionSpec};
 use crate::ledger::{Entry, Key, Record};
 use crate::plan::{Action, BranchSpec, Note, Plan};
 use crate::registry::{Mode, Repo};
@@ -27,6 +27,8 @@ pub struct CreateRequest {
     pub from: Option<String>,
     pub model: Option<String>,
     pub agent: Option<String>,
+    /// `--harness`
+    pub harness: Option<String>,
     /// The positional arguments.
     pub args: Vec<String>,
 }
@@ -43,24 +45,6 @@ enum Input {
 pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
     let reg = &ctx.registry;
     let sys = &*ctx.sys;
-    let harness: &dyn Harness = ctx
-        .harnesses
-        .first()
-        .map(|h| &**h)
-        .ok_or_else(|| Error::Refused("no harness".into()))?;
-    let caps = harness.capabilities();
-    if req.model.is_some() && !caps.models {
-        return Err(Error::Refused(format!(
-            "--model: the {} harness can't pick a model",
-            harness.name()
-        )));
-    }
-    if req.agent.is_some() && !caps.personas {
-        return Err(Error::Refused(format!(
-            "--agent: the {} harness has no agents",
-            harness.name()
-        )));
-    }
 
     let repo_list = || {
         reg.repos()
@@ -166,6 +150,8 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         }
     }
     let repo: Option<&Repo> = repo_key.as_deref().and_then(|k| reg.repo(k));
+    let harness = ctx.harness(&reg.harness(req.harness.as_deref(), repo, picked.as_deref()))?;
+    check_flags(harness, req.model.is_some(), agent)?;
     let pr_review = gh.as_ref().is_some_and(|r| r.kind == GhKind::Pr);
 
     // Worktree or in place. A profile home that is no registered clone has
@@ -285,7 +271,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
             }));
         }
         if let Some(a) = agent {
-            check_agent_on_disk(ctx, a, &wt)?;
+            check_agent_on_disk(ctx, harness, a, &wt)?;
         }
     } else {
         let r = repo.ok_or_else(|| Error::Refused("no repo".into()))?;
@@ -302,6 +288,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
                 name: &name,
                 pr: gh.as_ref().filter(|_| pr_review).map(|g| g.number),
                 agent,
+                harness,
             },
         )?;
         wt = w.path;
@@ -359,8 +346,9 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
     };
     if let (Mode::Worktree, Some(r), None) = (mode, repo, trusted_clone) {
         plan.notes.push(Note::Info(format!(
-            "not pre-trusting the worktree ({} isn't a trusted repo) — Claude will ask",
-            r.key
+            "not pre-trusting the worktree ({} isn't a trusted repo) — {} will ask",
+            r.key,
+            harness.name()
         )));
     }
     let prepared = harness.prepare(
@@ -386,17 +374,21 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         });
     }
 
-    // yo picks the id, so the ledger knows the session before it starts:
-    // that's what lets resume-all bring back one that crashed early.
-    let id = sys.new_session_id();
+    // yo picks the id where the harness lets it, so the ledger knows the
+    // session before it starts: that's what lets resume-all bring back one
+    // that crashed early. Otherwise the record gets its id once the
+    // harness reports it; a session in place is still keyed by the id yo
+    // made up, which is only a file name then.
+    let made = sys.new_session_id();
+    let id = (harness.ids() == IdPolicy::Picked).then(|| made.clone());
     let key = match mode {
-        Mode::Here => Key::for_id(&id),
+        Mode::Here => Key::for_id(&made),
         Mode::Worktree => Key::for_worktree(&sys.home(), &wt),
     };
     let brief = (!brief.is_empty()).then_some(brief);
     let record = Record {
         worktree: wt.clone(),
-        session_id: Some(id.clone()),
+        session_id: id.clone(),
         name: Some(name.clone()),
         title: Some(title.clone()),
         repo: repo_key.clone(),
@@ -420,10 +412,10 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
     })));
 
     let spec = SessionSpec {
-        command: reg.claude_cmd(repo, picked.as_deref()),
+        command: harness.command(reg, repo, picked.as_deref()),
         dir: wt.clone(),
         name: name.clone(),
-        id: Some(id.clone()),
+        id,
         model: req.model.clone(),
         persona: agent.map(str::to_string),
         codename: codename.clone(),
@@ -619,6 +611,7 @@ struct WorktreeAsk<'a> {
     /// The PR under review.
     pr: Option<u64>,
     agent: Option<&'a str>,
+    harness: &'a dyn Harness,
 }
 
 struct Worktree {
@@ -641,8 +634,8 @@ fn plan_worktree(ctx: &Ctx, plan: &mut Plan, w: &WorktreeAsk<'_>) -> Result<Work
     let upstream = git::remote_for(sys, clone, reg.github_for(sys, w.repo).as_deref());
     if let Some(a) = w.agent {
         let rev = format!("{upstream}/{base}");
-        if !git::has_agent_at(sys, clone, &rev, a) && !home_has_agent(ctx, a) {
-            return Err(no_agent(a, &format!("{rev}:"), clone));
+        if !has_agent_at(ctx, w.harness, clone, &rev, a) {
+            return Err(no_agent(w.harness, a, &format!("{rev}:"), clone));
         }
     }
 
@@ -765,25 +758,63 @@ fn unknown_url_repo(ctx: &Ctx, owner_repo: &str) -> Error {
     ))
 }
 
-fn no_agent(name: &str, at: &str, dir: &Path) -> Error {
+/// `--model` and `--agent`, for a harness that may have neither: an
+/// error naming it, never silently dropped.
+pub(crate) fn check_flags(h: &dyn Harness, model: bool, agent: Option<&str>) -> Result<()> {
+    let caps = h.capabilities();
+    if model && !caps.models {
+        return Err(Error::Refused(format!(
+            "--model: the {} harness can't pick a model",
+            h.name()
+        )));
+    }
+    if agent.is_some() && (!caps.personas || h.persona_dir().is_none()) {
+        return Err(Error::Refused(format!(
+            "--agent: the {} harness has no agents",
+            h.name()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn no_agent(h: &dyn Harness, name: &str, at: &str, dir: &Path) -> Error {
+    let d = h.persona_dir().unwrap_or_default();
     Error::Refused(format!(
-        "no agent named '{name}' in {at}.claude/agents of {}, or in ~/.claude/agents\n        yo starts only agents that are merged (or installed in ~/.claude/agents)",
+        "no agent named '{name}' in {at}{d} of {}, or in ~/{d}\n        yo starts only agents that are merged (or installed in ~/{d})",
         dir.display()
     ))
 }
 
-/// For a session in place: the agent is in the directory's
-/// `.claude/agents`, or in `~/.claude/agents`.
-fn check_agent_on_disk(ctx: &Ctx, name: &str, dir: &Path) -> Result<()> {
-    if dir_has_agent(&dir.join(".claude/agents"), name) || home_has_agent(ctx, name) {
+/// Whether agent `name` is defined in the harness's persona directory at
+/// `rev` of `clone` (merged), or in the one under `HOME`.
+pub(crate) fn has_agent_at(
+    ctx: &Ctx,
+    h: &dyn Harness,
+    clone: &Path,
+    rev: &str,
+    name: &str,
+) -> bool {
+    let Some(d) = h.persona_dir() else {
+        return false;
+    };
+    git::has_agent_at(&*ctx.sys, clone, rev, d, name) || home_has_agent(ctx, d, name)
+}
+
+/// For a session in place: the agent is in the directory's persona
+/// directory, or in the one under `HOME`.
+fn check_agent_on_disk(ctx: &Ctx, h: &dyn Harness, name: &str, dir: &Path) -> Result<()> {
+    let found = h
+        .persona_dir()
+        .is_some_and(|d| dir_has_agent(&dir.join(d), name) || home_has_agent(ctx, d, name));
+    if found {
         Ok(())
     } else {
-        Err(no_agent(name, "", dir))
+        Err(no_agent(h, name, "", dir))
     }
 }
 
-pub(crate) fn home_has_agent(ctx: &Ctx, name: &str) -> bool {
-    dir_has_agent(&ctx.sys.home().join(".claude/agents"), name)
+fn home_has_agent(ctx: &Ctx, persona_dir: &str, name: &str) -> bool {
+    dir_has_agent(&ctx.sys.home().join(persona_dir), name)
 }
 
 /// Whether any file under `dir` defines agent `name` (a `name:` line).

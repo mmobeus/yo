@@ -22,6 +22,12 @@ impl Harness for OneLive {
     fn name(&self) -> &str {
         "claude"
     }
+    fn default_command(&self) -> &str {
+        "claude"
+    }
+    fn ids(&self) -> crate::harness::IdPolicy {
+        crate::harness::IdPolicy::Picked
+    }
     fn live(&self, _: &dyn Sys) -> Vec<LiveSession> {
         vec![LiveSession {
             harness: "claude".into(),

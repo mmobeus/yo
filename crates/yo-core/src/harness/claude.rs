@@ -6,15 +6,19 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    Argv, Bundle, Bundled, BundledKind, Capabilities, GlobalSettings, Harness, LiveSession,
-    PrepareAsk, Prepared, SessionSpec, single_quote, valid_session_id,
+    Argv, Bundle, Bundled, BundledKind, Capabilities, GlobalSettings, Harness, IdPolicy,
+    LiveSession, PrepareAsk, Prepared, SessionSpec, single_quote, valid_session_id,
 };
 use crate::ledger::HookEvent;
 use crate::ojson::OValue;
 use crate::paths::Paths;
 use crate::plan::Action;
+use crate::registry::{Registry, Repo};
 use crate::sys::Sys;
 use crate::{Ctx, Error, Result};
+
+/// Its name, in config and the ledger.
+pub const NAME: &str = "claude";
 
 #[derive(Debug, Default)]
 pub struct Claude;
@@ -39,7 +43,35 @@ const SKILLS: &[(&str, &str)] = &[
 
 impl Harness for Claude {
     fn name(&self) -> &str {
-        "claude"
+        NAME
+    }
+
+    fn default_command(&self) -> &str {
+        "claude --permission-mode auto"
+    }
+
+    /// Its older setting, `claude` (a profile's, then `YO_CLAUDE_CMD` or
+    /// `defaults.claude`), beats `harnesses.claude.command`.
+    fn command(&self, reg: &Registry, repo: Option<&Repo>, picked: Option<&str>) -> String {
+        let own = reg
+            .profile_of(repo, picked)
+            .and_then(|p| p.claude.clone())
+            .or_else(|| reg.defaults.claude.clone());
+        reg.command(NAME, own, self.default_command())
+    }
+
+    /// yo picks it, and passes it as `--session-id`.
+    fn ids(&self) -> IdPolicy {
+        IdPolicy::Picked
+    }
+
+    /// Claude Code sets `CLAUDECODE` for the commands it runs.
+    fn inside(&self, sys: &dyn Sys) -> bool {
+        sys.env_nonempty("CLAUDECODE").is_some() || self.own_session(sys).is_some()
+    }
+
+    fn persona_dir(&self) -> Option<&'static str> {
+        Some(".claude/agents")
     }
 
     /// Interactive sessions from `~/.claude/sessions/<pid>.json` whose
@@ -374,6 +406,26 @@ impl Prep {
                 clone,
                 mcp,
             } => local_settings(worktree, clone, mcp),
+        }
+    }
+
+    /// The step, for a dry run.
+    pub fn planned(&self) -> &'static str {
+        match self {
+            Prep::Trust { .. } => "pre-trust the worktree in ~/.claude.json",
+            Prep::LocalSettings { .. } => {
+                "copy .claude/settings.local.json, with the repo's MCP servers approved"
+            }
+        }
+    }
+
+    /// The step, as it runs.
+    pub fn doing(&self) -> &'static str {
+        match self {
+            Prep::Trust { .. } => "pre-trusting worktree in ~/.claude.json",
+            Prep::LocalSettings { .. } => {
+                "settings.local.json in place (MCP approvals: base clone + per-repo allow-list)"
+            }
         }
     }
 

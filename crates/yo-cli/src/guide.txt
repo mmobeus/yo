@@ -104,6 +104,11 @@ Usage:
   in the config ("agents") defaults the repo to its own.
     yo --agent=cindy https://github.com/acme/service/issues/123
 
+  --harness=H  run the session on coding agent H (default: claude, or the
+  repo's, profile's or defaults' "harness"). The ledger records it, so resume
+  and `yo NAME` reopen it on the same one. A flag H has nothing for (--agent,
+  --model) is an error. The config's "harnesses" sets each one's command.
+
   --new-window (--window) put this session in a NEW iTerm window instead of a
   tab in the shared one; --tab forces the opposite. The default is a tab, so
   sessions pile up in one window and iTerm2's Session Status tool — which only

@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use yo_core::Ctx;
-use yo_core::harness::{LiveSession, Prep, claude};
+use yo_core::harness::LiveSession;
 use yo_core::ledger::{Entry, Record, State, state_of};
 use yo_core::plan::{Action, BranchSpec, Note, Plan, Report};
 use yo_core::reach::tabless;
@@ -245,7 +245,7 @@ fn action(a: &Action) -> String {
         }
         Action::MakeDir { path, what } => format!("make the {what} directory {}", path.display()),
         Action::WriteFile { path, .. } => format!("write the settings layer {}", path.display()),
-        Action::Prepare(p) => prep(p).to_string(),
+        Action::Prepare(p) => p.planned().to_string(),
         Action::PutRecord(e) => format!("record the session in the ledger as {}", e.key.0),
         Action::DropRecord(k) => format!("forget the ledger record {}", k.0),
         Action::RemoveWorktree { path, force, .. } => format!(
@@ -308,15 +308,6 @@ fn action(a: &Action) -> String {
     }
 }
 
-fn prep(p: &Prep) -> &'static str {
-    match p {
-        Prep::Claude(claude::Prep::Trust { .. }) => "pre-trust the worktree in ~/.claude.json",
-        Prep::Claude(claude::Prep::LocalSettings { .. }) => {
-            "copy .claude/settings.local.json, with the repo's MCP servers approved"
-        }
-    }
-}
-
 fn branch_words(b: &BranchSpec) -> String {
     match b {
         BranchSpec::Existing(b) => format!("{b} (REUSING existing local branch, as-is)"),
@@ -371,12 +362,7 @@ impl Report for Progress<'_> {
                 format!("        tracking {remote} {merge} — git pull refreshes the PR\n")
             }
             Action::MakeDir { path, what } => format!("==> {what}: {}\n", path.display()),
-            Action::Prepare(Prep::Claude(claude::Prep::Trust { .. })) => {
-                "==> pre-trusting worktree in ~/.claude.json\n".into()
-            }
-            Action::Prepare(Prep::Claude(claude::Prep::LocalSettings { .. })) => {
-                "==> settings.local.json in place (MCP approvals: base clone + per-repo allow-list)\n".into()
-            }
+            Action::Prepare(p) => format!("==> {}\n", p.doing()),
             Action::MirrorFiles { .. } | Action::WriteFile { .. } => String::new(),
             Action::PutRecord(e) => {
                 let r = &e.record;
@@ -429,9 +415,9 @@ impl Report for Progress<'_> {
                     let _ = writeln!(s, "yo: {w}");
                 }
                 let panes = if *split {
-                    "claude in left pane, shell in right"
+                    "the session in left pane, shell in right"
                 } else {
-                    "claude alone; the shell is the workgroup's terminal peer"
+                    "the session alone; the shell is the workgroup's terminal peer"
                 };
                 let _ = if *new_window {
                     writeln!(s, "==> opened iTerm2 window '{}' ({panes})", spec.title)

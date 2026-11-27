@@ -60,9 +60,7 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
         (Some(s), false) => {
             format!("  end its {s}, still running (not inside iTerm2: no tab to close)")
         }
-        (None, true) => {
-            "  and close this iTerm2 tab, which ends the claude session in it.".to_string()
-        }
+        (None, true) => "  and close this iTerm2 tab, which ends the session in it.".to_string(),
         (None, false) => "  (not inside iTerm2: no tab to close)".to_string(),
     };
     let lead = |what: &str| {
