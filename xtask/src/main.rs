@@ -25,6 +25,11 @@ default gates (cargo xtask ci runs these, in this order):
 
 other gates (need the network):
   advisories  cargo-deny: the RustSec advisory database
+
+releasing (on macOS; see docs/dev/release.md):
+  dist        build yo for both macOS targets into dist/, as tarballs
+  release     dist, then publish a GitHub Release and update the Homebrew
+              tap (needs YO_RELEASE_TAG, GH_TOKEN, HOMEBREW_TAP_TOKEN)
 ";
 
 type Gate = fn(&Path) -> Result<(), String>;
@@ -36,7 +41,11 @@ const DEFAULT_GATES: &[(&str, Gate)] = &[
     ("test", test),
 ];
 
-const OTHER_GATES: &[(&str, Gate)] = &[("advisories", advisories)];
+const OTHER_GATES: &[(&str, Gate)] = &[
+    ("advisories", advisories),
+    ("dist", |root| dist(root).map(|_| ())),
+    ("release", release),
+];
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
@@ -132,6 +141,192 @@ fn deny(root: &Path) -> Result<(), String> {
 fn advisories(root: &Path) -> Result<(), String> {
     need_tool(root, "deny", "cargo install --locked cargo-deny")?;
     run(root, "cargo", &["deny", "--locked", "check", "advisories"])
+}
+
+/// The macOS targets a release ships, and what their tarballs are called
+/// (the formula picks one by CPU).
+const TARGETS: &[(&str, &str)] = &[
+    ("aarch64-apple-darwin", "darwin_arm64"),
+    ("x86_64-apple-darwin", "darwin_amd64"),
+];
+
+/// A tarball in `dist/`, and its SHA-256.
+struct Built {
+    platform: &'static str,
+    path: PathBuf,
+    sha256: String,
+}
+
+/// Builds `yo` for each target and packs it as `dist/yo-<platform>.tar.gz`.
+#[allow(clippy::print_stderr)]
+fn dist(root: &Path) -> Result<Vec<Built>, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("dist builds macOS binaries, so it runs on macOS".into());
+    }
+    let out = root.join("dist");
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut built = Vec::new();
+    for (target, platform) in TARGETS {
+        run(root, "rustup", &["target", "add", target])?;
+        run(
+            root,
+            "cargo",
+            &[
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "yo-cli",
+                "--target",
+                target,
+            ],
+        )?;
+        let tarball = out.join(format!("yo-{platform}.tar.gz"));
+        let bin_dir = root.join("target").join(target).join("release");
+        run(
+            root,
+            "tar",
+            &[
+                "-czf",
+                &tarball.to_string_lossy(),
+                "-C",
+                &bin_dir.to_string_lossy(),
+                "yo",
+            ],
+        )?;
+        let sha256 = sha256(root, &tarball)?;
+        eprintln!("{}  {}", sha256, tarball.display());
+        built.push(Built {
+            platform,
+            path: tarball,
+            sha256,
+        });
+    }
+    // The one this machine can run says the version the formula tests for.
+    let native = if cfg!(target_arch = "aarch64") {
+        TARGETS[0].0
+    } else {
+        TARGETS[1].0
+    };
+    let bin = root.join("target").join(native).join("release/yo");
+    let said = output(root, &bin.to_string_lossy(), &["--version"])?;
+    let want = format!("yo {}", version(root)?);
+    if said.trim() != want {
+        return Err(format!(
+            "{} --version says {said:?}, not {want:?}",
+            bin.display()
+        ));
+    }
+    Ok(built)
+}
+
+/// Releases the version in Cargo.toml as `YO_RELEASE_TAG`, which must be
+/// `v<version>`: the tarballs on a GitHub Release, then the tap told the
+/// new version and checksums. `GH_TOKEN` creates the release;
+/// `HOMEBREW_TAP_TOKEN` can dispatch to `mmobeus/homebrew-tap`.
+fn release(root: &Path) -> Result<(), String> {
+    let need = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| format!("{k} is not set (see docs/dev/release.md)"))
+    };
+    let tag = need("YO_RELEASE_TAG")?;
+    need("GH_TOKEN")?;
+    let tap_token = need("HOMEBREW_TAP_TOKEN")?;
+    let want = format!("v{}", version(root)?);
+    if tag != want {
+        return Err(format!(
+            "the tag is {tag}, but Cargo.toml's version makes it {want}"
+        ));
+    }
+    let built = dist(root)?;
+    let mut args = vec![
+        "release".to_string(),
+        "create".into(),
+        tag.clone(),
+        "--verify-tag".into(),
+        "--title".into(),
+        tag.clone(),
+        "--generate-notes".into(),
+    ];
+    args.extend(built.iter().map(|b| b.path.to_string_lossy().into_owned()));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(root, "gh", &args)?;
+
+    let sha = |p: &str| {
+        built
+            .iter()
+            .find(|b| b.platform == p)
+            .map(|b| b.sha256.clone())
+            .unwrap_or_default()
+    };
+    let fields = [
+        "event_type=update-formula".to_string(),
+        "client_payload[formula]=yo".into(),
+        format!("client_payload[version]={tag}"),
+        format!("client_payload[sha256_arm64]={}", sha("darwin_arm64")),
+        format!("client_payload[sha256_amd64]={}", sha("darwin_amd64")),
+    ];
+    let mut args = vec!["api", "repos/mmobeus/homebrew-tap/dispatches"];
+    for f in &fields {
+        args.extend(["-f", f.as_str()]);
+    }
+    eprintln!("$ gh {}", args.join(" "));
+    let status = command(root, "gh")
+        .args(&args)
+        .env("GH_TOKEN", tap_token)
+        .status()
+        .map_err(|e| format!("gh: {e}"))?;
+    if !status.success() {
+        return Err(format!("gh api .../dispatches: {status}"));
+    }
+    Ok(())
+}
+
+/// The workspace's version, as `cargo metadata` has it for yo-cli.
+fn version(root: &Path) -> Result<String, String> {
+    let meta = output(
+        root,
+        "cargo",
+        &["metadata", "--no-deps", "--format-version", "1", "--locked"],
+    )?;
+    let v: serde_json::Value = serde_json::from_str(&meta).map_err(|e| e.to_string())?;
+    v["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"] == "yo-cli")
+        .and_then(|p| p["version"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "no yo-cli in cargo metadata".to_string())
+}
+
+fn sha256(root: &Path, file: &Path) -> Result<String, String> {
+    let out = output(root, "shasum", &["-a", "256", &file.to_string_lossy()])?;
+    out.split_whitespace()
+        .next()
+        .filter(|h| h.len() == 64)
+        .map(str::to_string)
+        .ok_or_else(|| format!("shasum said {out:?}"))
+}
+
+/// A command's stdout, when it succeeds.
+fn output(root: &Path, program: &str, args: &[&str]) -> Result<String, String> {
+    let out = command(root, program)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{program}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{program} {}: {}: {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Crates that must never be in a crate's (non-dev) dependency tree.

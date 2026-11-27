@@ -35,6 +35,7 @@ as `--flag=value` or `--flag value`.
 | `yo config add-repo <dir\|url\|owner/repo> [--profile=P] [--key=K]` | list a repo, cloning it first unless it's a directory |
 | `yo setup [--dry-run] [--uninstall] [--link=CHECKOUT] [--merge-settings] [--no-iterm] [--force]` | install what yo needs besides its binary ([`yo setup`](#yo-setup)) |
 | `yo help` | yo's guide, and what's configured |
+| `yo --version` | yo's version |
 
 ### `yo setup`
 

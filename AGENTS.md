@@ -9,7 +9,8 @@ coding agents, so every change clears the same gates, whoever wrote it.
   a bash script to a Rust core and beyond. Its status table says what's
   built. Read its principles and "How it's built" before changing anything in `crates/`.
 - [`docs/dev/`](docs/dev/): how to run the gates
-  ([`env.md`](docs/dev/env.md)), and the checklists every change is reviewed
+  ([`env.md`](docs/dev/env.md)), how a release is cut
+  ([`release.md`](docs/dev/release.md)), and the checklists every change is reviewed
   against: [architecture](docs/dev/architecture.md),
   [security](docs/dev/security.md), [tests](docs/dev/tests.md).
 
