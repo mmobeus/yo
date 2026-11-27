@@ -59,7 +59,8 @@ yo --here --from=<your session's name> --title='Review PR #<number>' - '/review-
 
 That opens a Claude Code session in place in the main checkout with
 `/review-pr <number>` as its first prompt. `--from` has it message your
-session (with `SendMessage`) when the review is posted or it gets stuck.
+session (with `SendMessage`) when the review is posted or it gets stuck,
+and it stays open for the rounds below.
 Your session's name is its Claude name: the name `yo sessions` lists for it
 (for a session yo started, its worktree's name). Tell the maintainer the
 review is running. If the main checkout isn't clean and on `main`, say so
@@ -73,12 +74,34 @@ one comment with blocking and non-blocking findings, and sets the
 
 The findings are a second opinion, not a ruling: the reviewers are guessing
 as much as you are. Fix the ones you agree with. For one you don't, say in a
-line on the PR why not. Leave most non-blocking findings for later. Don't
-ask for another review: fixes that only address the review's findings don't
-need one, and the maintainer may merge past the missing `yo-review` with an
-admin bypass. Another review, and what must change before merging, are the
-maintainer's call. The
+line on the PR why not, filing an issue if it's worth doing later. Leave
+most non-blocking findings for later. The
 built-in `/code-review` covers general correctness, and is worth running too.
+
+### Review rounds
+
+A review that's accepted ends the cycle; one that isn't starts another
+round. At most three rounds, the first review included:
+
+1. **Ask the reviewer to confirm.** Once your fixes are pushed (and the
+   rest answered on the PR), message the reviewer's session (the
+   `from-name` its message to you came with) with `SendMessage`: the PR,
+   the commit to check, and one line per blocking finding saying fixed or
+   why not. If the first review had no blocking findings and you pushed
+   nothing since, it's accepted already: skip to step 2.
+2. **Accepted:** the reviewer reviews what changed, posts its comment
+   saying it's accepted, sets `yo-review` on that commit, and tells you.
+   Merge the PR, the accepted commit and nothing after it
+   (`gh pr merge <number> --merge --match-head-commit <sha>`): anything you
+   push later needs another round. If the
+   merge is refused (CI hasn't passed, or a check is missing), say so to
+   the maintainer; don't bypass it.
+3. **Not accepted:** its comment lists what's still blocking. Weigh each
+   again: fix it, or say on the PR why not (filing an issue where it's
+   worth doing later), then go back to step 1.
+4. **After the third round without acceptance, stop.** Don't merge, and
+   don't ask for a fourth. Tell the maintainer what's still open on the
+   PR: from here it's theirs to resolve.
 
 If a bug turns up after merging that review should have caught, file an
 issue labeled `review-miss`. `tune-review-skills` (run at the end of a
