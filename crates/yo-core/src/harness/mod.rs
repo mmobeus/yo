@@ -95,6 +95,35 @@ pub trait Harness: Send + Sync {
     fn bundle(&self, _sys: &dyn Sys, _paths: &Paths) -> Bundle {
         Bundle::default()
     }
+    /// The ledger hook `yo setup` can add to the harness's own hooks file,
+    /// for a harness whose hooks can't come in per session (Codex). It
+    /// runs for every session of the harness, yo's or not, so it's only
+    /// added when asked. `None` for a harness with no such file.
+    fn global_hook(&self, _sys: &dyn Sys) -> Option<GlobalHook> {
+        None
+    }
+}
+
+/// A harness's hooks file, and yo's ledger hook in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalHook {
+    pub path: PathBuf,
+    /// The hook's command for this yo.
+    pub command: String,
+    /// The command of yo's hook in the file now, if it has one.
+    pub installed: Option<String>,
+    /// Whether the harness has approved the hook that's there. Always true
+    /// for a harness that doesn't ask.
+    pub approved: bool,
+    /// The file with yo's hook running `command`, or without it. `None`
+    /// when the file isn't shaped like a hooks file (or, for `without`,
+    /// has no hook of yo's).
+    pub with: Option<String>,
+    pub without: Option<String>,
+    /// What the hook is for (a sentence or two), and how it's approved, for
+    /// the person.
+    pub offer: &'static str,
+    pub approve: &'static str,
 }
 
 /// A session yo launched, as a harness that reports its ids is asked for
@@ -223,12 +252,14 @@ pub struct Prepared {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Prep {
     Claude(claude::Prep),
+    Codex(codex::Prep),
 }
 
 impl Prep {
     pub fn run(&self, sys: &dyn Sys) -> Result<()> {
         match self {
             Prep::Claude(p) => p.run(sys),
+            Prep::Codex(p) => p.run(sys),
         }
     }
 
@@ -236,6 +267,7 @@ impl Prep {
     pub fn planned(&self) -> &'static str {
         match self {
             Prep::Claude(p) => p.planned(),
+            Prep::Codex(p) => p.planned(),
         }
     }
 
@@ -243,6 +275,7 @@ impl Prep {
     pub fn doing(&self) -> &'static str {
         match self {
             Prep::Claude(p) => p.doing(),
+            Prep::Codex(p) => p.doing(),
         }
     }
 
@@ -251,6 +284,7 @@ impl Prep {
     pub fn failed(&self) -> &'static str {
         match self {
             Prep::Claude(p) => p.failed(),
+            Prep::Codex(p) => p.failed(),
         }
     }
 }
@@ -323,6 +357,12 @@ pub fn valid_session_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Whether the person can be asked a question: at a terminal, and outside
+/// a harness's session (whose terminal isn't the person's).
+pub fn can_ask(sys: &dyn Sys) -> bool {
+    sys.interactive() && !all().iter().any(|h| h.inside(sys))
 }
 
 /// Every harness yo has.

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::{self, Bundle, Bundled, BundledKind};
+use crate::harness::{self, Bundle, Bundled, BundledKind, GlobalHook};
 use crate::ojson::OValue;
 use crate::paths::Paths;
 use crate::plan::Note;
@@ -43,6 +43,9 @@ pub struct SetupOpts {
     pub force: bool,
     /// Link the files into this yo checkout instead of copying them.
     pub link: Option<PathBuf>,
+    /// Add yo's ledger hook to the harnesses' own hooks files (Codex's).
+    /// One that's there already is kept current either way.
+    pub hooks: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -51,6 +54,25 @@ pub struct SetupPlan {
     pub checkout: Option<PathBuf>,
     pub notes: Vec<Note>,
     pub steps: Vec<Step>,
+    /// Hooks the harness won't run until the person approves them there.
+    pub approve: Vec<Approve>,
+}
+
+/// A hook to approve in a harness, once setup has put it in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approve {
+    /// The harness, and its command.
+    pub harness: String,
+    pub command: String,
+    /// What the person does there.
+    pub how: &'static str,
+}
+
+/// A hook setup can add, when asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offer {
+    pub harness: String,
+    pub what: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,6 +138,8 @@ pub enum Kept {
     Config,
     /// The settings are merged already.
     Merged,
+    /// yo's hook is in the harness's hooks file, as this yo has it.
+    Hooked,
     /// An old link to a checkout's yo, which is the yo running now.
     RunningYo { to: PathBuf },
 }
@@ -137,13 +161,26 @@ pub enum Removed {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wrote {
     /// yo's starting config, naming the checkout when there is one.
-    Config { checkout: Option<PathBuf> },
+    Config {
+        checkout: Option<PathBuf>,
+    },
     /// A harness's settings file, made from its layer.
     Settings,
     /// A harness's settings file, with these top-level keys merged in.
-    Merged { keys: Vec<String> },
+    Merged {
+        keys: Vec<String>,
+    },
     /// A harness's settings file, with these top-level keys taken out.
-    Unmerged { keys: Vec<String> },
+    Unmerged {
+        keys: Vec<String>,
+    },
+    /// A harness's hooks file, with yo's ledger hook (or without it).
+    Hook {
+        harness: String,
+    },
+    Unhook {
+        harness: String,
+    },
 }
 
 /// What setup installed: each path, with a hash of what it wrote there,
@@ -217,6 +254,11 @@ pub fn plan(sys: &dyn Sys, paths: &Paths, opts: &SetupOpts) -> Result<SetupPlan>
             }),
         }
     }
+    for h in harness::all() {
+        if let Some(g) = h.global_hook(sys) {
+            ctx.hook(h.name(), h.default_command(), &g, &mut p);
+        }
+    }
     old_yo(sys, opts, &mut p.steps);
 
     let manifest = paths.setup_manifest();
@@ -236,6 +278,39 @@ pub fn plan(sys: &dyn Sys, paths: &Paths, opts: &SetupOpts) -> Result<SetupPlan>
         });
     }
     Ok(p)
+}
+
+/// The harnesses' hooks setup can add (with [`SetupOpts::hooks`]): those
+/// not in place yet, for a harness that's installed.
+pub fn hook_offers(sys: &dyn Sys) -> Vec<Offer> {
+    harness::all()
+        .iter()
+        .filter_map(|h| {
+            let g = h.global_hook(sys)?;
+            (g.installed.is_none() && g.with.is_some() && runs(sys, h.default_command())).then(
+                || Offer {
+                    harness: h.name().to_string(),
+                    what: g.offer,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Whether harness `name`'s hook is in place and approved.
+pub fn hook_approved(sys: &dyn Sys, name: &str) -> bool {
+    harness::all()
+        .iter()
+        .filter(|h| h.name() == name)
+        .filter_map(|h| h.global_hook(sys))
+        .any(|g| g.installed.as_deref() == Some(g.command.as_str()) && g.approved)
+}
+
+/// Whether `program --version` runs.
+fn runs(sys: &dyn Sys, program: &str) -> bool {
+    sys.cmd()
+        .run(&CommandSpec::new(program).arg("--version"))
+        .is_ok_and(|o| o.status == Some(0))
 }
 
 /// Carries out `plan`, calling `each` before each step, and stopping at the
@@ -527,6 +602,72 @@ impl Plan<'_> {
             what,
         });
         Ok(())
+    }
+}
+
+impl Plan<'_> {
+    /// Harness `name`'s hooks file `g`: yo's hook added (when asked) or
+    /// kept current (when it's there), or taken out on uninstall. Written
+    /// from what the harness read, the file as it was backed up first.
+    fn hook(&self, name: &str, command: &str, g: &GlobalHook, p: &mut SetupPlan) {
+        let put = |contents: &str, what: Wrote, steps: &mut Vec<Step>| {
+            if g.path.exists() {
+                steps.push(Step::Backup {
+                    path: g.path.clone(),
+                    to: self.backup(&g.path),
+                    copy: true,
+                });
+            }
+            steps.push(Step::Write {
+                path: g.path.clone(),
+                contents: contents.to_string(),
+                what,
+            });
+        };
+        if self.opts.uninstall {
+            if let Some(w) = &g.without {
+                put(
+                    w,
+                    Wrote::Unhook {
+                        harness: name.into(),
+                    },
+                    &mut p.steps,
+                );
+            }
+            return;
+        }
+        if g.installed.is_none() && !self.opts.hooks {
+            return;
+        }
+        let current = g.installed.as_deref() == Some(g.command.as_str());
+        if current {
+            p.steps.push(Step::Keep {
+                path: g.path.clone(),
+                why: Kept::Hooked,
+            });
+        } else if let Some(w) = &g.with {
+            put(
+                w,
+                Wrote::Hook {
+                    harness: name.into(),
+                },
+                &mut p.steps,
+            );
+        } else {
+            p.notes.push(Note::Warn(format!(
+                "{} isn't shaped like a hooks file, so yo's hook wasn't added; fix or move it first",
+                g.path.display()
+            )));
+            return;
+        }
+        // A changed command is a new hook to the harness.
+        if !(current && g.approved) {
+            p.approve.push(Approve {
+                harness: name.into(),
+                command: command.into(),
+                how: g.approve,
+            });
+        }
     }
 }
 

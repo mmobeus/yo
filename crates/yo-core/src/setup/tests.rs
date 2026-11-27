@@ -122,6 +122,8 @@ fn said(t: &T, p: &SetupPlan) -> Vec<String> {
                     Wrote::Settings => "settings",
                     Wrote::Merged { .. } => "merged",
                     Wrote::Unmerged { .. } => "unmerged",
+                    Wrote::Hook { .. } => "hook",
+                    Wrote::Unhook { .. } => "unhook",
                 }
             ),
             Step::AddPeer { .. } => "add-peer".into(),
@@ -543,4 +545,104 @@ fn stale_needs_a_manifest_and_ignores_links() {
     man.files.remove(&key(&t.p(DOWN)));
     fs::write(&m, serde_json::to_string(&man).unwrap()).unwrap();
     assert!(stale(&t.sys, &t.paths()));
+}
+
+const HOOKS: &str = ".codex/hooks.json";
+
+/// yo's hook in `~/.codex/hooks.json` is added only when asked, kept
+/// current, needs approving until Codex has, and comes out on uninstall
+/// with the person's own hooks kept.
+#[test]
+fn codex_hook_only_when_asked() {
+    let t = T::new();
+    t.sys
+        .answer_ok("codex", &["--version"], "codex-cli 0.172.0");
+    assert_eq!(
+        hook_offers(&t.sys)
+            .iter()
+            .map(|o| o.harness.as_str())
+            .collect::<Vec<_>>(),
+        ["codex"]
+    );
+    let p = t.run(&copy());
+    assert!(
+        !said(&t, &p).iter().any(|s| s.contains(HOOKS)),
+        "not asked: not added"
+    );
+    assert!(!t.p(HOOKS).exists());
+
+    let theirs = r#"{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#;
+    t.write(HOOKS, theirs);
+    let hooked = SetupOpts {
+        hooks: true,
+        ..copy()
+    };
+    let p = t.run(&hooked);
+    let s = said(&t, &p);
+    assert!(s.contains(&format!("backup {HOOKS} copy=true")), "{s:?}");
+    assert!(s.contains(&format!("write {HOOKS} hook")), "{s:?}");
+    assert_eq!(p.approve.len(), 1);
+    assert_eq!(p.approve[0].command, "codex");
+    let cmd = format!("'{}' _session-hook codex", t.sys.exe().display());
+    let v = OValue::parse(&t.read(HOOKS)).unwrap();
+    let groups = v.get("hooks").and_then(|h| h.get("SessionEnd")).unwrap();
+    assert_eq!(
+        groups.to_compact(),
+        format!(
+            r#"[{{"hooks":[{{"type":"command","command":"mine"}}]}},{{"hooks":[{{"type":"command","command":{}}}]}}]"#,
+            serde_json::to_string(&cmd).unwrap()
+        )
+    );
+    assert!(hook_offers(&t.sys).is_empty(), "in place: nothing to offer");
+    assert!(!hook_approved(&t.sys, "codex"));
+
+    // Once Codex has approved it (under its place in the file), a run
+    // without --hooks keeps it and asks nothing.
+    t.write(
+        ".codex/config.toml",
+        &format!(
+            "[hooks.state.\"{}:session_end:1:0\"]\ntrusted_hash = \"sha256:x\"\n",
+            t.p(HOOKS).display()
+        ),
+    );
+    assert!(hook_approved(&t.sys, "codex"));
+    let p = t.run(&copy());
+    assert!(said(&t, &p).contains(&format!("keep {HOOKS} Hooked")));
+    assert!(p.approve.is_empty());
+
+    let p = t.run(&SetupOpts {
+        uninstall: true,
+        ..copy()
+    });
+    assert!(said(&t, &p).contains(&format!("write {HOOKS} unhook")));
+    assert_eq!(
+        OValue::parse(&t.read(HOOKS)).unwrap(),
+        OValue::parse(theirs).unwrap()
+    );
+}
+
+#[test]
+fn codex_hook_isnt_offered_without_codex() {
+    let t = T::new();
+    t.sys
+        .answer("codex", &["--version"], crate::fake::failed(127));
+    assert!(hook_offers(&t.sys).is_empty());
+}
+
+#[test]
+fn a_misshapen_codex_hooks_file_is_warned_about_and_left_alone() {
+    let t = T::new();
+    t.write(HOOKS, r#"{"hooks":[]}"#);
+    let p = t.plan(&SetupOpts {
+        hooks: true,
+        ..copy()
+    });
+    assert!(p.notes.iter().any(|n| matches!(n,
+        Note::Warn(s) if s.ends_with("isn't shaped like a hooks file, so yo's hook wasn't added; fix or move it first"))));
+    assert!(
+        !said(&t, &p).iter().any(|s| s.contains(HOOKS)),
+        "{:?}",
+        said(&t, &p)
+    );
+    assert!(p.approve.is_empty());
 }

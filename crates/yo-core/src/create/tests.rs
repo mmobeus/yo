@@ -900,3 +900,117 @@ fn a_codex_session() {
         "{m}"
     );
 }
+
+/// Asks yes (or no) and records what's said.
+struct Answers(bool, Vec<String>);
+
+impl Report for Answers {
+    fn note(&mut self, n: &Note) {
+        let (Note::Info(s) | Note::Detail(s) | Note::Warn(s)) = n;
+        self.1.push(s.clone());
+    }
+    fn doing(&mut self, _: &Action) {}
+    fn launched(&mut self, _: &LaunchSpec, _: &Launched) {}
+    fn ask(&mut self, q: &str) -> bool {
+        self.1.push(format!("asked: {q}"));
+        self.0
+    }
+}
+
+fn asks(p: &Plan) -> Vec<&Action> {
+    p.actions
+        .iter()
+        .filter(|a| matches!(a, Action::Ask { .. }))
+        .collect()
+}
+
+#[test]
+fn a_codex_worktree_of_a_repo_codex_hasnt_trusted_asks_first() {
+    let t = T::new("");
+    let codex = |r: &mut CreateRequest| {
+        r.args = args(&["feat"]);
+        r.harness = Some("codex".into());
+    };
+    let p = t.plan(codex).unwrap();
+    let real = fs::canonicalize(t.clone("api")).unwrap();
+    assert!(
+        matches!(asks(&p)[..], [Action::Ask { prep: crate::harness::Prep::Codex(
+        crate::harness::codex::Prep::Trust { root }), otherwise, .. }]
+        if *root == real && otherwise.starts_with("Codex will ask to trust"))
+    );
+
+    // Said no (or nobody to ask): only the warning, and nothing written.
+    let mut no = Answers(false, Vec::new());
+    let only: Plan = Plan {
+        notes: Vec::new(),
+        actions: asks(&p).into_iter().cloned().collect(),
+    };
+    execute(&t.ctx(), &only, &DryLaunch, &mut no).unwrap();
+    assert!(no.1[1].starts_with("Codex will ask to trust"), "{:?}", no.1);
+    let cfg = t.home.join(".codex/config.toml");
+    assert!(!cfg.exists());
+    // Said yes: the clone's entry, and no question next time.
+    let mut yes = Answers(true, Vec::new());
+    execute(&t.ctx(), &only, &DryLaunch, &mut yes).unwrap();
+    assert!(
+        fs::read_to_string(&cfg)
+            .unwrap()
+            .contains(&format!("[projects.\"{}\"]", real.display()))
+    );
+    assert!(asks(&t.plan(codex).unwrap()).is_empty());
+}
+
+#[test]
+fn a_codex_worktree_of_an_untrusted_repo_is_only_warned_about() {
+    let t = T::new("");
+    let h = t.home.display();
+    fs::write(
+        t.home.join("config.json"),
+        format!(r#"{{"profiles": {{"u": {{"trust": false, "repos": {{"api": {{"path": "{h}/src/api"}}}}}}}}}}"#),
+    )
+    .unwrap();
+    let p = t
+        .plan(|r| {
+            r.args = args(&["feat"]);
+            r.harness = Some("codex".into());
+        })
+        .unwrap();
+    assert!(asks(&p).is_empty());
+    assert!(p.notes.iter().any(|n| matches!(n,
+        Note::Warn(s) if s.starts_with(&format!("Codex will ask to trust {h}/src/api")))));
+}
+
+#[test]
+fn an_unapproved_codex_hook_is_warned_about() {
+    let t = T::new("");
+    let codex = |r: &mut CreateRequest| {
+        r.args = args(&["feat"]);
+        r.harness = Some("codex".into());
+    };
+    let unapproved = |p: &Plan| {
+        p.notes
+            .iter()
+            .any(|n| matches!(n, Note::Warn(s) if s.starts_with("yo's Codex hook isn't approved")))
+    };
+    assert!(
+        !unapproved(&t.plan(codex).unwrap()),
+        "no hook, nothing to say"
+    );
+    let hooks = t.home.join(".codex/hooks.json");
+    fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+    fs::write(
+        &hooks,
+        r#"{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"'/yo' _session-hook codex"}]}]}}"#,
+    )
+    .unwrap();
+    assert!(unapproved(&t.plan(codex).unwrap()));
+    fs::write(
+        t.home.join(".codex/config.toml"),
+        format!(
+            "[hooks.state.\"{}:session_end:0:0\"]\ntrusted_hash = \"sha256:x\"\n",
+            hooks.display()
+        ),
+    )
+    .unwrap();
+    assert!(!unapproved(&t.plan(codex).unwrap()));
+}

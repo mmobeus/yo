@@ -160,12 +160,14 @@ pub fn shown(ctx: &Ctx, live: &[yo_core::harness::LiveSession]) -> Option<Tabs> 
     runner(ctx).tabs(&*ctx.sys)
 }
 
-/// `yo _session-hook`: a harness's ledger hook, with its payload. Loads no
-/// config, so it's fast and a config problem can't break it.
-pub fn session_hook(sys: Arc<dyn Sys>, payload: &str) {
+/// `yo _session-hook [HARNESS]`: a harness's ledger hook, with its
+/// payload. Loads no config, so it's fast and a config problem can't break
+/// it. Without a harness named, the first whose payloads it is.
+pub fn session_hook(sys: Arc<dyn Sys>, harness: Option<&str>, payload: &str) {
     let ledger = Ledger::new(sys.clone(), Paths::new(&*sys));
     for h in yo_core::harness::all() {
         if h.capabilities().ledger_hooks
+            && harness.is_none_or(|n| n == h.name())
             && let Some(ev) = h.hook_event(payload)
         {
             ledger.hook(&ev);
@@ -455,7 +457,7 @@ fn run_plan(
         return Ok(0);
     }
     let dry_launch = ctx.sys.env_nonempty("YO_DRY_LAUNCH").is_some();
-    let mut report = render::Progress::new(out);
+    let mut report = render::Progress::new(out).asking(at_terminal(ctx));
     let iterm = Iterm::new(&ctx.registry.defaults);
     let runner: &dyn Runner = if dry_launch { &DryLaunch } else { &iterm };
     execute(ctx, plan, runner, &mut report)?;
@@ -531,14 +533,42 @@ fn create(
     run_plan(ctx, &plan, up.dry_run, true, out)
 }
 
-/// Whether to ask where a repo goes: at a terminal, outside a harness's
-/// session (whose terminal isn't the person's), with a config to save to.
+/// Whether to ask where a repo goes: at a terminal, with a config to
+/// save to.
 fn can_ask(ctx: &Ctx) -> bool {
-    use std::io::IsTerminal;
-    std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && !ctx.inside_session()
-        && ctx.paths.config.is_file()
+    at_terminal(ctx) && ctx.paths.config.is_file()
+}
+
+/// Whether the person can be asked (`harness::can_ask`).
+pub fn at_terminal(ctx: &Ctx) -> bool {
+    yo_core::harness::can_ask(&*ctx.sys)
+}
+
+/// Asks `question` on the terminal, `[Y/n]` or `[y/N]` by `default`. The
+/// default is only for an empty line the person entered: a terminal that
+/// can't be opened, written or read, or ctrl-d, is a no.
+pub fn ask_yes(question: &str, default: bool) -> bool {
+    use std::io::BufRead;
+    let Ok(mut tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    else {
+        return false;
+    };
+    let hint = if default { "[Y/n]" } else { "[y/N]" };
+    if write!(tty, "{question} {hint} ").is_err() {
+        return false;
+    }
+    let mut ans = String::new();
+    match std::io::BufReader::new(&mut tty).read_line(&mut ans) {
+        Ok(n) if n > 0 => {}
+        _ => return false,
+    }
+    match ans.trim() {
+        "" => default,
+        a => matches!(a, "y" | "Y" | "yes" | "YES" | "Yes"),
+    }
 }
 
 /// Asks on the terminal where an unregistered repo goes; anything but a

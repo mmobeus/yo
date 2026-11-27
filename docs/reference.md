@@ -21,7 +21,7 @@ as `--flag=value` or `--flag value`.
 | `yo [flags] [INPUT] [message]` | start a session (see [flags](#flags-for-starting-a-session)) |
 | `yo NAME ['message']` | reach a session, agent home or home by name ([`yo NAME`](#yo-name)) |
 | `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, end its claude if it's still running in this tab, close its tab. Aliases `rm`, `teardown` |
-| `yo sessions` | list the ledger: running, running (no tab), ready, ended, gone. Alias `ls` |
+| `yo sessions` | list the ledger: running, running (no tab), ready, ended, gone, no-id, waiting? (a Codex session with no id yet, a while after launch: likely stopped at a prompt in its tab). Alias `ls` |
 | `yo resume [<name\|id\|dir>] [--model=M] [--new-window\|--tab]` | reopen one session; bare, list them |
 | `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live; waits a few seconds for sessions whose tab was just closed, and lists those still running without a tab instead of resuming them |
 | `yo title ["T"]` | retitle the session this runs in; bare, reset every yo tab's name |
@@ -33,7 +33,7 @@ as `--flag=value` or `--flag value`.
 | `yo config path` | the config file's path |
 | `yo config edit` | open it in `$EDITOR`, then validate |
 | `yo config add-repo <dir\|url\|owner/repo> [--profile=P] [--key=K]` | list a repo, cloning it first unless it's a directory |
-| `yo setup [--dry-run] [--uninstall] [--link=CHECKOUT] [--merge-settings] [--no-iterm] [--force]` | install what yo needs besides its binary ([`yo setup`](#yo-setup)) |
+| `yo setup [--dry-run] [--uninstall] [--link=CHECKOUT] [--merge-settings] [--no-iterm] [--force] [--hooks]` | install what yo needs besides its binary ([`yo setup`](#yo-setup)) |
 | `yo help` | yo's guide, and what's configured |
 | `yo --version` | yo's version (`0.0.0-dev` when built from a checkout) |
 
@@ -52,6 +52,16 @@ Claude Code workgroup if it has none. It's safe to run again:
 - `~/.local/bin/yo`, if it's a link to a checkout's build (an old
   `install.sh`), is removed, unless it's the yo running.
 
+If Codex is installed, setup offers to add yo's ledger hook to
+`~/.codex/hooks.json`: a `SessionEnd` hook running `yo _session-hook codex`,
+beside any hooks already there (the file is backed up first). It runs for
+every Codex session, so at a terminal setup asks, and `--hooks` adds it
+without asking; otherwise it's left out. A hook that's there is kept current
+on every run, and `--uninstall` takes it out. Codex runs a hook only after
+it's approved in Codex's hook review, so setup then offers to open `codex` for
+that (`codex` itself, not `harnesses.codex.command`): at "Hooks need review", choose "Trust all and continue" (or "Review
+hooks" to trust only yo's), then `/quit`.
+
 What it installed is recorded in `~/.local/state/yo/setup.json`. When a newer
 yo has different copies, every other command says to run `yo setup` again.
 
@@ -63,6 +73,7 @@ yo has different copies, every other command says to run `yo setup` again.
 | `--merge-settings` | also merge yo's Claude settings into `~/.claude/settings.json`, for every claude session: yo's keys win, objects merge key by key, the rest of the file stays (backed up first). With `--uninstall`, its top-level keys are taken back out |
 | `--no-iterm` | leave iTerm2's workgroups alone. Otherwise iTerm2 sees a new peer after it restarts (the old workgroups are saved to `~/.config/yo/iterm-workgroups.bak-<time>.json`) |
 | `--force` | replace links that point somewhere unexpected |
+| `--hooks` | add yo's ledger hook to `~/.codex/hooks.json` without asking |
 
 ### INPUT
 
@@ -238,9 +249,10 @@ What each harness gets:
 | no message | asked to introduce itself | the same, which is also what makes Codex record the session |
 | `--model` | yes | yes (`-m`) |
 | `--agent`, agents' homes | yes | no |
-| settings layer, shared memory, trust | yes | no: Codex asks to trust each new directory |
+| settings layer, shared memory | yes | no |
+| trust | a worktree of a trusted repo is pre-trusted | Codex asks once per repo (its main clone), and its worktrees inherit that. For a worktree of a trusted repo it hasn't trusted, yo asks at a terminal and on a yes adds the clone to `~/.codex/config.toml`; otherwise it warns that Codex will ask in the tab |
 | running or not | `~/.claude/sessions` | the thread lock a running `codex` holds (`~/.codex/thread-writer-locks`), found with `lsof` |
-| quit deliberately | `/exit` marks it ended | not seen: a session quit with `/quit` stays ready, so `resume-all` brings it back |
+| quit deliberately | `/exit` marks it ended | with yo's hook (`yo setup` adds it, when asked, and Codex approves it), `/quit` and ctrl-d mark it ended. Without it, a quit session stays ready, so `resume-all` brings it back |
 | messages | typed into its tab; a stopped one is resumed with it | the same (`codex resume ID MESSAGE`) |
 | `--from` report back | with `SendMessage` | by running `yo SESSION 'report'`, which types it in |
 | inside a session | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` |

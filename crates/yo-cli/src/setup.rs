@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use yo_core::paths::Paths;
 use yo_core::plan::Note;
-use yo_core::setup::{Kept, Removed, SetupOpts, Step, Wrote, execute, plan};
+use yo_core::setup::{
+    Kept, Removed, SetupOpts, Step, Wrote, execute, hook_approved, hook_offers, plan,
+};
 use yo_core::sys::Sys;
 
 use crate::cli::Setup;
@@ -15,13 +17,26 @@ type Res = Result<i32, Box<dyn std::error::Error>>;
 
 pub fn setup(sys: Arc<dyn Sys>, s: &Setup, cwd: &Path, out: &mut dyn Write) -> Res {
     let paths = Paths::new(&*sys);
-    let opts = SetupOpts {
+    let mut opts = SetupOpts {
         uninstall: s.uninstall,
         merge_settings: s.merge_settings,
         iterm: !s.no_iterm,
         force: s.force,
         link: s.link.as_ref().map(|l| cwd.join(l)),
+        hooks: s.hooks,
     };
+    let asking = yo_core::harness::can_ask(&*sys);
+    let offers = if s.uninstall || s.hooks {
+        Vec::new()
+    } else {
+        hook_offers(&*sys)
+    };
+    if asking && !s.dry_run {
+        for o in &offers {
+            writeln!(out, "{}", o.what)?;
+            opts.hooks |= crate::run::ask_yes(&format!("Add yo's {} hook?", o.harness), false);
+        }
+    }
     let p = plan(&*sys, &paths, &opts)?;
     let home = sys.home();
     let t = Tilde(&home);
@@ -45,6 +60,20 @@ pub fn setup(sys: Arc<dyn Sys>, s: &Setup, cwd: &Path, out: &mut dyn Write) -> R
         for step in &p.steps {
             out.write_all(line(&t, step).as_bytes())?;
         }
+        for a in &p.approve {
+            writeln!(
+                out,
+                "  then    offer to open {} to approve yo's {} hook",
+                a.command, a.harness
+            )?;
+        }
+        for o in offers.iter().filter(|_| !opts.hooks) {
+            writeln!(
+                out,
+                "    not added: yo's {} hook (setup asks at a terminal; --hooks adds it)",
+                o.harness
+            )?;
+        }
         writeln!(out, "dry run: nothing changed.")?;
         return Ok(0);
     }
@@ -52,6 +81,32 @@ pub fn setup(sys: Arc<dyn Sys>, s: &Setup, cwd: &Path, out: &mut dyn Write) -> R
         let _ = out.write_all(line(&t, step).as_bytes());
     })?;
 
+    for a in &p.approve {
+        if asking
+            && crate::run::ask_yes(
+                &format!("Open {} now to approve yo's hook?", a.harness),
+                true,
+            )
+        {
+            writeln!(out, "==> {}", a.how)?;
+            let ran = std::process::Command::new(&a.command)
+                .current_dir(&home)
+                .status();
+            if let Err(e) = ran {
+                writeln!(out, "yo: couldn't run {}: {e}", a.command)?;
+            }
+        }
+        if hook_approved(&*sys, &a.harness) {
+            writeln!(out, "  ok      yo's {} hook is approved", a.harness)?;
+        } else {
+            writeln!(
+                out,
+                "yo: yo's {} hook isn't approved yet, so {} stops at its hook review until it is: \
+                 run {} and approve it there (or run yo setup again)",
+                a.harness, a.harness, a.command
+            )?;
+        }
+    }
     if opts.uninstall {
         writeln!(
             out,
@@ -112,6 +167,7 @@ fn line(t: &Tilde<'_>, step: &Step) -> String {
                 Kept::Linked => row("ok", format!("{p} (linked)")),
                 Kept::Config => row("ok", format!("{p} (your config, left alone)")),
                 Kept::Merged => row("ok", format!("{p} (already merged)")),
+                Kept::Hooked => row("ok", format!("{p} (has yo's hook)")),
                 Kept::Edited => row("kept", format!("{p} (changed since yo installed it)")),
                 Kept::Foreign { to } => row(
                     "kept",
@@ -154,6 +210,12 @@ fn line(t: &Tilde<'_>, step: &Step) -> String {
                 ),
                 Wrote::Unmerged { keys } => {
                     row("unmerge", format!("{p} (dropping {})", keys.join(", ")))
+                }
+                Wrote::Hook { harness } => {
+                    row("hook", format!("{p} (yo's {harness} hook; the rest kept)"))
+                }
+                Wrote::Unhook { harness } => {
+                    row("unhook", format!("{p} (dropping yo's {harness} hook)"))
                 }
             }
         }
