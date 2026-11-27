@@ -387,6 +387,7 @@ impl Ledger {
         let home = self.sys.home();
         let mut recs: BTreeMap<Key, Record> =
             self.all().into_iter().map(|e| (e.key, e.record)).collect();
+        let all_live = live;
         let mut live: Vec<&LiveSession> = live.iter().collect();
         // updated_at is in each harness's own units: order within a harness.
         live.sort_by(|a, b| (&a.harness, a.updated_at).cmp(&(&b.harness, b.updated_at)));
@@ -416,6 +417,12 @@ impl Ledger {
                     created_at: Some(self.sys.unix_now()),
                     ..Record::default()
                 });
+                // Another session still running holds the record: a second
+                // session in the same worktree (a test one, say) mustn't
+                // take it over (#66).
+                if running_other(&rec, &l.id, all_live).is_some() {
+                    continue;
+                }
                 if rec.id() != Some(l.id.as_str()) || rec.ended_at.is_some_and(|t| t != 0) {
                     let mut e = Entry { key, record: rec };
                     e.record.session_id = Some(l.id.clone());
@@ -482,8 +489,10 @@ impl Ledger {
     /// Records a session from inside it. One the ledger already holds by its
     /// id (even under an older id's key, after a `/clear`) keeps its record;
     /// a worktree's record keeps what yo wrote when it created it. Either
-    /// way it's no longer ended.
-    pub fn adopt(&self, a: &Adopt) -> Result<Key> {
+    /// way it's no longer ended. A worktree's record whose own session is
+    /// still running (one of `live`, under another id) is refused, not
+    /// replaced (#66); one whose session isn't running is replaced.
+    pub fn adopt(&self, a: &Adopt, live: &[LiveSession]) -> Result<Key> {
         let all = self.all();
         let mut e = if let Some(held) = all
             .iter()
@@ -515,6 +524,15 @@ impl Ledger {
             };
             if let Some(old) = all.iter().find(|e| e.key == key) {
                 let o = &old.record;
+                if let Some(l) = running_other(o, &a.id, live) {
+                    let name = o.name.as_deref().unwrap_or(&key.0);
+                    return Err(Error::Refused(format!(
+                        "{} is {name}'s, and its session ({}, pid {}) is still running: not replacing its record\n        yo {name} reaches that one",
+                        a.dir.display(),
+                        l.id,
+                        l.pid
+                    )));
+                }
                 let keep = |new: &mut Option<String>, old: &Option<String>| {
                     if let Some(v) = old.clone().filter(|v| !v.is_empty()) {
                         *new = Some(v);
@@ -579,6 +597,12 @@ impl Ledger {
         }
         Ok(!hit.is_empty())
     }
+}
+
+/// The running session a record holds, when it isn't session `id`.
+fn running_other<'a>(rec: &Record, id: &str, live: &'a [LiveSession]) -> Option<&'a LiveSession> {
+    let held = rec.id().filter(|h| *h != id)?;
+    live.iter().find(|l| l.id == held)
 }
 
 /// Whether `cwd` is `wt` or inside it.
@@ -969,6 +993,77 @@ mod tests {
         assert!(t.ledger.sync(&clones, &l).unwrap().is_empty());
     }
 
+    #[test]
+    fn sync_leaves_a_running_sessions_record_alone() {
+        let t = setup();
+        let x = t.worktree("dev/a-worktrees/x");
+        let clones = [SyncClone {
+            path: t.home.join("dev/a"),
+            repo: "a".into(),
+            title_prefix: String::new(),
+            profile: None,
+        }];
+        t.put(
+            "dev__a-worktrees__x",
+            Record {
+                worktree: x.clone(),
+                session_id: Some("sa".into()),
+                ..Record::default()
+            },
+        );
+        // A second session in x, newer and of a later harness, as a Codex
+        // test session in a Claude session's worktree was (#66).
+        let mut other = live("sb", 2, &x, 9);
+        other.harness = "codex".into();
+        let both = [live("sa", 1, &x, 1), other.clone()];
+        assert!(t.ledger.sync(&clones, &both).unwrap().is_empty());
+        let rx = t.get("dev__a-worktrees__x");
+        assert_eq!(rx.session_id.as_deref(), Some("sa"));
+        // Once sa isn't running, the record is sb's.
+        let got = t.ledger.sync(&clones, &[other]).unwrap();
+        assert_eq!(
+            got,
+            [Adopted {
+                name: "x".into(),
+                id: "sb".into()
+            }]
+        );
+        let rx = t.get("dev__a-worktrees__x");
+        assert_eq!(rx.session_id.as_deref(), Some("sb"));
+    }
+
+    #[test]
+    fn adopt_refuses_a_running_sessions_worktree() {
+        let t = setup();
+        let wt = t.worktree("feat");
+        let key = Key::for_worktree(&t.home, &wt);
+        t.put(
+            &key.0,
+            Record {
+                worktree: wt.clone(),
+                session_id: Some("old".into()),
+                name: Some("feat".into()),
+                ..Record::default()
+            },
+        );
+        let req = adopt_req(&t, "feat", "new", "", false, Mode::Worktree);
+        let err = t
+            .ledger
+            .adopt(&req, &[live("old", 42, &wt, 0)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("feat's"), "{err}");
+        assert!(err.contains("old, pid 42"), "{err}");
+        assert!(err.contains("yo feat reaches that one"), "{err}");
+        assert_eq!(t.get(&key.0).session_id.as_deref(), Some("old"));
+        // Its own session running is no clash; nor is another one
+        // running when the record's isn't.
+        let mine = adopt_req(&t, "feat", "old", "", false, Mode::Worktree);
+        t.ledger.adopt(&mine, &[live("old", 42, &wt, 0)]).unwrap();
+        t.ledger.adopt(&req, &[live("new", 43, &wt, 0)]).unwrap();
+        assert_eq!(t.get(&key.0).session_id.as_deref(), Some("new"));
+    }
+
     fn adopt_req(t: &T, wt: &str, id: &str, title: &str, given: bool, mode: Mode) -> Adopt {
         Adopt {
             dir: t.worktree(wt),
@@ -989,7 +1084,7 @@ mod tests {
         // New, in place: keyed by its id.
         let k = t
             .ledger
-            .adopt(&adopt_req(&t, "x", "id1", "X", false, Mode::Here))
+            .adopt(&adopt_req(&t, "x", "id1", "X", false, Mode::Here), &[])
             .unwrap();
         assert_eq!(k.0, "id-id1");
         assert!(t.get("id-id1").by_id);
@@ -1013,14 +1108,10 @@ mod tests {
         );
         let k = t
             .ledger
-            .adopt(&adopt_req(
-                &t,
-                "feat",
-                "new",
-                "derived",
-                false,
-                Mode::Worktree,
-            ))
+            .adopt(
+                &adopt_req(&t, "feat", "new", "derived", false, Mode::Worktree),
+                &[],
+            )
             .unwrap();
         let r = t.get(&k.0);
         assert_eq!(r.session_id.as_deref(), Some("new"));
@@ -1033,14 +1124,10 @@ mod tests {
 
         // Already held by id: its record stays, with a given title.
         t.ledger
-            .adopt(&adopt_req(
-                &t,
-                "elsewhere",
-                "new",
-                "Given",
-                true,
-                Mode::Here,
-            ))
+            .adopt(
+                &adopt_req(&t, "elsewhere", "new", "Given", true, Mode::Here),
+                &[],
+            )
             .unwrap();
         assert_eq!(t.get(&k.0).title.as_deref(), Some("Given"));
         assert_eq!(t.ledger.all().len(), 2);
