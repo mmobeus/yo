@@ -41,7 +41,7 @@ repos, so it's yours.
 | yo config | `~/.config/yo/config.json` (a plain file, yours) |
 | settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
 | skills | `~/.claude/skills/`, and `~/.codex/skills/` if Codex is installed |
-| terminal peer | iTerm2's "Claude Code" workgroup (only if it has none) |
+| yo's workgroup | iTerm2's workgroups: a shell beside every session yo opens (only if it isn't there) |
 
 The files are copies built into yo, so run `yo setup` again after upgrading
 (yo says so when they're out of date). Useful flags: `--dry-run`,

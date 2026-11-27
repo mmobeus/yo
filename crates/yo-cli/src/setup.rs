@@ -219,31 +219,33 @@ fn line(t: &Tilde<'_>, step: &Step) -> String {
                 }
             }
         }
-        Step::AddPeer {
-            name,
+        Step::Workgroup {
+            add,
+            peer,
             running,
             backup,
             ..
         } => {
-            let mut s = row(
-                "peer",
-                format!("iTerm2's Claude Code workgroup <- terminal peer '{name}'"),
-            );
+            let mut s = if *add {
+                row(
+                    "add",
+                    format!("iTerm2 workgroup 'yo' (the session, and a shell as '{peer}')"),
+                )
+            } else {
+                row("rm", "iTerm2 workgroup 'yo'".into())
+            };
             s.push_str(&format!(
                 "          (the workgroups as they were: {})\n",
                 t.p(backup)
             ));
             if *running {
                 s.push_str(
-                    "          iTerm2 is running: the peer appears after its next restart. Don't\n          edit workgroups in iTerm2's settings until then, or it's overwritten.\n",
+                    "          iTerm2 is running: it sees this after its next restart. Don't\n          edit workgroups in iTerm2's settings until then, or it's overwritten.\n",
                 );
             }
             s
         }
-        Step::PeerPresent => row(
-            "ok",
-            "iTerm2's Claude Code workgroup (has a terminal peer)".into(),
-        ),
+        Step::WorkgroupPresent => row("ok", "iTerm2 workgroup 'yo'".into()),
         Step::Manifest { path, contents } => match contents {
             Some(_) => row("record", format!("{} (what setup installed)", t.p(path))),
             None => row("rm", format!("{} (what setup installed)", t.p(path))),

@@ -436,10 +436,13 @@ give `--from` or `yo NAME`), the branch, context used, cost and time.
   iTerm's Session Status tool, which lists one window, shows them all.
   `--new-window` opts out once, `"windowMode": "window"` always, and
   `"windowGroup"` names the window (`{repo}` in it gives one per repo).
-- **Layout.** With iTerm2's Claude Code workgroup set up with a terminal peer
-  ("CLI"), claude has the tab to itself and the peer is the shell. Otherwise
-  the tab is split: claude left, a shell right. `yo setup` adds the peer;
-  it appears after iTerm2 restarts.
+- **Layout.** `yo setup` adds a workgroup of yo's to iTerm2: the session,
+  with a shell as its terminal peer ("CLI"), one shown at a time. A tab yo
+  opens enters it whatever the harness (Claude or Codex), so the session has
+  the tab to itself and the peer is the shell. iTerm2 reads workgroups when
+  it starts, so it appears after iTerm2 restarts; until then the tab is
+  split: the session left, a shell right. Tabs you open yourself keep
+  iTerm2's own Claude Code workgroup.
 - **Titles that stick.** claude rewrites the terminal title constantly, so yo
   uses an iTerm profile (`worksesh`) that ignores that and pins the tab title.
 
@@ -459,8 +462,8 @@ Claude session; for a Codex one, only ending it and resuming it). If the tab is 
 forward but doesn't type into the shell: switch it to the chat.
 
 **`yo sessions` says `running (no tab)`.** The session's claude is still
-running, but its tab is gone. iTerm2 does this when a tab with the Claude
-Code workgroup is closed while it shows CLI: only the CLI shell is ended,
+running, but its tab is gone. iTerm2 does this when a workgroup tab is
+closed while it shows CLI: only the CLI shell is ended,
 and the chat runs on with no tab (it isn't under Session › Buried Sessions
 either). `resume-all` lists these instead of resuming them. End one with
 `kill -HUP <pid>` (the pid `yo sessions` shows), then `yo resume <name>`.
@@ -470,7 +473,7 @@ either). `resume-all` lists these instead of resuming them. End one with
 worktree. If yo knows the session (`yo sessions`), `yo my-fix 'message'`
 reaches it instead. Otherwise pick another name, or `yo sweep` to clean up.
 
-**The tab says "Chat".** iTerm2's Claude Code workgroup renamed it. `yo title`
+**The tab says "Chat".** iTerm2's workgroup renamed it. `yo title`
 with no argument restores every yo tab's name.
 
 **`yo` says the config failed to load.** The message names the bad key or the

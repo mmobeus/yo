@@ -150,10 +150,12 @@ Usage:
                         else to the first repo registered under P.
   Precedence, everywhere: flag > repo > profile > defaults.
 
-  Layout (defaults.layout): `split` puts a shell pane next to claude; `workgroup`
-  opens claude alone and leaves the shell to the terminal peer ("CLI") of
-  iTerm2's Claude Code workgroup. The default, `auto`, picks `workgroup` when
-  that workgroup has a peer session configured, else `split`.
+  Layout (defaults.layout): `split` puts a shell pane next to the session;
+  `workgroup` opens the session alone and leaves the shell to the terminal
+  peer ("CLI") of yo's iTerm2 workgroup, which `yo setup` adds and every
+  harness's tab enters. The default, `auto`, picks `workgroup` when that
+  workgroup is there (iTerm2 reads it at launch), else `split`.
+  `workgroup` without it warns and splits.
 
   yo down [--dry-run] [--yes [--discard]]
                        Tear down the session you're currently in
@@ -250,7 +252,7 @@ Usage:
                        Install yo's skills, settings layer and statusline
                        (copies built into yo; --link links them into a yo
                        checkout instead), a starting config if there's none,
-                       and iTerm2's workgroup peer; and, when asked (or with
+                       and yo's iTerm2 workgroup; and, when asked (or with
                        --hooks), yo's hook in ~/.codex/hooks.json. Run it
                        again after upgrading yo. --uninstall takes them out.
   yo help              Show this help, plus the configured repos and profiles.

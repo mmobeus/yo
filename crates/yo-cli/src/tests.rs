@@ -797,8 +797,8 @@ fn reaching_a_guest_session_dry_neither_clones_nor_registers() {
     );
 }
 
-/// A sandbox where git, jq and gh are there, and iTerm2's Claude Code
-/// workgroup has no peer.
+/// A sandbox where git, jq and gh are there, and iTerm2 has its Claude
+/// Code workgroup but not yo's.
 fn setup_sandbox() -> (TempDir, Arc<FakeSys>) {
     let (t, sys) = sandbox(None);
     for tool in ["git", "jq", "gh"] {
@@ -828,7 +828,7 @@ dry run: nothing will be written
   copy    ~/.claude/skills/yo-down
   copy    ~/.claude/skills/yo-title
   create  ~/.config/yo/config.json (no repos yet)
-  peer    iTerm2's Claude Code workgroup <- terminal peer 'CLI'
+  add     iTerm2 workgroup 'yo' (the session, and a shell as 'CLI')
           (the workgroups as they were: ~/.config/yo/iterm-workgroups.bak-20261126-101500.json)
   record  ~/.local/state/yo/setup.json (what setup installed)
 dry run: nothing changed.

@@ -1,5 +1,5 @@
 // iTerm2's preferences, for yo: the Default profile (only what JSON can
-// hold), whether Claude Code's workgroup has a terminal peer, the
+// hold), whether yo's workgroup has a terminal peer, the
 // workgroups themselves (for `yo setup` to add one), and the primary
 // display's size. Prints one JSON object. Run with osascript -l JavaScript.
 ObjC.import("AppKit");
@@ -19,8 +19,8 @@ function run() {
   var out = {};
   var books = ObjC.deepUnwrap(d.objectForKey("New Bookmarks")) || [];
   books.forEach(function (b) { if (b && b.Name === "Default") out.default = plain(b); });
-  // The workgroups are JSON, kept as bytes. Does Claude Code's have a
-  // terminal peer (a shell beside the chat)?
+  // The workgroups are JSON, kept as bytes. Does yo's have a terminal
+  // peer (a shell beside the session)?
   out.peer = false;
   try {
     var raw = d.objectForKey("Workgroups");
@@ -29,7 +29,7 @@ function run() {
       : ObjC.unwrap(raw);
     out.workgroups = text;
     JSON.parse(text).forEach(function (g) {
-      if (g.uniqueIdentifier !== "builtin.claudeCode") return;
+      if (g.uniqueIdentifier !== "yo") return;
       (g.sessions || []).forEach(function (s) {
         if (s.kind && s.kind.kind === "peer") out.peer = true;
       });
