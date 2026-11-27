@@ -1,8 +1,10 @@
 # yo reference
 
 Every command, flag, config key and file, in one place. The
-[guide](guide.md) explains how they fit together; `yo help` prints the
-script's own summary plus the repos, profiles and agents it can see.
+[guide](guide.md) explains how they fit together; `yo help` prints yo's own
+summary plus the repos, profiles and agents it can see, and `yo --help` and
+`yo <command> --help` list each command's flags. A flag's value can be given
+as `--flag=value` or `--flag value`.
 
 - [Commands](#commands)
 - [Flags for starting a session](#flags-for-starting-a-session)
@@ -10,6 +12,7 @@ script's own summary plus the repos, profiles and agents it can see.
 - [Config file](#config-file)
 - [Environment](#environment)
 - [Files and locations](#files-and-locations)
+- [Changes from the bash yo](#changes-from-the-bash-yo)
 
 ## Commands
 
@@ -17,20 +20,20 @@ script's own summary plus the repos, profiles and agents it can see.
 | --- | --- |
 | `yo [flags] [INPUT] [message]` | start a session (see [flags](#flags-for-starting-a-session)) |
 | `yo NAME ['message']` | reach a session, agent home or home by name ([`yo NAME`](#yo-name)) |
-| `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, close its tab. Aliases `rm`, `teardown`, `-d` |
+| `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, close its tab. Aliases `rm`, `teardown` |
 | `yo sessions` | list the ledger: running, ready, ended, gone. Alias `ls` |
-| `yo resume <name\|id\|dir> [--model=M] [--new-window\|--tab]` | reopen one session. Alias `--resume` |
+| `yo resume [<name\|id\|dir>] [--model=M] [--new-window\|--tab]` | reopen one session; bare, list them |
 | `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live |
 | `yo title ["T"]` | retitle the session this runs in; bare, reset every yo tab's name |
 | `yo adopt [--title=T] [--session-id=ID]` | record the session this runs in |
 | `yo forget <name\|id\|dir>` | drop a session from the ledger |
-| `yo agent [NAME] [--model=M] [--new-window\|--tab] ['message']` | start or reach agent NAME's home; bare, list agents |
+| `yo agent [NAME] [--model=M] [--new-window\|--tab] [--dry-run] ['message']` | start or reach agent NAME's home; bare, list agents |
 | `yo sweep [--apply] [--repo=R]... [--include-stale] [--include-suspended] [--delete-branches]` | find (and remove) worktrees whose work has landed |
 | `yo config [show]` | the config file, and every repo, profile and agent it registers |
 | `yo config path` | the config file's path |
 | `yo config edit` | open it in `$EDITOR`, then validate |
 | `yo config add-repo <dir\|url\|owner/repo> [--profile=P] [--key=K]` | list a repo, cloning it first unless it's a directory |
-| `yo help` | the script's help, and what's configured |
+| `yo help` | yo's guide, and what's configured |
 
 ### INPUT
 
@@ -74,6 +77,7 @@ so yo leaves the message as it is and passes the codename with
 | `--agent=NAME` | run as agent NAME; it must be merged on the base branch or in `~/.claude/agents` |
 | `--add-to=PROFILE\|guest` | where an unconfigured URL's repo goes, without asking |
 | `--new-window` (`--window`), `--tab` | a window of its own, or a tab in the shared one |
+| `--dry-run` (`-n`) | print the plan and change nothing |
 
 ## `yo NAME`
 
@@ -91,7 +95,7 @@ With no flags and at most a message, `yo NAME ['message']` tries, in order:
 
 Reaching a running session brings its iTerm tab forward and types the message
 in, then Enter. Reaching a stopped one resumes it with the message as its first
-prompt. Any flag skips steps 2–5.
+prompt. Any flag skips steps 2–5, except `--dry-run`.
 
 ## Config file
 
@@ -192,3 +196,29 @@ setting's environment variable, if set, beats the file.
 | an agent's home | `<clone>-worktrees/agent-<name>`, Remote Control and session name `<name>-home` |
 | unknown repos | `<cloneRoot>/<owner>/<repo>` |
 | iTerm title-lock profile | `~/Library/Application Support/iTerm2/DynamicProfiles/worksesh.json` |
+
+## Changes from the bash yo
+
+`yo` was a bash script until phase 1 of the [core design](design/core.md)
+replaced it with a Rust binary. What a command does is the same; these are
+the differences you'd notice (the design's "Testing the port" has the full
+list):
+
+- `install.sh` builds yo with cargo, so installing needs Rust.
+- Flags are parsed by clap: `--flag value` works as well as `--flag=value`,
+  usage errors read differently, and there's `yo --help` and
+  `yo <command> --help`. `yo help` still prints the guide and the registry.
+- `yo -d` and `yo --resume` are gone: use `yo down` (or `rm`, `teardown`)
+  and `yo resume`.
+- `--discard` needs `--yes`; `--here` and `--worktree` can't both be given.
+- Starting a session, `yo NAME`, `yo agent`, `down` and `resume-all` take
+  `--dry-run`.
+- A session name with an empty or dot-only part, or a part starting with
+  `-`, is refused.
+- A bad config's error names the key and where it is in the file.
+- Create's progress reads a little differently: `codename:`, `session:` and
+  `brief:` lines, and no git chatter.
+- `down --yes` with uncommitted work refuses up front, naming the changes.
+- `sweep` keeps a worktree whose `git status` can't be read.
+- An agent's home in an untrusted repo gets no copied `settings.local.json`
+  or `mirror` files.

@@ -3,9 +3,9 @@
 on run argv
   set want to item 1 of argv
   tell application "iTerm2"
-    repeat with ww in windows
-      repeat with tt in tabs of ww
-        repeat with ss in sessions of tt
+    repeat with ww in (get windows)
+      repeat with tt in (get tabs of ww)
+        repeat with ss in (get sessions of tt)
           if (unique id of ss) is want then
             try
               tell ss to set v to variable named "user.yoTitle"

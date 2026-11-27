@@ -4,7 +4,7 @@
 
 - [ ] `cargo xtask ci` passes
 - [ ] dependencies changed: new crates added to `bans.allow`, `cargo xtask advisories` passes (or: no dependency changes)
-- [ ] `scripts/yo` changed: tried in a sandbox (or: not changed)
+- [ ] a command's behavior or `install.sh` changed: tried in a sandbox (or: not changed)
 - [ ] by hand: <!-- anything else you checked, or "nothing" -->
 
 ## Review

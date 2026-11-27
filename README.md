@@ -4,13 +4,13 @@ Personal dev environment: an iTerm2 + Claude Code work-session launcher and the
 config that goes with it, installed into `~` as symlinks back into this checkout.
 
 ```
-scripts/yo              iTerm2 work-session launcher (git worktrees, or in place)
+crates/                 yo itself: a Rust workspace; crates/yo-cli is the `yo` binary
 config/yo.config.example.json  an example config, every part of it used
 docs/                   the user guide and reference
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
 claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt, yo-title)
-install.sh              wires it all up
+install.sh              builds yo and wires it all up
 ```
 
 ## Install
@@ -19,7 +19,7 @@ install.sh              wires it all up
 git clone git@github.com:mmobeus/yo.git
 cd yo
 ./install.sh --dry-run     # see the plan
-./install.sh
+./install.sh               # builds yo with cargo, then links everything
 ```
 
 That's enough to start: `cd` into any clone and run `yo my-fix 'what to do'`
@@ -30,7 +30,7 @@ again: it names your repos, so it lives outside this one.
 
 | what | where it lands |
 | --- | --- |
-| `yo` | `~/.local/bin/` |
+| `yo` | `~/.local/bin/yo`, a link to `target/release/yo` in this checkout |
 | yo config | `~/.config/yo/config.json` (a plain file, yours) |
 | settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
 | skills | `~/.claude/skills/` |
@@ -64,10 +64,11 @@ yo config                                # what's configured
   under the hood, and troubleshooting.
 - **[Reference](docs/reference.md):** every command, flag, config key,
   environment variable and file.
-- **`yo help`:** the script's own summary, plus the repos, profiles and agents
-  it can see.
-- **[Core design](docs/design/core.md):** the plan (not built yet) for moving yo from bash to a
-  Rust core with a CLI, a TUI, an app and pluggable runners.
+- **`yo help`:** yo's own summary, plus the repos, profiles and agents it
+  can see. `yo --help` and `yo <command> --help` list each command's flags.
+- **[Core design](docs/design/core.md):** how yo is built (a Rust core under
+  the CLI), and the plan for a TUI, an app and pluggable runners. Its status
+  table says what's built.
 
 ## Making changes
 
@@ -75,13 +76,15 @@ yo config                                # what's configured
 and the review checklists. The short version for trying a change:
 
 Installed files are symlinks into this checkout, so an edit here is live
-immediately — which is what you want while iterating on a script, and not what
-you want while a change is half-finished. Keep this checkout on `main` and do
-the work in a worktree:
+immediately (and `yo` is, once rebuilt) — which is what you want for a
+finished change, and not while one is half-done. Keep this checkout on `main`
+and do the work in a worktree:
 
 ```sh
 yo yo tweak-the-installer     # worktree + session, this checkout untouched
-../yo-worktrees/tweak-the-installer/scripts/yo help   # test by path
+cd ../yo-worktrees/tweak-the-installer
+cargo build && target/debug/yo help    # test by path
+cargo xtask ci                         # the gates, as CI runs them
 ```
 
 To exercise `yo` without opening iTerm, set `YO_DRY_LAUNCH=1`: it prints the
@@ -89,8 +92,9 @@ tab title, directory and `claude` command instead of launching. Point `HOME`,
 `XDG_STATE_HOME` and `YO_CONFIG` at a throwaway directory as well, so the test
 leaves your ledger and `~/.claude.json` alone.
 
-Merge to `main` and the installed symlinks pick it up with nothing to re-run.
-`install.sh` is only needed again when a *new* file needs linking.
+Merge to `main`, pull here, and the installed symlinks pick it up; `yo`
+itself needs `cargo build --release -p yo-cli` (or `./install.sh` again).
+`install.sh` is otherwise only needed again when a *new* file needs linking.
 
 ## yo without this repo
 
@@ -100,5 +104,8 @@ you are standing in. `yo help` prints the repos it can currently see.
 
 ## Requirements
 
-`git`, `jq`, `python3`, and macOS with iTerm2. `gh` is optional (PR and issue
-titles in window titles).
+macOS with iTerm2, `git`, `jq` (the statusline), and Rust
+([rustup](https://rustup.rs)) to build yo; `rust-toolchain.toml` pins the
+toolchain. `python3` is used only by `install.sh`, to add iTerm2's workgroup
+peer (skip it with `--no-iterm`). `gh` is optional (PR and issue titles in
+window titles).

@@ -29,6 +29,8 @@ pub mod paths;
 pub mod place;
 pub mod plan;
 pub mod reach;
+#[cfg(test)]
+mod realgit;
 pub mod registry;
 pub mod resolve;
 pub mod runner;

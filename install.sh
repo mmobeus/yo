@@ -2,11 +2,14 @@
 #
 # install.sh — wire this checkout into the places the tools expect to find it.
 #
-# Everything is installed as a SYMLINK back into this repo, so editing a file
-# here takes effect immediately and `git status` is the source of truth for what
-# has drifted. The one exception is yo's config, which names YOUR repos: it is
-# created once, as a plain config.json listing this checkout, and never touched
-# again — not by a re-install, not by --uninstall.
+# yo itself is a Rust binary: this builds it (`cargo build --release`) into
+# this checkout's target/ and links it into place. Everything else is installed
+# as a SYMLINK back into this repo, so editing a file here takes effect
+# immediately and `git status` is the source of truth for what has drifted; the
+# binary takes effect on the next `cargo build --release -p yo-cli` here (or a
+# re-run of this script). The one exception is yo's config, which names YOUR
+# repos: it is created once, as a plain config.json listing this checkout, and
+# never touched again — not by a re-install, not by --uninstall.
 #
 # Claude Code's own ~/.claude/settings.json is left alone by default: yo stacks
 # claude/settings.json on top of it per session (`claude --settings`), so only
@@ -26,7 +29,7 @@
 #                        ~/.claude/settings.json (with --uninstall: take the
 #                        merged keys back out)
 #   --no-iterm           leave iTerm2's Claude Code workgroup alone
-#   --bin=PATH           where scripts go        (default: ~/.local/bin)
+#   --bin=PATH           where yo goes           (default: ~/.local/bin)
 #   --claude-dir=PATH    Claude Code's home      (default: ~/.claude)
 #   --config-dir=PATH    XDG config root         (default: ~/.config)
 #   -h, --help           this
@@ -37,6 +40,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Where cargo puts the binary. CARGO_TARGET_DIR is pinned for the build, so it
+# lands here whatever the environment says.
+YO_BIN="$REPO/target/release/yo"
+# An install from before the Rust yo linked yo to some checkout's bash
+# script (this one, or another, such as the main checkout when this runs in
+# a worktree). That link is replaced without --force.
+is_old_yo() { case "$1" in */scripts/yo) return 0 ;; *) return 1 ;; esac; }
 TS="$(date +%Y%m%d-%H%M%S)"
 
 DRY=0; COPY=0; UNINSTALL=0; FORCE=0; MERGE_SETTINGS=0; NO_ITERM=0
@@ -72,6 +82,7 @@ done
 
 # --- the manifest -------------------------------------------------------------
 # One record per line: <kind> <TAB> <source> <TAB> <destination>
+#   build  cargo build --release the package <source>; dest is the binary
 #   link   symlink dest -> source (or copy, under --copy)
 #   seed   create yo's config at dest ONCE (source unused); an existing one is
 #          the user's and stays
@@ -83,7 +94,8 @@ TAB=$(printf '\t')
 add() { PLAN="${PLAN}${1}${TAB}${2}${TAB}${3}
 "; }
 
-add link  "$REPO/scripts/yo"            "$BIN/yo"
+add build "yo-cli"                      "$YO_BIN"
+add link  "$YO_BIN"                     "$BIN/yo"
 add seed  "-"                           "$CONFIG_DIR/yo/config.json"
 # The settings layer and the statusline it names live with yo's config, not in
 # ~/.claude: nothing of Claude Code's own is replaced.
@@ -105,9 +117,16 @@ fi
 # --- preflight ----------------------------------------------------------------
 preflight() {
   local missing=0 c
-  for c in git jq python3; do
+  for c in git jq; do
     command -v "$c" >/dev/null 2>&1 || { warn "required tool not found: $c"; missing=1; }
   done
+  command -v cargo >/dev/null 2>&1 \
+    || { warn "required tool not found: cargo (install Rust with rustup: https://rustup.rs)"; missing=1; }
+  # Only the iTerm2 workgroup peer below needs python3.
+  if [ "$NO_ITERM" -eq 0 ] && [ -d /Applications/iTerm.app ]; then
+    command -v python3 >/dev/null 2>&1 \
+      || { warn "required tool not found: python3 (or pass --no-iterm)"; missing=1; }
+  fi
   [ "$missing" -eq 0 ] || die "install the missing required tools first"
   for c in gh; do
     command -v "$c" >/dev/null 2>&1 \
@@ -128,9 +147,23 @@ do_backup() {
   [ "$DRY" -eq 1 ] || mv "$dest" "$bak"
 }
 
+# The rust-toolchain.toml in this repo pins the toolchain; rustup installs it
+# on first use.
+install_build() {
+  local pkg="$1" out="$2"
+  note "  ${GRN}build${RST}   $out ${DIM}(cargo build --release -p $pkg)${RST}"
+  [ "$DRY" -eq 1 ] && return 0
+  CARGO_TARGET_DIR="$REPO/target" cargo build --release --locked \
+    --manifest-path "$REPO/Cargo.toml" -p "$pkg" \
+    || die "cargo build failed"
+  [ -x "$out" ] || die "the build didn't produce $out"
+}
+
 install_link() {
   local src="$1" dest="$2" cur
-  [ -e "$src" ] || die "missing source: $src"
+  # Under --dry-run the binary may not be built yet.
+  [ -e "$src" ] || { [ "$DRY" -eq 1 ] && [ "$src" = "$YO_BIN" ]; } \
+    || die "missing source: $src"
 
   if [ -L "$dest" ]; then
     cur="$(readlink "$dest")"
@@ -138,7 +171,8 @@ install_link() {
       note "  ${GRN}ok${RST}      $dest ${DIM}(already linked)${RST}"
       return 0
     fi
-    if [ "$FORCE" -eq 0 ] && [ "$cur" != "$src" ]; then
+    if [ "$FORCE" -eq 0 ] && [ "$cur" != "$src" ] \
+      && ! { [ "$src" = "$YO_BIN" ] && is_old_yo "$cur"; }; then
       warn "$dest is a symlink to $cur — leaving it alone (use --force to replace)"
       return 0
     fi
@@ -208,8 +242,10 @@ install_merge() {
 }
 
 uninstall_link() {
-  local src="$1" dest="$2"
-  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
+  local src="$1" dest="$2" cur=""
+  [ -L "$dest" ] && cur="$(readlink "$dest")"
+  if [ -n "$cur" ] && { [ "$cur" = "$src" ] \
+    || { [ "$src" = "$YO_BIN" ] && is_old_yo "$cur"; }; }; then
     note "  ${GRN}rm${RST}      $dest"
     [ "$DRY" -eq 1 ] || rm "$dest"
   elif [ -e "$dest" ]; then
@@ -324,6 +360,7 @@ main() {
     [ -n "$kind" ] || continue
     if [ "$UNINSTALL" -eq 1 ]; then
       case "$kind" in
+        build) : ;;   # target/ is cargo's; `cargo clean` removes it
         link)  uninstall_link  "$src" "$dest" ;;
         seed)  note "  ${DIM}kept${RST}    $dest ${DIM}(your config)${RST}" ;;
         merge) uninstall_merge "$src" "$dest" ;;
@@ -331,6 +368,7 @@ main() {
       esac
     else
       case "$kind" in
+        build) install_build "$src" "$dest" ;;
         link)  install_link  "$src" "$dest" ;;
         seed)  install_seed  "$src" "$dest" ;;
         merge) install_merge "$src" "$dest" ;;
@@ -354,6 +392,7 @@ EOF
     note "done (copies). Re-run install.sh after changing anything in this repo."
   else
     note "done. This checkout is now live — moving or deleting it breaks the links."
+    note "${DIM}After pulling, rebuild yo: cargo build --release -p yo-cli (or re-run install.sh)${RST}"
     note "${DIM}Edit on a branch without disturbing the install: yo yo <name>${RST}"
   fi
 }

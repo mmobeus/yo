@@ -33,9 +33,9 @@ fixing, now or in a follow-up.
   hooks or Remote Control. A harness that lacks a capability shows up as
   "unknown" or "not available", never as an error. The same goes for
   runners and iTerm.
-- **Effects match `scripts/yo`** during the port: the ledger, config, git,
-  files written and commands launched. Only output may differ, and only
-  deliberately. See "Testing the port".
+- **Effects change only deliberately:** the ledger, config, git, files
+  written and commands launched. A change to any of them is in the guide or
+  reference in the same diff.
 - **The design doc is still true.** If the diff does something the doc
   doesn't describe, or does differently, the doc is updated in the same PR.
   The status table reflects what landed.

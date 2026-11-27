@@ -22,9 +22,9 @@ on run argv
 
     -- Reuse the window already holding this group's sessions, if there is one.
     if forceNew is 0 then
-      repeat with ww in windows
-        repeat with tt in tabs of ww
-          repeat with ss in sessions of tt
+      repeat with ww in (get windows)
+        repeat with tt in (get tabs of ww)
+          repeat with ss in (get sessions of tt)
             set v to ""
             try
               tell ss

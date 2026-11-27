@@ -65,9 +65,8 @@ knows the author's explanation, it doesn't pass it on.
   - wording, naming, or a design sketch whose details differ from the code
     while the behavior agrees (the doc says its signatures are "the shape,
     not the final code")
-  - hardening beyond what `scripts/yo` does today, when the port keeps
-    bash's behavior; only a diff that makes things worse than bash is a
-    finding
+  - hardening of behavior the diff doesn't change; only a diff that makes
+    things worse than they were is a finding
   - a test for every branch; see the tests checklist for what needs one
 - **Blocking means wrong now:** a bug, a hole, or a rule clearly broken.
   "Could be better" or "might matter later" is non-blocking at most. If

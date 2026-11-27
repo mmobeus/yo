@@ -187,6 +187,9 @@ pub struct Agent {
     pub name: Option<String>,
     /// A message for its home.
     pub message: Option<String>,
+    /// Say what would happen, and change nothing.
+    #[arg(long, short = 'n')]
+    pub dry_run: bool,
     #[arg(long, value_name = "M", value_parser = model)]
     pub model: Option<String>,
     #[command(flatten)]
