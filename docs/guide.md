@@ -329,8 +329,9 @@ From the home (or any session), start a worker that reports back:
 yo --repo=backend --from=me-home --title='Fix retry' retry-fix '<the brief>'
 ```
 
-`--from` tells the worker to `SendMessage` that session when it's done or
-stuck. The brief is all the worker knows: the goal, links, constraints, and
+`--from` tells the worker to report back to that session when it's done or
+stuck: a Claude worker with `SendMessage`, a Codex one by running
+`yo SESSION 'report'`. The brief is all the worker knows: the goal, links, constraints, and
 what "done" means.
 
 ### Agents
@@ -428,7 +429,8 @@ didn't create. That's deliberate; answer it once.
 
 **A message didn't reach a running session.** yo finds a session's tab by its
 terminal; a session running only through Remote Control has none. yo says so
-and suggests another way to reach it. If the tab is showing CLI, yo brings it
+and suggests another way to reach it (Remote Control or `SendMessage` for a
+Claude session; for a Codex one, only ending it and resuming it). If the tab is showing CLI, yo brings it
 forward but doesn't type into the shell: switch it to the chat.
 
 **`yo sessions` says `running (no tab)`.** The session's claude is still
