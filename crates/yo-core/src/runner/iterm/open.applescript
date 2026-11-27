@@ -6,8 +6,10 @@
 on run argv
   set winTitle to item 1 of argv
   set profileName to item 2 of argv
+  -- setupCmd: the split pane's cd. runCmd: the session's cd and command, as
+  -- one line, so a line the starting shell drops runs nothing (#64).
   set setupCmd to item 3 of argv
-  set claudeCmd to item 4 of argv
+  set runCmd to item 4 of argv
   set winW to (item 5 of argv) as integer
   set winH to (item 6 of argv) as integer
   set scrW to (item 7 of argv) as integer
@@ -80,7 +82,6 @@ on run argv
     -- title (see the profile's Custom Tab Title) and survives the workgroup
     -- renaming the session.
     tell leftSession
-      write text setupCmd
       set name to winTitle
       set variable named "user.yoWindow" to marker
       set variable named "user.yoTitle" to winTitle
@@ -103,7 +104,7 @@ on run argv
     end if
 
     tell leftSession
-      write text claudeCmd
+      write text runCmd
       select
     end tell
 
