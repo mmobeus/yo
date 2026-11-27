@@ -419,14 +419,20 @@ impl Runner for Iterm {
             }
         };
         let (w, h) = p.screen.unwrap_or((0, 0));
-        let setup = format!("cd {}", shell_word(&spec.dir.to_string_lossy()));
+        // Typed into a shell that may still be starting, which can drop
+        // what's typed before it's ready (#64). So the session's pane gets
+        // one line, the cd and the command together: lost, nothing runs,
+        // rather than the command in the profile's directory. The split
+        // pane is only a shell, so it gets the cd alone.
+        let cd = format!("cd {}", shell_word(&spec.dir.to_string_lossy()));
+        let run = format!("{cd} && {}", spec.argv.line());
         let marker = format!("yo:{}", spec.group);
         let args = [
             "-".to_string(),
             spec.title.clone(),
             profile,
-            setup,
-            spec.argv.line(),
+            cd,
+            run,
             self.width.clone(),
             self.height.clone(),
             w.to_string(),
@@ -590,7 +596,7 @@ mod tests {
             &s.title,
             "worksesh",
             "cd '/w/a b'",
-            "claude --name n",
+            "cd '/w/a b' && claude --name n",
             "1403",
             "824",
             "1512",
@@ -798,7 +804,7 @@ mod tests {
                     &s.title,
                     "",
                     "cd '/w/a b'",
-                    "claude --name n",
+                    "cd '/w/a b' && claude --name n",
                     "1403",
                     "824",
                     "0",
