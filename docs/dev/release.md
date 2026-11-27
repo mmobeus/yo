@@ -5,7 +5,7 @@ A release is a `v<version>` tag on `main`. Pushing it runs
 
 1. It checks that the tag is `v` plus the workspace version in `Cargo.toml`.
 2. `cargo xtask dist` builds `yo` for `aarch64-apple-darwin` and
-   `x86_64-apple-darwin`, and packs each as `dist/yo-darwin_arm64.tar.gz` and
+   `x86_64-apple-darwin`, and packs each, with `LICENSE`, as `dist/yo-darwin_arm64.tar.gz` and
    `dist/yo-darwin_amd64.tar.gz`. The native one has to say `yo <version>`
    to `--version`, since the formula's test checks that.
 3. It creates the GitHub Release with generated notes and the two tarballs.

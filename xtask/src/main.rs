@@ -157,7 +157,8 @@ struct Built {
     sha256: String,
 }
 
-/// Builds `yo` for each target and packs it as `dist/yo-<platform>.tar.gz`.
+/// Builds `yo` for each target and packs it, with the license, as
+/// `dist/yo-<platform>.tar.gz`.
 #[allow(clippy::print_stderr)]
 fn dist(root: &Path) -> Result<Vec<Built>, String> {
     if !cfg!(target_os = "macos") {
@@ -193,6 +194,10 @@ fn dist(root: &Path) -> Result<Vec<Built>, String> {
                 "-C",
                 &bin_dir.to_string_lossy(),
                 "yo",
+                // MIT: the notice goes with every copy.
+                "-C",
+                &root.to_string_lossy(),
+                "LICENSE",
             ],
         )?;
         let sha256 = sha256(root, &tarball)?;

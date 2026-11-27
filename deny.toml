@@ -23,7 +23,7 @@ allow = [
 ]
 
 [licenses.private]
-# yo's own crates are unpublished and unlicensed for now.
+# yo's own crates are unpublished (they're MIT, as LICENSE says).
 ignore = true
 
 [bans]
