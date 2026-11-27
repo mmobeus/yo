@@ -4,13 +4,38 @@
 //!
 //! Its AppleScript and JavaScript are files beside this one, embedded, and
 //! run through [`Sys::cmd`] with every value as an argument.
+//!
+//! # Closing a tab
+//!
+//! Closing a tab normally ends what runs in it: iTerm keeps the closed
+//! session for its undo window ("undo can revive a session that has been
+//! closed for up to 5 seconds", a profile setting), then hangs up its
+//! terminal, and the shell and claude exit. That holds for a tab closed by
+//! script, by `⌘W` or by the window's close button.
+//!
+//! **Except a workgroup tab closed while it shows CLI.** Claude Code's
+//! workgroup puts a session's chat and a shell (its CLI peer) in one tab,
+//! one shown at a time. Closed while CLI shows, iTerm ends only the CLI
+//! session; the chat session is never hung up, isn't buried (Session ›
+//! Buried Sessions stays empty), and runs on with no tab at all: iTerm and
+//! its session server (`iTermServer`) both keep its terminal open, so its
+//! login shell and claude stay alive until something signals them. Running
+//! `yo down` from the CLI pane is the common way in (found in #35, iTerm
+//! 3.7.9).
+//!
+//! iTerm's AppleScript shows the same thing from the other side: it lists
+//! only the member of a workgroup tab that's showing. So yo records each
+//! session's tab (`tab.window.id` and `tab.id`, which every member of a tab
+//! shares) when it opens it, and looks for that as well as the terminal;
+//! and `down` ends its session itself ([`crate::end`]) rather than trust
+//! the close to.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Focused, LaunchSpec, Launched, Runner, RunnerKind, WindowChoice};
+use super::{Focused, LaunchSpec, Launched, Runner, RunnerKind, Tabs, WindowChoice, valid_tab};
 use crate::harness::shell_word;
 use crate::ojson::OValue;
 use crate::registry::{Defaults, Layout, WindowMode};
@@ -25,6 +50,8 @@ const TITLE: &str = include_str!("iterm/title.applescript");
 const OWN_TITLE: &str = include_str!("iterm/own_title.applescript");
 const RESYNC: &str = include_str!("iterm/resync.applescript");
 const CLOSE: &str = include_str!("iterm/close.applescript");
+const TABS: &str = include_str!("iterm/tabs.applescript");
+const OWN_TAB: &str = include_str!("iterm/own_tab.applescript");
 
 /// `osascript -` with `script` on stdin and `args` after it.
 fn script(script: &str, args: &[&str]) -> CommandSpec {
@@ -66,6 +93,12 @@ impl Iterm {
     pub fn own_title(sys: &dyn Sys, id: &str) -> Option<String> {
         let out = sys.cmd().run(&script(OWN_TITLE, &[own_session(id)])).ok()?;
         out.success().then(|| out.text()).filter(|t| !t.is_empty())
+    }
+
+    /// The tab of session `id` (`ITERM_SESSION_ID`), if iTerm shows it.
+    pub fn own_tab(sys: &dyn Sys, id: &str) -> Option<String> {
+        let out = sys.cmd().run(&script(OWN_TAB, &[own_session(id)])).ok()?;
+        out.success().then(|| out.text()).filter(|t| valid_tab(t))
     }
 
     /// Every session yo titled gets its title back as its name.
@@ -238,10 +271,11 @@ pub fn write_workgroups(sys: &dyn Sys, json: &str) -> Result<()> {
     }
 }
 
-/// Whether iTerm2 is running.
+/// Whether iTerm2 is running. `-a`: BSD pgrep leaves out its own
+/// ancestors, and run in an iTerm tab, iTerm2 is one of them.
 pub fn running(sys: &dyn Sys) -> bool {
     sys.cmd()
-        .run(&CommandSpec::new("pgrep").args(["-xq", "iTerm2"]))
+        .run(&CommandSpec::new("pgrep").args(["-axq", "iTerm2"]))
         .is_ok_and(|o| o.success())
 }
 
@@ -347,38 +381,77 @@ impl Runner for Iterm {
         };
         // Best effort: without it, Session Status may read "Chat".
         let _ = sys.cmd().spawn(&retitle);
+        let tab = Some(out.text()).filter(|t| valid_tab(t));
         Ok(Launched::Opened {
             new_window,
             split,
             warnings,
+            tab,
         })
     }
 
-    fn focus(&self, sys: &dyn Sys, tty: &str, message: Option<&str>) -> Result<Focused> {
+    fn focus(
+        &self,
+        sys: &dyn Sys,
+        tty: &str,
+        tab: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<Focused> {
         let spec = CommandSpec {
             stdin: Some(FOCUS.as_bytes().to_vec()),
             ..CommandSpec::new("osascript").args([
                 "-".to_string(),
                 tty.to_string(),
                 message.unwrap_or("").to_string(),
+                tab.unwrap_or("").to_string(),
             ])
         };
-        let found = sys
+        let said = sys
             .cmd()
             .run(&spec)
             .ok()
-            .is_some_and(|o| o.success() && o.text() == "found");
-        Ok(if found {
-            Focused::Yes
-        } else {
-            Focused::NotFound
+            .filter(|o| o.success())
+            .map(|o| o.text());
+        Ok(match said.as_deref() {
+            Some("found") => Focused::Yes,
+            Some("tab") => Focused::TabOnly,
+            _ => Focused::NotFound,
         })
     }
 
     /// Errors are ignored: closing the tab also kills osascript itself.
-    fn close_own_tab(&self, sys: &dyn Sys, session: &str) -> bool {
-        let _ = sys.cmd().run(&script(CLOSE, &[own_session(session)]));
+    fn close_own_tab(&self, sys: &dyn Sys, session: &str, tab: Option<&str>) -> bool {
+        let _ = sys
+            .cmd()
+            .run(&script(CLOSE, &[own_session(session), tab.unwrap_or("")]));
         true
+    }
+
+    fn own_tab(&self, sys: &dyn Sys, session: &str) -> Option<String> {
+        Iterm::own_tab(sys, session)
+    }
+
+    /// Only while iTerm runs (asking it would start it); with it not
+    /// running, nothing has a tab.
+    fn tabs(&self, sys: &dyn Sys) -> Option<Tabs> {
+        if !running(sys) {
+            return Some(Tabs::default());
+        }
+        let out = sys.cmd().run(&script(TABS, &[])).ok()?;
+        if !out.success() {
+            return None;
+        }
+        let mut t = Tabs::default();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let (tty, tab) = line.split_once('\t').unwrap_or((line, ""));
+            if tty.starts_with("/dev/") {
+                t.ttys.push(tty.to_string());
+            }
+            if valid_tab(tab) {
+                t.tabs.push(tab.to_string());
+            }
+        }
+        Some(t)
     }
 }
 
@@ -409,6 +482,7 @@ mod tests {
             },
             window,
             group: "yo".into(),
+            record: None,
         }
     }
 
@@ -454,14 +528,16 @@ mod tests {
         .map(|a| a.to_string())
         .collect();
         let open_strs: Vec<&str> = open.iter().map(String::as_str).collect();
-        sys.answer("osascript", &open_strs, ok(""));
+        sys.answer("osascript", &open_strs, ok("pty-W1/40\n"));
         let l = iterm(Layout::Auto).launch(&sys, &s).unwrap();
+        // The script prints the tab it opened, for the record.
         assert_eq!(
             l,
             Launched::Opened {
                 new_window: false,
                 split: true,
-                warnings: vec![]
+                warnings: vec![],
+                tab: Some("pty-W1/40".into()),
             }
         );
         assert_eq!(open_args(&sys), open);
@@ -493,14 +569,65 @@ mod tests {
         let sys = FakeSys::new("/h");
         let it = iterm(Layout::Auto);
         assert_eq!(
-            it.focus(&sys, "/dev/ttys003", Some("hi 'there'")).unwrap(),
+            it.focus(&sys, "/dev/ttys003", None, Some("hi 'there'"))
+                .unwrap(),
             Focused::NotFound
         );
-        sys.answer("osascript", &["-", "/dev/ttys003", ""], ok("found\n"));
-        assert_eq!(it.focus(&sys, "/dev/ttys003", None).unwrap(), Focused::Yes);
+        sys.answer("osascript", &["-", "/dev/ttys003", "", ""], ok("found\n"));
+        assert_eq!(
+            it.focus(&sys, "/dev/ttys003", None, None).unwrap(),
+            Focused::Yes
+        );
         let c = &sys.calls()[0];
-        assert_eq!(c.args, ["-", "/dev/ttys003", "hi 'there'"]);
+        assert_eq!(c.args, ["-", "/dev/ttys003", "hi 'there'", ""]);
         assert_eq!(c.stdin.as_deref(), Some(FOCUS.as_bytes()));
+        // Its terminal not shown, its tab is: a workgroup showing CLI.
+        sys.answer(
+            "osascript",
+            &["-", "/dev/ttys004", "", "pty-W/40"],
+            ok("tab\n"),
+        );
+        assert_eq!(
+            it.focus(&sys, "/dev/ttys004", Some("pty-W/40"), None)
+                .unwrap(),
+            Focused::TabOnly
+        );
+    }
+
+    #[test]
+    fn closing_by_session_then_by_tab() {
+        let sys = FakeSys::new("/h");
+        let it = iterm(Layout::Auto);
+        assert!(it.close_own_tab(&sys, "w0t1p0:UUID", Some("pty-W/40")));
+        assert!(it.close_own_tab(&sys, "w0t1p0:UUID", None));
+        let c = sys.calls();
+        assert_eq!(c[0].args, ["-", "UUID", "pty-W/40"]);
+        assert_eq!(c[1].args, ["-", "UUID", ""]);
+        assert_eq!(c[0].stdin.as_deref(), Some(CLOSE.as_bytes()));
+    }
+
+    #[test]
+    fn tabs_from_the_listing_only_while_iterm_runs() {
+        let sys = FakeSys::new("/h");
+        let it = iterm(Layout::Auto);
+        // Not running: nothing has a tab (and iTerm isn't started to ask).
+        assert_eq!(it.tabs(&sys), Some(Tabs::default()));
+        assert!(!sys.calls().iter().any(|c| c.program == "osascript"));
+        sys.answer("pgrep", &["-axq", "iTerm2"], ok(""));
+        // Running, but the listing failed: it can't say.
+        assert_eq!(it.tabs(&sys), None);
+        sys.answer(
+            "osascript",
+            &["-"],
+            ok("/dev/ttys003\tpty-W/27\n/dev/ttys007\t/\njunk\n"),
+        );
+        assert_eq!(
+            it.tabs(&sys),
+            Some(Tabs {
+                ttys: vec!["/dev/ttys003".into(), "/dev/ttys007".into()],
+                tabs: vec!["pty-W/27".into()],
+            })
+        );
     }
 
     #[test]

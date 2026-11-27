@@ -68,6 +68,10 @@ pub struct Record {
     /// Absent: iterm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner: Option<RunnerKind>,
+    /// The tab the runner last opened it in (iTerm: `<window id>/<tab id>`),
+    /// so yo can tell a session with a tab from one whose tab is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
     /// Unix seconds, as bash writes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
@@ -92,6 +96,11 @@ impl Record {
         } else {
             Mode::Worktree
         })
+    }
+
+    /// The recorded tab, if it's one a runner could have given.
+    pub fn tab(&self) -> Option<&str> {
+        self.tab.as_deref().filter(|t| crate::runner::valid_tab(t))
     }
 
     /// The session id, if it's one yo can use: a record edited by hand to
@@ -265,6 +274,17 @@ impl Ledger {
             &self.dir().join(format!("{}.json", e.key.0)),
             text.as_bytes(),
         )
+    }
+
+    /// Records the tab session `key` was opened in. `false` when there's no
+    /// such record.
+    pub fn set_tab(&self, key: &Key, tab: &str) -> Result<bool> {
+        let Some(mut e) = self.all().into_iter().find(|e| &e.key == key) else {
+            return Ok(false);
+        };
+        e.record.tab = Some(tab.to_string());
+        self.write(&mut e)?;
+        Ok(true)
     }
 
     /// Removes a record. `false` when there was none.

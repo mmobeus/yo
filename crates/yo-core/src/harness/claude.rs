@@ -318,6 +318,12 @@ impl Harness for Claude {
         }
     }
 
+    /// Claude Code sets `CLAUDE_CODE_SESSION_ID` for the commands it runs.
+    fn own_session(&self, sys: &dyn Sys) -> Option<String> {
+        sys.env_nonempty("CLAUDE_CODE_SESSION_ID")
+            .filter(|id| valid_session_id(id))
+    }
+
     /// `SessionStart` and `SessionEnd` payloads (a missing event name is a
     /// start, as bash takes it). Only `/exit` and ctrl-d
     /// (`prompt_input_exit`) end a session deliberately; a closed tab

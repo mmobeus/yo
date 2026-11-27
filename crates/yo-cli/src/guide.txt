@@ -150,6 +150,9 @@ Usage:
                        it can run from inside claude (the /yo-down skill); it
                        refuses to lose uncommitted work unless --discard.
                        --dry-run reports what would happen and stops.
+                       If the session's claude is still running in this tab
+                       (down run from the CLI shell), down ends it before
+                       closing the tab; one in another tab is left running.
   yo agent [NAME] [--model=M] [--new-window|--tab] [--dry-run] ['message']
                        Start, or bring back, agent NAME's home session: a
                        long-lived checkout of the repo's base branch at
@@ -189,6 +192,8 @@ Usage:
                        (`yo <prefix>/NAME`).
   yo sessions          List the sessions yo knows about and whether each is
                        running, ready to resume, or gone (alias: ls).
+                       "running (no tab)": still running though its tab was
+                       closed; end it (kill -HUP <pid>), then yo resume it.
   yo resume <name|session-id|dir> [--model=M] [--new-window|--tab]
                        Reopen one session in a tab of its shared window and
                        `claude --resume` it there, under the same repo,
@@ -208,7 +213,9 @@ Usage:
   yo resume-all [--dry-run] [--new-window|--tab]
                        After a restart or crash: reopen every session that
                        was live, one tab each. Sessions quit with /exit are
-                       left out (yo resume <name> still reopens one).
+                       left out (yo resume <name> still reopens one). Waits a
+                       few seconds for sessions whose tab just closed, then
+                       lists any still running without a tab.
   yo sweep [--apply] [--repo=R]... [--include-stale] [--include-suspended]
            [--delete-branches]
                        Find worktrees whose work has landed and (with --apply)
@@ -272,6 +279,8 @@ What "create" does:
 What "down" does (from inside the worktree: the right pane, or claude itself):
   - warns loudly about uncommitted / unpushed work
   - confirms, removes the worktree, KEEPS the branch, forgets the session
+  - ends the session's claude if it's still running: closing a tab that
+    shows the workgroup's CLI would leave it running with no tab
   - closes ITS OWN iTerm2 tab (and the window with it, if it was the last
     tab) — found by session id, so it's safe when another tab has focus
 

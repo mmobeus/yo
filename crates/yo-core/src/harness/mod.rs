@@ -38,6 +38,11 @@ pub trait Harness: Send + Sync {
     fn prepare(&self, _ctx: &Ctx, _p: &PrepareAsk<'_>) -> Result<Prepared> {
         Ok(Prepared::default())
     }
+    /// The id of its session yo is running inside (yo run by one of its
+    /// tools), if any.
+    fn own_session(&self, _sys: &dyn Sys) -> Option<String> {
+        None
+    }
     /// Its ledger hook's payload as a start or an end, for a harness with
     /// `ledger_hooks`. `None` for anything it doesn't recognize.
     fn hook_event(&self, _payload: &str) -> Option<HookEvent> {

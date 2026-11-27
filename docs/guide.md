@@ -71,7 +71,10 @@ yo down
 ```
 
 It warns about anything uncommitted or unpushed, removes the worktree (the
-branch is kept), and closes the tab.
+branch is kept), and closes the tab. If claude is still running in the tab
+(you ran `yo down` in the CLI shell), it ends claude first, and says so
+before you confirm: closing a tab while it shows CLI would leave claude
+running with no tab. A session running in another tab is left alone.
 
 ### Seeing what's running
 
@@ -132,6 +135,7 @@ yo --model=sonnet my-fix
 | `yo down` | gone: worktree removed (branch kept), tab closed |
 | `/exit` in claude | **ended**: stays out of `resume-all`, but `yo resume <name>` reopens it |
 | close the tab, quit iTerm, or a crash | **ready**: `resume-all` brings it back |
+| close the tab while it shows CLI | **running (no tab)**: iTerm leaves claude running; see [Troubleshooting](#9-troubleshooting) |
 
 ### Resuming
 
@@ -404,7 +408,16 @@ didn't create. That's deliberate; answer it once.
 
 **A message didn't reach a running session.** yo finds a session's tab by its
 terminal; a session running only through Remote Control has none. yo says so
-and suggests another way to reach it.
+and suggests another way to reach it. If the tab is showing CLI, yo brings it
+forward but doesn't type into the shell: switch it to the chat.
+
+**`yo sessions` says `running (no tab)`.** The session's claude is still
+running, but its tab is gone. iTerm2 does this when a tab with the Claude
+Code workgroup is closed while it shows CLI: only the CLI shell is ended,
+and the chat runs on with no tab (it isn't under Session › Buried Sessions
+either). `resume-all` lists these instead of resuming them. End one with
+`kill -HUP <pid>` (the pid `yo sessions` shows), then `yo resume <name>`.
+`yo down` from the CLI ends claude itself, so it doesn't leave one behind.
 
 **`worktree path already exists`.** A session by that name already has a
 worktree. If yo knows the session (`yo sessions`), `yo my-fix 'message'`

@@ -15,7 +15,7 @@ use yo_core::reach::{ResumeOpts, ensure_guest, plan_focus, plan_reach};
 use yo_core::registry::Mode;
 use yo_core::resolve::{Ambiguous, HomeTarget, Resolved, resolve};
 use yo_core::runner::iterm::Iterm;
-use yo_core::runner::{DryLaunch, Runner, WindowChoice};
+use yo_core::runner::{DryLaunch, Runner, Tabs, WindowChoice};
 use yo_core::sys::Sys;
 
 use crate::cli::{Cli, Command, ConfigCmd, Up, Window};
@@ -87,6 +87,11 @@ fn go(
             command: Some(ConfigCmd::Edit),
         }) => return config_edit(&Ctx::load(sys, cwd)?, out),
         Some(Command::Down(d)) => return teardown::down(&Ctx::load(sys, cwd)?, d, cwd, out),
+        Some(Command::EndSession { id, pid }) => {
+            let ctx = Ctx::load(sys, cwd)?;
+            yo_core::end::end_session(&ctx, id, *pid, yo_core::end::AFTER_CLOSE);
+            return Ok(0);
+        }
         Some(Command::Sweep(s)) => {
             return teardown::sweep(&Ctx::load(sys, cwd)?, s, cwd, out, err);
         }
@@ -110,11 +115,35 @@ fn go(
                     writeln!(err, "adopted {} ({}) from a live session", a.name, a.id)?;
                 }
             }
-            render::sessions(&ctx, &ctx.ledger().all(), &live)
+            render::sessions(
+                &ctx,
+                &ctx.ledger().all(),
+                &live,
+                shown(&ctx, &live).as_ref(),
+            )
         }
     };
     out.write_all(text.as_bytes())?;
     Ok(0)
+}
+
+/// The runner commands use: iTerm, or with `YO_DRY_LAUNCH` one that only
+/// says what it would do.
+pub fn runner(ctx: &Ctx) -> Box<dyn Runner> {
+    if ctx.sys.env_nonempty("YO_DRY_LAUNCH").is_some() {
+        Box::new(DryLaunch)
+    } else {
+        Box::new(Iterm::new(&ctx.registry.defaults))
+    }
+}
+
+/// What the runner shows, to tell running sessions with a tab from those
+/// without; not asked when nothing runs.
+pub fn shown(ctx: &Ctx, live: &[yo_core::harness::LiveSession]) -> Option<Tabs> {
+    if live.is_empty() {
+        return None;
+    }
+    runner(ctx).tabs(&*ctx.sys)
 }
 
 /// `yo _session-hook`: a harness's ledger hook, with its payload. Loads no
@@ -180,7 +209,7 @@ fn up(
         Resolved::Live(l) => {
             let name = &up.args[0];
             (
-                plan_focus(&ctx, l.pid, name, None, message.as_deref()),
+                plan_focus(&ctx, l.pid, None, name, None, message.as_deref()),
                 false,
             )
         }
@@ -212,6 +241,7 @@ fn up(
                     plan_focus(
                         &ctx,
                         l.pid,
+                        None,
                         &format!("{name}'s home"),
                         None,
                         message.as_deref(),
@@ -376,7 +406,8 @@ fn ambiguous(ctx: &Ctx, a: &Ambiguous) -> Box<dyn std::error::Error> {
         )
     };
     if !a.entries.is_empty() {
-        let table = render::sessions(ctx, &a.entries, &ctx.live());
+        let live = ctx.live();
+        let table = render::sessions(ctx, &a.entries, &live, shown(ctx, &live).as_ref());
         // The rows, without the legend under them.
         for l in table.lines().take(a.entries.len() + 1) {
             s.push_str(l);

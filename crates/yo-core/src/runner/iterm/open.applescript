@@ -106,5 +106,16 @@ on run argv
       write text claudeCmd
       select
     end tell
+
+    -- Its tab, "<window id>/<tab id>", printed for yo to record: how it
+    -- finds the tab again when a workgroup shows CLI and AppleScript no
+    -- longer lists this session.
+    set tabRef to ""
+    try
+      tell leftSession
+        set tabRef to ((variable named "tab.window.id") as text) & "/" & ((variable named "tab.id") as text)
+      end tell
+    end try
+    return tabRef
   end tell
 end run

@@ -2,15 +2,23 @@
 //! worktree is removed (its branch kept), its record dropped and its tab
 //! closed; anywhere else, nothing on disk is touched. bash's `cmd_down`.
 //!
+//! Its session is ended too, if it's still running: closing a tab doesn't
+//! always end it (see "Closing a tab" in [`crate::runner::iterm`]). Run
+//! from a shell (the tab's CLI, a split), `down` ends it before closing the
+//! tab, but only when it's in this tab (its recorded tab is the one yo runs
+//! in): a session in another tab is left running, and said so. Run from
+//! inside it, a detached helper ends it once the tab has had time to close.
+//!
 //! What it refuses, it refuses while planning, before anything changes:
 //! an agent's home, a repo it can't identify, and with `--yes` but not
 //! `--discard`, uncommitted work.
 
 use std::path::{Path, PathBuf};
 
-use crate::ledger::{Entry, Key};
-use crate::plan::{Action, Plan};
+use crate::ledger::{Entry, Key, Record};
+use crate::plan::{Action, Note, Plan};
 use crate::registry::Mode;
+use crate::runner::Runner;
 use crate::{Ctx, Error, Result, git};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -49,7 +57,7 @@ fn own_tab(ctx: &Ctx) -> Option<String> {
     ctx.sys.env_nonempty("ITERM_SESSION_ID")
 }
 
-pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
+pub fn plan_down(ctx: &Ctx, runner: &dyn Runner, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     let sys = &*ctx.sys;
     let top = git::git(sys, cwd, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
     let is_worktree = top
@@ -62,12 +70,11 @@ pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     let Some(top) = top.filter(|_| is_worktree) else {
         let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
         let key = here_key(ctx, &dir);
+        let rec = key.as_ref().and_then(|k| record(ctx, k));
         if let Some(k) = &key {
             plan.actions.push(Action::DropRecord(k.clone()));
         }
-        plan.actions.push(Action::CloseOwnTab {
-            session: own_tab(ctx),
-        });
+        end_and_close(ctx, runner, rec.as_ref(), &mut plan);
         return Ok((Found::InPlace { dir, key }, plan));
     };
 
@@ -111,11 +118,10 @@ pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     plan.actions.push(Action::PruneWorktrees {
         repo: repo.path.clone(),
     });
-    plan.actions
-        .push(Action::DropRecord(Key::for_worktree(&sys.home(), &top)));
-    plan.actions.push(Action::CloseOwnTab {
-        session: own_tab(ctx),
-    });
+    let key = Key::for_worktree(&sys.home(), &top);
+    let rec = record(ctx, &key);
+    plan.actions.push(Action::DropRecord(key));
+    end_and_close(ctx, runner, rec.as_ref(), &mut plan);
     Ok((
         Found::Worktree {
             repo: repo.key.clone(),
@@ -129,6 +135,74 @@ pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     ))
 }
 
+fn record(ctx: &Ctx, key: &Key) -> Option<Record> {
+    ctx.ledger()
+        .all()
+        .into_iter()
+        .find(|e| &e.key == key)
+        .map(|e| e.record)
+}
+
+/// The last steps: ending the session if it's running (the record's, else
+/// the one yo runs inside), then closing the tab.
+fn end_and_close(ctx: &Ctx, runner: &dyn Runner, rec: Option<&Record>, plan: &mut Plan) {
+    let inside = ctx.own_session();
+    let id = rec
+        .and_then(|r| r.id().map(str::to_string))
+        .or(inside.clone());
+    let live = id.and_then(|id| ctx.live().into_iter().find(|l| l.id == id));
+    // Inside it, yo may be in a tab that shows another member (a workgroup
+    // showing CLI, with the chat reached by Remote Control), so the tab is
+    // found by what was recorded too.
+    let in_it = live
+        .as_ref()
+        .is_some_and(|l| inside.as_deref() == Some(l.id.as_str()));
+    let tab = own_tab(ctx);
+    // From outside it, only a session in this very tab is ours to end: its
+    // recorded tab is the one yo runs in. A `down` typed in some other shell
+    // under the directory mustn't end a session in another tab.
+    let here = || {
+        let recorded = rec.and_then(Record::tab)?;
+        let mine = runner.own_tab(&*ctx.sys, tab.as_deref()?)?;
+        Some(recorded == mine)
+    };
+    // Run inside it with no tab to close (another terminal), it stays: the
+    // user ends it, as they would have before.
+    let here = if in_it { None } else { here() };
+    let ours = if in_it {
+        tab.is_some()
+    } else {
+        here == Some(true)
+    };
+    match live {
+        Some(l) if ours => plan.actions.push(Action::EndSession {
+            harness: l.harness,
+            id: l.id,
+            pid: l.pid,
+            after_close: in_it,
+        }),
+        Some(l) if !in_it => plan.notes.push(Note::Info(match here {
+            Some(_) => format!(
+                "its {} session (pid {}) isn't in this tab, so it's left running",
+                l.harness, l.pid
+            ),
+            // No recorded tab (started before yo recorded them), or no
+            // runner to ask: it can't be shown to be this tab's.
+            None => format!(
+                "its {} session (pid {}) is left running: yo can't tell it's in this tab",
+                l.harness, l.pid
+            ),
+        })),
+        _ => {}
+    }
+    plan.actions.push(Action::CloseOwnTab {
+        session: tab,
+        tab: rec
+            .filter(|_| in_it)
+            .and_then(|r| r.tab().map(str::to_string)),
+    });
+}
+
 /// The record for the session running in place in `dir`: the one
 /// `YO_SESSION_KEY` names, else the one holding this session's id, else
 /// the only in-place record holding `dir`. bash's `_yo_here_session_key`.
@@ -137,7 +211,7 @@ fn here_key(ctx: &Ctx, dir: &Path) -> Option<Key> {
         return Some(Key(k));
     }
     let all = ctx.ledger().all();
-    let id = ctx.sys.env_nonempty("CLAUDE_CODE_SESSION_ID");
+    let id = ctx.own_session();
     if let Some(e) = all
         .iter()
         .rev()

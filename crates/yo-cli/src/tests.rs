@@ -640,6 +640,57 @@ fn down_dry_run_shows_what_it_would_do_and_changes_nothing() {
 }
 
 #[test]
+fn down_from_a_shell_ends_the_session_in_its_tab() {
+    let (t, sys, api, wt) = with_session();
+    let (a, w) = (api.display().to_string(), wt.display().to_string());
+    sys.answer_ok("git", &["-C", &w, "rev-parse", "--show-toplevel"], &w);
+    sys.answer_ok(
+        "git",
+        &["-C", &w, "rev-parse", "--git-common-dir"],
+        &format!("{a}/.git"),
+    );
+    sys.answer_ok("git", &["-C", &w, "status", "--porcelain"], "");
+    // The real runner: iTerm says which tab this shell is in.
+    sys.set_env("YO_DRY_LAUNCH", "");
+    sys.set_env("ITERM_SESSION_ID", "w0t1p0:CLI");
+    sys.answer_ok("osascript", &["-", "CLI"], "pty-W/40\n");
+    // Its claude still runs (pid 77) in this tab, the one it was recorded in.
+    let rec = t
+        .path()
+        .join(".local/state/yo/sessions/src__api-worktrees__feat.json");
+    let text = fs::read_to_string(&rec).unwrap();
+    fs::write(&rec, text.replacen('{', r#"{"tab": "pty-W/40", "#, 1)).unwrap();
+    let sessions = t.path().join(".claude/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join("77.json"),
+        format!(
+            r#"{{"pid": 77, "sessionId": "abcdef12-0000-4000-8000-000000000000", "cwd": "{w}"}}"#
+        ),
+    )
+    .unwrap();
+    sys.add_process(77, "claude", Some("ttys009"));
+    let out = yo(&sys, &wt, &["down", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out
+            .contains("\n  end its claude (pid 77), still running, and close this iTerm2 tab.\n"),
+        "{}",
+        out.out
+    );
+    assert!(sys.signals().is_empty());
+    sys.answer_ok("git", &["-C", &a, "worktree", "remove", &w], "");
+    let out = yo(&sys, &wt, &["down", "--yes"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains("ended the claude session (pid 77)"),
+        "{}",
+        out.out
+    );
+    assert_eq!(sys.signals(), [(77, yo_core::sys::Signal::Hup)]);
+}
+
+#[test]
 fn an_agents_home_dry_run_changes_nothing() {
     let (t, sys, api) = with_clone();
     fs::write(
@@ -833,4 +884,91 @@ fn setup_link_needs_a_checkout() {
     let out = yo(&sys, t.path(), &["setup", "--link", "nowhere"]);
     assert_eq!(out.code, 1);
     assert!(out.err.starts_with("yo: --link "), "{}", out.err);
+}
+
+/// Session `feat` running as pid 41 on ttys009, recorded in tab `pty-W/40`,
+/// with iTerm running and showing `tabs` (its listing's lines).
+fn tabless(tabs: &str) -> (TempDir, Arc<FakeSys>, std::path::PathBuf) {
+    let (t, sys) = sandbox(Some(r#"{"repos": {"api": {"path": "~/src/api"}}}"#));
+    let home = t.path();
+    let wt = home.join("src/api-worktrees/feat");
+    fs::create_dir_all(wt.join(".git")).unwrap();
+    let ledger = home.join(".local/state/yo/sessions");
+    fs::create_dir_all(&ledger).unwrap();
+    fs::write(
+        ledger.join("src__api-worktrees__feat.json"),
+        format!(
+            r#"{{"worktree": "{}", "sessionId": "s-f", "name": "feat", "repo": "api", "tab": "pty-W/40"}}"#,
+            wt.display()
+        ),
+    )
+    .unwrap();
+    let sessions = home.join(".claude/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join("41.json"),
+        format!(
+            r#"{{"pid": 41, "sessionId": "s-f", "cwd": "{}"}}"#,
+            wt.display()
+        ),
+    )
+    .unwrap();
+    sys.add_process(41, "claude", Some("ttys009"));
+    sys.answer_ok("pgrep", &["-axq", "iTerm2"], "");
+    sys.answer_ok("osascript", &["-"], tabs);
+    (t, sys, wt)
+}
+
+#[test]
+fn a_running_session_whose_tab_is_gone() {
+    let (t, sys, _wt) = tabless("/dev/ttys003\tpty-W/27\n");
+    let out = yo(&sys, t.path(), &["sessions"]);
+    let rows: Vec<&str> = out.out.lines().collect();
+    assert_eq!(
+        rows[..2],
+        [
+            "STATUS           PID     REPO         AGENT      SESSION                              NAME",
+            "running (no tab) 41      api          -          s-f                                  feat",
+        ]
+    );
+    assert!(
+        out.out
+            .contains("running (no tab) = still running, but its tab was closed"),
+        "{}",
+        out.out
+    );
+
+    let out = yo(&sys, t.path(), &["resume", "feat"]);
+    assert_eq!(
+        out.err,
+        "yo: feat is still running (pid 41), but its tab was closed; end it with kill -HUP 41, then yo resume feat\n"
+    );
+
+    // resume-all waits for it to exit, then says it didn't resume it.
+    let out = yo(&sys, t.path(), &["resume-all"]);
+    assert_eq!(
+        out.out,
+        "==> waiting for sessions whose tab just closed to exit\n\
+         \n\
+         NOT resumed: still running, though its tab was closed:\n  feat  (pid 41)\n\
+         end each with kill -HUP <pid>, then yo resume <name>\n\
+         \n\
+         ==> resumed 0 session(s)\n"
+    );
+    let waited: std::time::Duration = sys.slept().iter().sum();
+    assert_eq!(waited, std::time::Duration::from_secs(6));
+}
+
+#[test]
+fn a_running_session_in_a_tab_showing_another_member() {
+    // Its terminal isn't listed, but its tab is: a workgroup showing CLI.
+    let (t, sys, _wt) = tabless("/dev/ttys003\tpty-W/27\n/dev/ttys010\tpty-W/40\n");
+    let out = yo(&sys, t.path(), &["sessions"]);
+    assert!(
+        out.out.lines().nth(1).unwrap().starts_with("running  41 "),
+        "{}",
+        out.out
+    );
+    let out = yo(&sys, t.path(), &["resume", "feat"]);
+    assert_eq!(out.err, "yo: feat is already running (pid 41)\n");
 }

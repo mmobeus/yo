@@ -4,13 +4,14 @@
 //! `_yo_resume_row`.
 
 use std::path::Path;
+use std::time::Duration;
 
-use crate::harness::{Harness, PrepareAsk, SessionSpec};
-use crate::ledger::{Entry, State};
+use crate::harness::{Harness, LiveSession, PrepareAsk, SessionSpec};
+use crate::ledger::{Entry, Record, State, state_of};
 use crate::place::{self, PlaceTo};
 use crate::plan::{Action, Note, Plan};
 use crate::registry::Repo;
-use crate::runner::{LaunchSpec, WindowChoice};
+use crate::runner::{LaunchSpec, Tab, Tabs, WindowChoice, tab_of};
 use crate::{Ctx, Error, Result};
 
 /// How to reopen a session.
@@ -27,6 +28,7 @@ pub struct ResumeOpts {
 pub fn plan_focus(
     ctx: &Ctx,
     pid: u32,
+    tab: Option<&str>,
     label: &str,
     rc: Option<&str>,
     message: Option<&str>,
@@ -43,6 +45,7 @@ pub fn plan_focus(
         actions: vec![Action::Focus {
             pid,
             tty,
+            tab: tab.map(str::to_string),
             label: label.to_string(),
             remote_control: rc.map(str::to_string),
             message: message.filter(|m| !m.is_empty()).map(str::to_string),
@@ -57,12 +60,57 @@ pub fn plan_reach(ctx: &Ctx, e: &Entry, st: State, label: &str, o: &ResumeOpts) 
         State::Running { pid } => Ok(plan_focus(
             ctx,
             pid,
+            e.record.tab(),
             label,
             e.record.remote_control.as_deref(),
             o.message.as_deref(),
         )),
         _ => plan_resume(ctx, e, o),
     }
+}
+
+/// The pid of `rec`'s session, if it's running but its tab is gone (what
+/// the runner shows, `shown`, holds neither its terminal nor its tab).
+pub fn tabless(ctx: &Ctx, rec: &Record, live: &[LiveSession], shown: Option<&Tabs>) -> Option<u32> {
+    match state_of(rec, live) {
+        State::Running { pid } if tab_of(&*ctx.sys, rec.tab(), pid, shown) == Tab::Gone => {
+            Some(pid)
+        }
+        _ => None,
+    }
+}
+
+/// How long [`await_tabless`] waits.
+pub const EXIT_WAIT: Duration = Duration::from_secs(6);
+const EXIT_POLL: Duration = Duration::from_millis(500);
+
+/// A session whose tab was just closed (iTerm quit, its windows closed) may
+/// still be on its way out: iTerm ends it after its undo window. Waits up to
+/// [`EXIT_WAIT`] for those among `entries` to exit, so `resume-all` resumes
+/// them rather than skipping them, and returns the live sessions then.
+/// `None`: there were none to wait for.
+pub fn await_tabless(
+    ctx: &Ctx,
+    entries: &[Entry],
+    shown: Option<&Tabs>,
+    live: &[LiveSession],
+) -> Option<Vec<LiveSession>> {
+    let any = |live: &[LiveSession]| {
+        entries
+            .iter()
+            .any(|e| tabless(ctx, &e.record, live, shown).is_some())
+    };
+    if !any(live) {
+        return None;
+    }
+    let mut now = live.to_vec();
+    let mut waited = Duration::ZERO;
+    while waited < EXIT_WAIT && any(&now) {
+        ctx.sys.sleep(EXIT_POLL);
+        waited += EXIT_POLL;
+        now = ctx.live();
+    }
+    Some(now)
 }
 
 /// A guest repo a session was created in is registered only for that run:
@@ -191,6 +239,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
         argv,
         window: o.window,
         group: reg.window_group(repo, picked).replace("{repo}", &label),
+        record: Some(e.key.clone()),
     }));
     Ok(plan)
 }
@@ -269,6 +318,7 @@ mod tests {
         };
         let p = plan_reach(&c, &e, State::Ready, "feat", &o).unwrap();
         let l = launch(&p);
+        assert_eq!(l.record, Some(e.key.clone()));
         assert_eq!(l.title, "[api] feat");
         assert_eq!(l.group, "g-api");
         assert_eq!(l.window, WindowChoice::Window);
@@ -397,8 +447,91 @@ mod tests {
             said.0,
             [
                 "feat is running (pid 43), but not in an iTerm tab yo can find;",
-                "reach it by Remote Control as feat-rc, or with SendMessage from another session (your message was not delivered)",
+                "reach it by Remote Control as feat-rc, or with SendMessage from another session (your message was not delivered);",
+                "or end it (kill -HUP 43) and yo resume it",
             ]
         );
+    }
+
+    /// Opens tabs as `pty-W/40`, and finds a session only by its tab.
+    struct Tabbed;
+
+    impl crate::runner::Runner for Tabbed {
+        fn kind(&self) -> crate::runner::RunnerKind {
+            crate::runner::RunnerKind::Iterm
+        }
+        fn launch(&self, _: &dyn crate::sys::Sys, _: &LaunchSpec) -> Result<Launched> {
+            Ok(Launched::Opened {
+                new_window: false,
+                split: false,
+                warnings: vec![],
+                tab: Some("pty-W/40".into()),
+            })
+        }
+        fn focus(
+            &self,
+            _: &dyn crate::sys::Sys,
+            _: &str,
+            tab: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<crate::runner::Focused> {
+            Ok(if tab == Some("pty-W/40") {
+                crate::runner::Focused::TabOnly
+            } else {
+                crate::runner::Focused::NotFound
+            })
+        }
+        fn close_own_tab(&self, _: &dyn crate::sys::Sys, _: &str, _: Option<&str>) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_launch_records_the_tab_it_opened() {
+        let t = TempDir::new().unwrap();
+        let (c, _) = ctx(&t);
+        let mut e = entry(&t);
+        c.ledger().write(&mut e).unwrap();
+        let p = plan_reach(&c, &e, State::Ready, "feat", &ResumeOpts::default()).unwrap();
+        execute(&c, &p, &Tabbed, &mut Said::default()).unwrap();
+        let got = c.ledger().get("feat").unwrap().unwrap();
+        assert_eq!(got.record.tab(), Some("pty-W/40"));
+    }
+
+    #[test]
+    fn a_running_session_is_reached_by_its_recorded_tab() {
+        // Its tab shows the workgroup's CLI: brought forward, nothing typed.
+        let t = TempDir::new().unwrap();
+        let (c, _) = ctx(&t);
+        let mut e = entry(&t);
+        e.record.tab = Some("pty-W/40".into());
+        for (message, last) in [
+            (None, "switch it to the chat"),
+            (
+                Some("hi".to_string()),
+                "switch it to the chat; your message was not typed",
+            ),
+        ] {
+            let p = plan_reach(
+                &c,
+                &e,
+                State::Running { pid: 43 },
+                "feat",
+                &ResumeOpts {
+                    message,
+                    ..ResumeOpts::default()
+                },
+            )
+            .unwrap();
+            let mut said = Said::default();
+            execute(&c, &p, &Tabbed, &mut said).unwrap();
+            assert_eq!(
+                said.0,
+                [
+                    "feat is running (pid 43): brought its tab forward, which is showing something else (iTerm's CLI view)",
+                    last,
+                ]
+            );
+        }
     }
 }

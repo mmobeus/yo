@@ -439,7 +439,7 @@ fn the_iterm_peer_is_added_once() {
     t.sys.push_ids(["abcd-1234"]);
     let old = r#"[{"uniqueIdentifier":"other"},{"uniqueIdentifier":"builtin.claudeCode","sessions":[{"kind":{"kind":"chat"}}]}]"#;
     t.workgroups(old);
-    t.sys.answer("pgrep", &["-xq", "iTerm2"], ok(""));
+    t.sys.answer("pgrep", &["-axq", "iTerm2"], ok(""));
     let iterm = SetupOpts {
         iterm: true,
         ..copy()
