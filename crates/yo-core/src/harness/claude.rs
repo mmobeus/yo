@@ -74,6 +74,13 @@ impl Harness for Claude {
         Some(".claude/agents")
     }
 
+    /// With `SendMessage`, by its Claude name.
+    fn report_back(&self, to: &str) -> String {
+        format!(
+            "When you finish, or get blocked on something only a person can decide, report back to the Claude session named \"{to}\" with SendMessage: a few lines on the outcome and where the work is (branch, PR, files). Do the work in this session; don't hand it back."
+        )
+    }
+
     /// Interactive sessions from `~/.claude/sessions/<pid>.json` whose
     /// process is alive and is still `claude` (a pid can be reused after a
     /// reboot). Background sessions (`kind` other than `interactive`) are

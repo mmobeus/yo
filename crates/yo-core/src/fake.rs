@@ -299,3 +299,98 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+/// A fake Codex: what the real one leaves under `~/.codex` (checked
+/// against Codex 0.172.0), for the Codex harness's tests.
+pub struct FakeCodex<'a> {
+    pub sys: &'a FakeSys,
+}
+
+impl FakeCodex<'_> {
+    /// Session `id`'s rollout, as the TUI (`source: "cli"`, or what's
+    /// given) writes it: filed under `day` (`YYYY/MM/DD`), starting `at` (a
+    /// UTC timestamp like `2026-11-27T03:53:30.908Z`) in `cwd`, told it's
+    /// `codename` in its developer instructions, as yo tells it.
+    pub fn rollout(
+        &self,
+        day: &str,
+        id: &str,
+        cwd: &Path,
+        at: &str,
+        source: &str,
+        codename: &str,
+    ) -> PathBuf {
+        let dir = self.sys.home().join(".codex/sessions").join(day);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(format!("rollout-{}-{id}.jsonl", at.replace(':', "-")));
+        let meta = serde_json::json!({
+            "timestamp": at, "ordinal": 0, "type": "session_meta",
+            "payload": {
+                "session_id": id, "id": id, "timestamp": at,
+                "cwd": cwd.to_string_lossy(), "originator": "codex-tui",
+                "cli_version": "0.172.0", "source": source,
+                "base_instructions": {"text": "You are Codex..."},
+            },
+        });
+        let event =
+            r#"{"timestamp":"x","ordinal":1,"type":"event_msg","payload":{"type":"task_started"}}"#;
+        let dev = serde_json::json!({
+            "timestamp": at, "ordinal": 2, "type": "response_item",
+            "payload": {"type": "message", "role": "developer", "content": [{
+                "type": "input_text",
+                "text": format!("<permissions>...</permissions> Your codename for this session is \"{codename}\". Introduce yourself with it."),
+            }]},
+        });
+        std::fs::write(&f, format!("{meta}\n{event}\n{dev}\n")).unwrap();
+        f
+    }
+
+    /// Sessions `(id, pid, cwd)` running: their thread locks, their
+    /// processes, and what `lsof` says about them. Give every running
+    /// session in one call, after any [`FakeCodex::stale_lock`]: `lsof` is
+    /// asked about every lock at once.
+    pub fn running(&self, live: &[(&str, u32, &Path)]) {
+        let locks = self.sys.home().join(".codex/thread-writer-locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        std::fs::write(locks.join(".coordination.lock"), "").unwrap();
+        let mut held = String::new();
+        let mut cwds = String::new();
+        let mut ids: Vec<&(&str, u32, &Path)> = live.iter().collect();
+        ids.sort();
+        for (id, pid, cwd) in &ids {
+            let f = locks.join(format!("{id}.lock"));
+            std::fs::write(&f, "").unwrap();
+            self.sys.add_process(*pid, "codex", Some("ttys020"));
+            held.push_str(&format!("p{pid}\nf46\nn{}\n", f.display()));
+            cwds.push_str(&format!("p{pid}\nfcwd\nn{}\n", cwd.display()));
+        }
+        // Every lock, stale ones too, in the harness's order: by id.
+        let mut files: Vec<String> = std::fs::read_dir(&locks)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".lock") && !n.starts_with('.'))
+            .collect();
+        files.sort();
+        let files: Vec<String> = files
+            .iter()
+            .map(|n| locks.join(n).to_string_lossy().into_owned())
+            .collect();
+        let mut args = vec!["-F", "pn", "--"];
+        args.extend(files.iter().map(String::as_str));
+        self.sys.answer_ok("lsof", &args, &held);
+        let mut pids: Vec<u32> = ids.iter().map(|(_, p, _)| *p).collect();
+        pids.sort();
+        let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
+        let pids = pids.join(",");
+        self.sys
+            .answer_ok("lsof", &["-a", "-d", "cwd", "-F", "pn", "-p", &pids], &cwds);
+    }
+
+    /// A lock a crashed session left behind: no process holds it.
+    pub fn stale_lock(&self, id: &str) {
+        let locks = self.sys.home().join(".codex/thread-writer-locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        std::fs::write(locks.join(format!("{id}.lock")), "").unwrap();
+    }
+}

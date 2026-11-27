@@ -85,9 +85,11 @@ Usage:
   one (session name, PR/issue title, or codename). Retitle later, from inside
   the session, with `yo title`.
 
-  --from=SESSION  tell the new session to report back to the Claude session
-  named SESSION (the name the statusline shows, what SendMessage takes) when
-  it finishes or gets blocked. For a coordinating session handing work out.
+  --from=SESSION  tell the new session to report back to session SESSION
+  when it finishes or gets blocked: a Claude session with SendMessage (SESSION
+  is the Claude name the statusline shows), a Codex one by running
+  `yo SESSION 'report'`, which types it in. For a coordinating session handing
+  work out.
 
   --model=M  run this session on model M (an alias like opus, sonnet, haiku,
   opus[1m], or a full model id). Session only: your default in settings.json
@@ -104,10 +106,14 @@ Usage:
   in the config ("agents") defaults the repo to its own.
     yo --agent=cindy https://github.com/acme/service/issues/123
 
-  --harness=H  run the session on coding agent H (default: claude, or the
-  repo's, profile's or defaults' "harness"). The ledger records it, so resume
-  and `yo NAME` reopen it on the same one. A flag H has nothing for (--agent,
-  --model) is an error. The config's "harnesses" sets each one's command.
+  --harness=H  run the session on coding agent H: claude (Claude Code, the
+  default) or codex (the Codex CLI); or the repo's, profile's or defaults'
+  "harness". The ledger records it, so resume and `yo NAME` reopen it on the
+  same one. A flag H has nothing for (--agent on codex) is an error. Codex
+  picks its own session id, which yo reads from ~/.codex/sessions the next
+  time it looks; Codex gets no settings layer, memory or pre-trust (it asks to
+  trust each new directory), and a session quit with /quit stays resumable.
+  The config's "harnesses" sets each one's command and extra args.
 
   --new-window (--window) put this session in a NEW iTerm window instead of a
   tab in the shared one; --tab forces the opposite. The default is a tab, so

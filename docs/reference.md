@@ -101,7 +101,7 @@ so yo leaves the message as it is and passes the codename with
 | `--here` (`--in-place`) | no worktree: the named repo's clone, else the cwd |
 | `--worktree` | a worktree, where in place would be the default |
 | `--title="T"` | the tab and Session Status title |
-| `--from=SESSION` | report back to that Claude session with `SendMessage` when done or stuck |
+| `--from=SESSION` | report back to that session when done or stuck (a Claude session uses `SendMessage`; a Codex one runs `yo SESSION 'report'`) |
 | `--model=M` | this session's model (`opus`, `sonnet`, `haiku`, `opus[1m]`, a full id) |
 | `--agent=NAME` | run as agent NAME; it must be merged on the base branch or in `~/.claude/agents` |
 | `--harness=H` | the coding agent to run it on (see [Harnesses](#harnesses)) |
@@ -209,7 +209,8 @@ setting's environment variable, if set, beats the file.
 
 ### Harnesses
 
-A harness is the coding agent a session runs: `claude` (Claude Code). A
+A harness is the coding agent a session runs: `claude` (Claude Code) or
+`codex` (the Codex CLI). A
 session's harness is `--harness`, else its repo's `harness`, its profile's,
 then `defaults.harness`. The ledger records it, so resuming and reaching a
 session use the harness it started on. An agent's home runs on its repo's
@@ -219,7 +220,7 @@ harness.
 
 | key | sets |
 | --- | --- |
-| `command` | its command, as shell words; default, the harness's own (`claude --permission-mode auto`) |
+| `command` | its command, as shell words; default, the harness's own (`claude --permission-mode auto`, `codex`) |
 | `args` | arguments added after the command, each one word |
 
 For `claude`, the older `claude` setting (a profile's, `defaults.claude`,
@@ -227,6 +228,22 @@ For `claude`, the older `claude` setting (a profile's, `defaults.claude`,
 
 A flag the session's harness has nothing for (`--agent`, `--model`) is an
 error that names the harness, never ignored.
+
+What each harness gets:
+
+| | `claude` | `codex` |
+| --- | --- | --- |
+| session id | yo picks it (`--session-id`) | Codex picks it; yo reads it from Codex's records (`~/.codex/sessions`) the next time it looks at the ledger |
+| the codename | at the end of the first message | as developer instructions (`-c developer_instructions=...`) |
+| no message | asked to introduce itself | the same, which is also what makes Codex record the session |
+| `--model` | yes | yes (`-m`) |
+| `--agent`, agents' homes | yes | no |
+| settings layer, shared memory, trust | yes | no: Codex asks to trust each new directory |
+| running or not | `~/.claude/sessions` | the thread lock a running `codex` holds (`~/.codex/thread-writer-locks`), found with `lsof` |
+| quit deliberately | `/exit` marks it ended | not seen: a session quit with `/quit` stays ready, so `resume-all` brings it back |
+| messages | typed into its tab; a stopped one is resumed with it | the same (`codex resume ID MESSAGE`) |
+| `--from` report back | with `SendMessage` | by running `yo SESSION 'report'`, which types it in |
+| inside a session | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` |
 
 ## Environment
 
