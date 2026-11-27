@@ -237,7 +237,7 @@ fn in_place_touches_nothing_on_disk() {
     let (found, _) =
         plan_down(&t.ctx(), &DryLaunch, &dir.join("sub"), DownOpts::default()).unwrap();
     assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-a"));
-    // Two there: neither, unless this session's id picks one.
+    // Two there: neither, unless something picks one.
     t.record(
         "id-b",
         Record {
@@ -247,8 +247,12 @@ fn in_place_touches_nothing_on_disk() {
             ..Record::default()
         },
     );
-    let (found, _) = plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()).unwrap();
-    assert!(matches!(found, Found::InPlace { key: None, .. }));
+    // Two there, and nothing to pick one: refused, tab left open (#52).
+    let m = refused(plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()));
+    assert_eq!(
+        m,
+        "refusing: yo can't tell which of the sessions in place here is this one:\n        id-a\n        id-b\n    Run yo down from the session's own tab, or yo forget the one to drop."
+    );
     t.sys.set_env("CLAUDE_CODE_SESSION_ID", "b");
     let (found, plan) = plan_down(&t.ctx(), &DryLaunch, &dir, DownOpts::default()).unwrap();
     assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-b"));
@@ -635,4 +639,80 @@ fn from_a_shell_in_another_tab_it_is_left_running() {
             "its claude session (pid 30) is left running: yo can't tell it's in this tab".into()
         )]
     );
+}
+
+#[test]
+fn from_the_cli_its_in_place_session_is_found_by_its_tab() {
+    // Two sessions in place in one checkout (two PR reviews), each in its
+    // own tab. The CLI pane has neither YO_SESSION_KEY nor a session id: the
+    // tab picks the record, and only its session ends (#52).
+    let t = T::new();
+    let dir = t.home.join("src/api");
+    let sessions = t.home.join(".claude/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    for (id, tab, shell, pid, tty) in [
+        ("a", "pty-W/9", 21, 31, "ttys010"),
+        ("b", "pty-W/40", 22, 32, "ttys011"),
+    ] {
+        t.record(
+            &format!("id-{id}"),
+            Record {
+                worktree: dir.clone(),
+                session_id: Some(id.into()),
+                mode: Some(Mode::Here),
+                tab: Some(tab.into()),
+                name: Some(format!("sesh_{id}")),
+                ..Record::default()
+            },
+        );
+        fs::write(
+            sessions.join(format!("{pid}.json")),
+            format!(
+                r#"{{"pid":{pid},"sessionId":"{id}","cwd":"{}","kind":"interactive"}}"#,
+                dir.display()
+            ),
+        )
+        .unwrap();
+        t.sys.add_process(shell, "-zsh", Some(tty));
+        t.sys.add_child(pid, "claude", Some(tty), shell);
+    }
+    t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:CLI");
+
+    // In tab pty-W/40: b's.
+    let (found, plan) = plan_down(&t.ctx(), &Closer::default(), &dir, DownOpts::default()).unwrap();
+    assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-b"));
+    assert_eq!(
+        plan.actions,
+        [
+            Action::DropRecord(Key("id-b".into())),
+            Action::EndSession {
+                harness: "claude".into(),
+                id: "b".into(),
+                pid: 32,
+                after_close: false,
+            },
+            Action::CloseOwnTab {
+                session: Some("w0t1p0:CLI".into()),
+                tab: None,
+            },
+        ]
+    );
+    // In tab pty-W/9: a's.
+    let (found, plan) = plan_down(&t.ctx(), &Elsewhere, &dir, DownOpts::default()).unwrap();
+    assert!(matches!(found, Found::InPlace { key: Some(Key(k)), .. } if k == "id-a"));
+    assert!(plan.actions.contains(&Action::EndSession {
+        harness: "claude".into(),
+        id: "a".into(),
+        pid: 31,
+        after_close: false,
+    }));
+    // A tab that's neither's: refused, by name.
+    t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:OTHER");
+    let m = refused(plan_down(
+        &t.ctx(),
+        &Closer::default(),
+        &dir,
+        DownOpts::default(),
+    ));
+    assert!(m.contains("\n        sesh_a\n        sesh_b\n"), "{m}");
 }

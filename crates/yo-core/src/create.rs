@@ -122,7 +122,13 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
             match other {
                 Input::Name(n) => name = n,
                 _ => {
-                    name = naming::unnamed(sys);
+                    let names: Vec<String> = ctx
+                        .ledger()
+                        .all()
+                        .into_iter()
+                        .filter_map(|e| e.record.name)
+                        .collect();
+                    name = naming::unnamed(sys, &|n| names.iter().any(|t| t == n));
                     unnamed = true;
                 }
             }
