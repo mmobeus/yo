@@ -127,6 +127,28 @@ pub trait ProcessTable: Send + Sync {
     fn comm(&self, pid: u32) -> Option<String>;
     /// Its controlling terminal (`ttys003`), if it has one.
     fn tty(&self, pid: u32) -> Option<String>;
+    /// Its parent's pid, while it's running.
+    fn ppid(&self, pid: u32) -> Option<u32>;
+    /// Sends it `sig`; `false` when it couldn't (no such process, or not
+    /// ours).
+    fn signal(&self, pid: u32, sig: Signal) -> bool;
+}
+
+/// The signals yo sends: those a closed terminal would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// A hangup: what a terminal's process gets when the terminal closes.
+    Hup,
+    Term,
+}
+
+impl Signal {
+    pub fn name(self) -> &'static str {
+        match self {
+            Signal::Hup => "HUP",
+            Signal::Term => "TERM",
+        }
+    }
 }
 
 /// The real thing.
@@ -248,6 +270,9 @@ impl CommandRunner for RealSys {
             Stdio::null()
         });
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        // A process group of its own, so the hangup that ends yo's terminal
+        // doesn't end it too.
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let mut child = cmd.spawn()?;
         if let (Some(input), Some(mut pipe)) = (&spec.stdin, child.stdin.take()) {
             pipe.write_all(input)?;
@@ -264,6 +289,22 @@ impl ProcessTable for RealSys {
 
     fn tty(&self, pid: u32) -> Option<String> {
         ps_field(pid, "tty=").filter(|t| t != "??" && t != "?")
+    }
+
+    fn ppid(&self, pid: u32) -> Option<u32> {
+        ps_field(pid, "ppid=").and_then(|p| p.parse().ok())
+    }
+
+    fn signal(&self, pid: u32, sig: Signal) -> bool {
+        // pid 0 and 1 aren't a session's: kill would read 0 as "my group".
+        pid > 1
+            && Command::new("kill")
+                .args([&format!("-{}", sig.name()), &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
     }
 }
 

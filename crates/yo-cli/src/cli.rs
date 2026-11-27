@@ -55,6 +55,10 @@ pub enum Command {
     /// The ledger hook, run by the harness with its payload on stdin.
     #[command(name = "_session-hook", hide = true)]
     SessionHook,
+    /// Run by `down` from inside a session, detached: ends session ID
+    /// (process PID) if it's still running once its tab has closed.
+    #[command(name = "_end-session", hide = true)]
+    EndSession { id: String, pid: u32 },
 }
 
 #[derive(Debug, Subcommand)]

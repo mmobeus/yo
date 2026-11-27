@@ -2,19 +2,21 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use yo_core::Ctx;
 use yo_core::git;
+use yo_core::harness::LiveSession;
 use yo_core::ledger::{Entry, State, state_of};
 use yo_core::plan::execute;
 use yo_core::reach::{ResumeOpts, ensure_guest, plan_resume};
 use yo_core::runner::iterm::Iterm;
-use yo_core::runner::{DryLaunch, Runner};
+use yo_core::runner::{Tab, Tabs, tab_of};
 use yo_core::session::{self, Found, classify};
 
 use crate::cli::{Adopt, Resume, ResumeAll};
 use crate::render;
-use crate::run::{say, window};
+use crate::run::{runner, say, shown, window};
 
 type Res = Result<i32, Box<dyn std::error::Error>>;
 
@@ -32,7 +34,8 @@ fn as_dir(cwd: &Path, q: &str) -> String {
 /// More than one session matches.
 fn ambiguous(ctx: &Ctx, q: &str, hits: &[Entry]) -> Box<dyn std::error::Error> {
     let mut s = format!("ambiguous: {} sessions match '{q}'\n", hits.len());
-    let table = render::sessions(ctx, hits, &ctx.live());
+    let live = ctx.live();
+    let table = render::sessions(ctx, hits, &live, shown(ctx, &live).as_ref());
     for l in table.lines().take(hits.len() + 1) {
         s.push_str(l);
         s.push('\n');
@@ -49,20 +52,14 @@ fn sync(ctx: &Ctx, out: &mut dyn Write) {
     }
 }
 
-fn runner(ctx: &Ctx) -> Box<dyn Runner> {
-    if ctx.sys.env_nonempty("YO_DRY_LAUNCH").is_some() {
-        Box::new(DryLaunch)
-    } else {
-        Box::new(Iterm::new(&ctx.registry.defaults))
-    }
-}
-
 /// `yo resume [QUERY]`: reopens a session by name, id, 8+ prefix or
 /// directory; with no query, lists them.
 pub fn resume(ctx: &mut Ctx, r: &Resume, cwd: &Path, out: &mut dyn Write) -> Res {
     let Some(q) = &r.query else {
         sync(ctx, out);
-        out.write_all(render::sessions(ctx, &ctx.ledger().all(), &ctx.live()).as_bytes())?;
+        let live = ctx.live();
+        let table = render::sessions(ctx, &ctx.ledger().all(), &live, shown(ctx, &live).as_ref());
+        out.write_all(table.as_bytes())?;
         return Ok(0);
     };
     let q = as_dir(cwd, q);
@@ -77,8 +74,16 @@ pub fn resume(ctx: &mut Ctx, r: &Resume, cwd: &Path, out: &mut dyn Write) -> Res
         }
     };
     let name = e.record.name.clone().unwrap_or_else(|| e.key.0.clone());
-    match state_of(&e.record, &ctx.live()) {
+    let live = ctx.live();
+    match state_of(&e.record, &live) {
         State::Running { pid } => {
+            let shown = shown(ctx, &live);
+            if tab_of(&*ctx.sys, e.record.tab(), pid, shown.as_ref()) == Tab::Gone {
+                return Err(format!(
+                    "{name} is still running (pid {pid}), but its tab was closed; end it with kill -HUP {pid}, then yo resume {name}"
+                )
+                .into());
+            }
             return Err(format!("{name} is already running (pid {pid})").into());
         }
         State::Gone => {
@@ -111,12 +116,42 @@ pub fn resume(ctx: &mut Ctx, r: &Resume, cwd: &Path, out: &mut dyn Write) -> Res
 /// `/exit`).
 pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
     sync(ctx, out);
-    let live = ctx.live();
+    let mut live = ctx.live();
+    let shown = shown(ctx, &live);
+    let entries = ctx.ledger().all();
+    // A session whose tab was just closed (iTerm quit, its windows closed)
+    // may still be on its way out: iTerm ends it after its undo window.
+    // Give those a moment, so they're resumed rather than skipped.
+    if !r.dry_run
+        && entries
+            .iter()
+            .any(|e| tabless(ctx, e, &live, shown.as_ref()).is_some())
+    {
+        writeln!(
+            out,
+            "==> waiting for sessions whose tab just closed to exit"
+        )?;
+        let mut waited = Duration::ZERO;
+        while waited < EXIT_WAIT
+            && entries
+                .iter()
+                .any(|e| tabless(ctx, e, &live, shown.as_ref()).is_some())
+        {
+            ctx.sys.sleep(EXIT_POLL);
+            waited += EXIT_POLL;
+            live = ctx.live();
+        }
+    }
     let mut n = 0;
     let mut skipped = String::new();
-    for e in ctx.ledger().all() {
+    let mut stuck = String::new();
+    for e in entries {
         let st = state_of(&e.record, &live);
         let name = e.record.name.clone().unwrap_or_else(|| e.key.0.clone());
+        if let Some(pid) = tabless(ctx, &e, &live, shown.as_ref()) {
+            stuck.push_str(&format!("  {name}  (pid {pid})\n"));
+            continue;
+        }
         if st != State::Ready {
             skipped.push_str(&format!("  {}  {name}\n", st.as_str()));
             continue;
@@ -143,6 +178,13 @@ pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
         let mut report = render::Progress::new(out);
         execute(ctx, &plan, &*runner(ctx), &mut report)?;
     }
+    if !stuck.is_empty() {
+        write!(
+            out,
+            "\nNOT resumed: still running, though its tab was closed:\n{stuck}\
+             end each with kill -HUP <pid>, then yo resume <name>\n\n"
+        )?;
+    }
     if !skipped.is_empty() {
         write!(out, "skipped:\n{skipped}")?;
     }
@@ -152,6 +194,20 @@ pub fn resume_all(ctx: &mut Ctx, r: &ResumeAll, out: &mut dyn Write) -> Res {
         writeln!(out, "==> resumed {n} session(s)")?;
     }
     Ok(0)
+}
+
+/// How long `resume-all` waits for sessions whose tab was closed to exit.
+const EXIT_WAIT: Duration = Duration::from_secs(6);
+const EXIT_POLL: Duration = Duration::from_millis(500);
+
+/// The pid of `e`'s session, if it's running but its tab is gone.
+fn tabless(ctx: &Ctx, e: &Entry, live: &[LiveSession], shown: Option<&Tabs>) -> Option<u32> {
+    match state_of(&e.record, live) {
+        State::Running { pid } if tab_of(&*ctx.sys, e.record.tab(), pid, shown) == Tab::Gone => {
+            Some(pid)
+        }
+        _ => None,
+    }
 }
 
 /// `yo adopt`: records the session it's run from (its id from the harness's
@@ -181,6 +237,13 @@ pub fn adopt(ctx: &Ctx, a: &Adopt, cwd: &Path, out: &mut dyn Write) -> Res {
         title.as_deref(),
         a.title.is_some(),
     )?;
+    // Its tab, so yo can tell later whether it still has one.
+    if let Some(tab) = sys
+        .env_nonempty("ITERM_SESSION_ID")
+        .and_then(|s| Iterm::own_tab(sys, &s))
+    {
+        let _ = ctx.ledger().set_tab(&e.key, &tab);
+    }
     let shown = e
         .record
         .title

@@ -6,22 +6,14 @@ use std::path::Path;
 use yo_core::Ctx;
 use yo_core::down::{DownOpts, Found, plan_down};
 use yo_core::plan::{Action, Note, Plan, Report, execute};
-use yo_core::runner::iterm::Iterm;
-use yo_core::runner::{DryLaunch, LaunchSpec, Launched, Runner};
+use yo_core::runner::{LaunchSpec, Launched};
 use yo_core::sweep::{SweepOpts, plan_sweep};
 
 use crate::cli::{Down, Sweep};
 use crate::render;
+use crate::run::runner;
 
 type Res = Result<i32, Box<dyn std::error::Error>>;
-
-fn runner(ctx: &Ctx) -> Box<dyn Runner> {
-    if ctx.sys.env_nonempty("YO_DRY_LAUNCH").is_some() {
-        Box::new(DryLaunch)
-    } else {
-        Box::new(Iterm::new(&ctx.registry.defaults))
-    }
-}
 
 /// A yes from stdin.
 fn confirm(out: &mut dyn Write, q: &str) -> bool {
@@ -41,10 +33,26 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
             discard: d.discard,
         },
     )?;
-    let tab = if ctx.sys.env_nonempty("ITERM_SESSION_ID").is_some() {
-        "  and close this iTerm2 tab, which ends the claude session in it."
-    } else {
-        "  (not inside iTerm2: no tab to close)"
+    let in_tab = ctx.sys.env_nonempty("ITERM_SESSION_ID").is_some();
+    // A session still running that yo will end itself, from outside it.
+    let ending = plan.actions.iter().find_map(|a| match a {
+        Action::EndSession {
+            harness,
+            pid,
+            after_close: false,
+            ..
+        } => Some(format!("{harness} (pid {pid})")),
+        _ => None,
+    });
+    let tab = match (&ending, in_tab) {
+        (Some(s), true) => format!("  end its {s}, still running, and close this iTerm2 tab."),
+        (Some(s), false) => {
+            format!("  end its {s}, still running (not inside iTerm2: no tab to close)")
+        }
+        (None, true) => {
+            "  and close this iTerm2 tab, which ends the claude session in it.".to_string()
+        }
+        (None, false) => "  (not inside iTerm2: no tab to close)".to_string(),
     };
     let lead = |what: &str| {
         if d.dry_run {
@@ -124,11 +132,12 @@ pub fn down(ctx: &Ctx, d: &Down, cwd: &Path, out: &mut dyn Write) -> Res {
         writeln!(out, "aborted.")?;
         return Ok(0);
     }
-    // Everything but closing the tab (which may end yo), then say so.
+    // Everything but ending the session and closing the tab (either may end
+    // yo), then say so.
     let (close, rest): (Vec<Action>, Vec<Action>) = plan
         .actions
         .into_iter()
-        .partition(|a| matches!(a, Action::CloseOwnTab { .. }));
+        .partition(|a| matches!(a, Action::CloseOwnTab { .. } | Action::EndSession { .. }));
     let runner = runner(ctx);
     let mut report = render::Progress::new(out);
     execute(

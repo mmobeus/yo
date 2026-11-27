@@ -15,6 +15,7 @@ pub mod agent;
 pub mod config;
 pub mod create;
 pub mod down;
+pub mod end;
 pub mod error;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
@@ -79,6 +80,13 @@ impl Ctx {
             .iter()
             .flat_map(|h| h.live(&*self.sys))
             .collect()
+    }
+
+    /// The id of the harness session yo is running inside, if any.
+    pub fn own_session(&self) -> Option<String> {
+        self.harnesses
+            .iter()
+            .find_map(|h| h.own_session(&*self.sys))
     }
 
     /// The registered clones, for [`Ledger::sync`].

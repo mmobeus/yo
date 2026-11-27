@@ -4,10 +4,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use crate::end::{Ended, end_session};
 use crate::harness::Prep;
 use crate::ledger::{Entry, Key};
 use crate::runner::{Focused, LaunchSpec, Launched, Runner};
+use crate::sys::CommandSpec;
 use crate::{Ctx, Error, Result, git};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -95,10 +98,21 @@ pub enum Action {
         remote: String,
         base: String,
     },
-    /// Closes the tab yo runs in (iTerm's `session` id), which ends the
-    /// session in it. `None`: not in one.
+    /// Closes the tab yo runs in (iTerm's `session` id), or else the tab
+    /// `tab` its session was recorded in. `session` `None`: not in one.
     CloseOwnTab {
         session: Option<String>,
+        tab: Option<String>,
+    },
+    /// Ends a running session (`harness`'s session `id`, process `pid`) the
+    /// way a closed terminal would, in case closing its tab doesn't. With
+    /// `after_close` (yo runs inside it, so ends with it), a detached
+    /// `yo _end-session` does it once the tab has had time to close.
+    EndSession {
+        harness: String,
+        id: String,
+        pid: u32,
+        after_close: bool,
     },
     Launch(LaunchSpec),
     /// A running session (process `pid`, on terminal `tty` if it has one):
@@ -106,6 +120,8 @@ pub enum Action {
     Focus {
         pid: u32,
         tty: Option<String>,
+        /// The tab it was recorded in, for when its terminal isn't shown.
+        tab: Option<String>,
         /// What the progress calls it.
         label: String,
         /// Its Remote Control name, for when there's no tab to reach.
@@ -179,7 +195,11 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                         git::git_do(sys, repo, &["worktree", "add", "-b", branch, &p, start])?;
                     }
                     BranchSpec::Detached(start) => {
-                        git::git_do(sys, repo, &["worktree", "add", "--quiet", "--detach", &p, start])?;
+                        git::git_do(
+                            sys,
+                            repo,
+                            &["worktree", "add", "--quiet", "--detach", &p, start],
+                        )?;
                     }
                 }
             }
@@ -288,31 +308,74 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     }
                 }
             }
-            Action::CloseOwnTab { session } => match session {
+            Action::CloseOwnTab { session, tab } => match session {
                 None => out.note(&Note::Warn(
-                    "not running inside an iTerm2 session; leaving windows alone (exit claude yourself)"
-                        .into(),
+                    "not running inside an iTerm2 session; no tab to close".into(),
                 )),
                 Some(s) => {
-                    if !runner.close_own_tab(sys, s) {
+                    if !runner.close_own_tab(sys, s, tab.as_deref()) {
                         out.note(&Note::Info(format!("dry close: the tab of {s}")));
                     }
                 }
             },
+            Action::EndSession {
+                harness,
+                id,
+                pid,
+                after_close,
+            } => {
+                if !runner.ends_sessions() {
+                    out.note(&Note::Info(format!(
+                        "dry end: the {harness} session {id} (pid {pid})"
+                    )));
+                } else if *after_close {
+                    let helper = CommandSpec::new(sys.exe().to_string_lossy()).args([
+                        "_end-session",
+                        id.as_str(),
+                        &pid.to_string(),
+                    ]);
+                    if sys.cmd().spawn(&helper).is_err() {
+                        out.note(&Note::Warn(format!(
+                            "couldn't start yo _end-session; if {harness} (pid {pid}) outlives its tab, kill -HUP {pid}"
+                        )));
+                    }
+                } else {
+                    match end_session(ctx, id, *pid, Duration::ZERO) {
+                        Ended::NotRunning => {}
+                        Ended::By(_) => out.note(&Note::Info(format!(
+                            "ended the {harness} session (pid {pid})"
+                        ))),
+                        Ended::Survived => out.note(&Note::Warn(format!(
+                            "the {harness} session (pid {pid}) is still running after SIGTERM; kill -KILL {pid}"
+                        ))),
+                    }
+                }
+            }
             Action::Launch(spec) => {
                 let l = runner.launch(sys, spec)?;
+                if let (Launched::Opened { tab: Some(t), .. }, Some(k)) = (&l, &spec.record) {
+                    // Best effort: without it, only its terminal tells
+                    // whether it still has a tab.
+                    let _ = ctx.ledger().set_tab(k, t);
+                }
                 out.launched(spec, &l);
             }
             Action::Focus {
                 pid,
                 tty,
+                tab,
                 label,
                 remote_control,
                 message,
             } => {
-                let got = match tty {
-                    Some(t) => runner.focus(sys, t, message.as_deref())?,
-                    None => Focused::NotFound,
+                let got = match (tty, tab) {
+                    (None, None) => Focused::NotFound,
+                    _ => runner.focus(
+                        sys,
+                        tty.as_deref().unwrap_or(""),
+                        tab.as_deref(),
+                        message.as_deref(),
+                    )?,
                 };
                 let typed = if message.is_some() {
                     " and typed your message"
@@ -323,6 +386,16 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                     Focused::Yes => out.note(&Note::Info(format!(
                         "{label} is running (pid {pid}): brought its tab forward{typed}"
                     ))),
+                    Focused::TabOnly => {
+                        out.note(&Note::Info(format!(
+                            "{label} is running (pid {pid}): brought its tab forward, which is showing something else (iTerm's CLI view)"
+                        )));
+                        out.note(&Note::Detail(if message.is_some() {
+                            "switch it to the chat; your message was not typed".to_string()
+                        } else {
+                            "switch it to the chat".to_string()
+                        }));
+                    }
                     Focused::Dry { tty } => out.note(&Note::Info(format!(
                         "dry focus: {tty}{}",
                         message
@@ -344,7 +417,10 @@ pub fn execute(ctx: &Ctx, plan: &Plan, runner: &dyn Runner, out: &mut dyn Report
                             "{label} is running (pid {pid}), but not in an iTerm tab yo can find;"
                         )));
                         out.note(&Note::Detail(format!(
-                            "reach it {rc}with SendMessage from another session{lost}"
+                            "reach it {rc}with SendMessage from another session{lost};"
+                        )));
+                        out.note(&Note::Detail(format!(
+                            "or end it (kill -HUP {pid}) and yo resume it"
                         )));
                     }
                 }

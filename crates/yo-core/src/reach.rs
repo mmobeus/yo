@@ -27,6 +27,7 @@ pub struct ResumeOpts {
 pub fn plan_focus(
     ctx: &Ctx,
     pid: u32,
+    tab: Option<&str>,
     label: &str,
     rc: Option<&str>,
     message: Option<&str>,
@@ -43,6 +44,7 @@ pub fn plan_focus(
         actions: vec![Action::Focus {
             pid,
             tty,
+            tab: tab.map(str::to_string),
             label: label.to_string(),
             remote_control: rc.map(str::to_string),
             message: message.filter(|m| !m.is_empty()).map(str::to_string),
@@ -57,6 +59,7 @@ pub fn plan_reach(ctx: &Ctx, e: &Entry, st: State, label: &str, o: &ResumeOpts) 
         State::Running { pid } => Ok(plan_focus(
             ctx,
             pid,
+            e.record.tab(),
             label,
             e.record.remote_control.as_deref(),
             o.message.as_deref(),
@@ -191,6 +194,7 @@ pub fn plan_resume(ctx: &Ctx, e: &Entry, o: &ResumeOpts) -> Result<Plan> {
         argv,
         window: o.window,
         group: reg.window_group(repo, picked).replace("{repo}", &label),
+        record: Some(e.key.clone()),
     }));
     Ok(plan)
 }
@@ -397,7 +401,8 @@ mod tests {
             said.0,
             [
                 "feat is running (pid 43), but not in an iTerm tab yo can find;",
-                "reach it by Remote Control as feat-rc, or with SendMessage from another session (your message was not delivered)",
+                "reach it by Remote Control as feat-rc, or with SendMessage from another session (your message was not delivered);",
+                "or end it (kill -HUP 43) and yo resume it",
             ]
         );
     }

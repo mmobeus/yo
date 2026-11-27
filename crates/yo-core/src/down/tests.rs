@@ -121,7 +121,8 @@ fn a_worktree_is_removed_its_branch_kept() {
             },
             Action::DropRecord(Key("src__api-worktrees__feat".into())),
             Action::CloseOwnTab {
-                session: Some("w0t1p0:UUID".into())
+                session: Some("w0t1p0:UUID".into()),
+                tab: None,
             },
         ]
     );
@@ -213,7 +214,13 @@ fn in_place_touches_nothing_on_disk() {
             key: None
         }
     );
-    assert_eq!(plan.actions, [Action::CloseOwnTab { session: None }]);
+    assert_eq!(
+        plan.actions,
+        [Action::CloseOwnTab {
+            session: None,
+            tab: None
+        }]
+    );
 
     // The one in-place record holding the directory.
     t.record(
@@ -346,7 +353,7 @@ fn a_teardown_against_real_git() {
         matches!(&found, Found::Worktree { dirty, unpushed, .. } if dirty.is_empty() && unpushed.len() == 1),
         "{found:?}"
     );
-    execute(&ctx, &plan, &DryLaunch, &mut Said::default()).unwrap();
+    execute(&ctx, &plan, &DryLaunch, &mut Said(Vec::new())).unwrap();
     assert!(!wt("feat").exists());
     assert!(run(&clone, &["branch", "--list", "feat"]).contains("feat"));
     assert!(!run(&clone, &["worktree", "list"]).contains("api-worktrees/feat"));
@@ -362,7 +369,194 @@ fn a_teardown_against_real_git() {
         force: false,
     }));
     fs::write(wt("late").join("new"), "x").unwrap();
-    assert!(execute(&ctx, &plan, &DryLaunch, &mut Said::default()).is_err());
+    assert!(execute(&ctx, &plan, &DryLaunch, &mut Said(Vec::new())).is_err());
     assert!(wt("late").join("new").is_file());
     assert!(recorded("late"));
+}
+
+/// The worktree's record, with session `s1` running in it as pid 30 (under
+/// its shell, 20), in tab `pty-W/40`.
+fn running(t: &T) {
+    t.in_worktree("");
+    t.record(
+        "src__api-worktrees__feat",
+        Record {
+            worktree: t.wt(),
+            session_id: Some("s1".into()),
+            tab: Some("pty-W/40".into()),
+            ..Record::default()
+        },
+    );
+    let dir = t.home.join(".claude/sessions");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("30.json"),
+        format!(
+            r#"{{"pid":30,"sessionId":"s1","cwd":"{}","kind":"interactive"}}"#,
+            t.wt().display()
+        ),
+    )
+    .unwrap();
+    t.sys.add_process(20, "-zsh", Some("ttys009"));
+    t.sys.add_child(30, "claude", Some("ttys009"), 20);
+}
+
+/// Ends sessions for real (on the fake), and says what it closed.
+#[derive(Default)]
+struct Closer(std::sync::Mutex<Vec<(String, Option<String>)>>);
+
+impl crate::runner::Runner for Closer {
+    fn kind(&self) -> crate::runner::RunnerKind {
+        crate::runner::RunnerKind::Iterm
+    }
+    fn launch(
+        &self,
+        _: &dyn crate::sys::Sys,
+        _: &crate::runner::LaunchSpec,
+    ) -> Result<crate::runner::Launched> {
+        unreachable!()
+    }
+    fn focus(
+        &self,
+        _: &dyn crate::sys::Sys,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<crate::runner::Focused> {
+        unreachable!()
+    }
+    fn close_own_tab(&self, _: &dyn crate::sys::Sys, session: &str, tab: Option<&str>) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .push((session.to_string(), tab.map(str::to_string)));
+        true
+    }
+}
+
+#[test]
+fn from_a_shell_its_session_is_ended_before_the_tab_closes() {
+    // `yo down` in the tab's CLI: a workgroup tab closed while it shows CLI
+    // leaves the chat running (#35).
+    let t = T::new();
+    running(&t);
+    t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:CLI");
+    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    assert_eq!(
+        plan.actions[3..],
+        [
+            Action::EndSession {
+                harness: "claude".into(),
+                id: "s1".into(),
+                pid: 30,
+                after_close: false,
+            },
+            Action::CloseOwnTab {
+                session: Some("w0t1p0:CLI".into()),
+                tab: None,
+            },
+        ]
+    );
+    let run: Plan = Plan {
+        notes: vec![],
+        actions: plan.actions[3..].to_vec(),
+    };
+    let closer = Closer::default();
+    let mut said = Said(Vec::new());
+    execute(&t.ctx(), &run, &closer, &mut said).unwrap();
+    // Its shell hung up, which takes claude with it; then the tab.
+    assert_eq!(t.sys.signals(), [(20, crate::sys::Signal::Hup)]);
+    assert_eq!(said.0, ["ended the claude session (pid 30)"]);
+    assert_eq!(
+        *closer.0.lock().unwrap(),
+        [("w0t1p0:CLI".to_string(), None)]
+    );
+}
+
+#[test]
+fn from_inside_it_a_detached_helper_ends_it_after_the_close() {
+    let t = T::new();
+    running(&t);
+    t.sys.set_env("ITERM_SESSION_ID", "w0t1p0:CHAT");
+    t.sys.set_env("CLAUDE_CODE_SESSION_ID", "s1");
+    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    assert_eq!(
+        plan.actions[3..],
+        [
+            Action::EndSession {
+                harness: "claude".into(),
+                id: "s1".into(),
+                pid: 30,
+                after_close: true,
+            },
+            // By its recorded tab too: shown CLI, iTerm doesn't list the chat.
+            Action::CloseOwnTab {
+                session: Some("w0t1p0:CHAT".into()),
+                tab: Some("pty-W/40".into()),
+            },
+        ]
+    );
+    let run: Plan = Plan {
+        notes: vec![],
+        actions: plan.actions[3..].to_vec(),
+    };
+    execute(&t.ctx(), &run, &Closer::default(), &mut Said(Vec::new())).unwrap();
+    assert!(t.sys.signals().is_empty());
+    let sp = t.sys.spawned();
+    assert_eq!(sp.len(), 1);
+    assert_eq!(sp[0].program, "/opt/yo/bin/yo");
+    assert_eq!(sp[0].args, ["_end-session", "s1", "30"]);
+}
+
+#[test]
+fn a_session_not_running_is_left_alone_and_a_dry_run_ends_nothing() {
+    let t = T::new();
+    running(&t);
+    // Not running: nothing to end.
+    fs::remove_file(t.home.join(".claude/sessions/30.json")).unwrap();
+    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::EndSession { .. }))
+    );
+    // Running, under a dry runner: said, not done.
+    running(&t);
+    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    let end: Vec<Action> = plan
+        .actions
+        .into_iter()
+        .filter(|a| matches!(a, Action::EndSession { .. }))
+        .collect();
+    let mut said = Said(Vec::new());
+    execute(
+        &t.ctx(),
+        &Plan {
+            notes: vec![],
+            actions: end,
+        },
+        &DryLaunch,
+        &mut said,
+    )
+    .unwrap();
+    assert!(t.sys.signals().is_empty() && t.sys.spawned().is_empty());
+    assert_eq!(said.0, ["dry end: the claude session s1 (pid 30)"]);
+}
+
+#[test]
+fn from_inside_it_with_no_tab_to_close_it_is_left_running() {
+    // Another terminal: nothing closes, so nothing ends it either; the
+    // /yo-down skill tells the user it's still open.
+    let t = T::new();
+    running(&t);
+    t.sys.set_env("CLAUDE_CODE_SESSION_ID", "s1");
+    let (_, plan) = plan_down(&t.ctx(), &t.wt(), DownOpts::default()).unwrap();
+    assert_eq!(
+        plan.actions[3..],
+        [Action::CloseOwnTab {
+            session: None,
+            tab: Some("pty-W/40".into()),
+        }]
+    );
 }

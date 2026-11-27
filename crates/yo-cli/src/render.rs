@@ -5,10 +5,11 @@ use std::fmt::Write as _;
 
 use yo_core::Ctx;
 use yo_core::harness::{LiveSession, Prep, claude};
-use yo_core::ledger::{Entry, State, state_of};
+use yo_core::ledger::{Entry, Record, State, state_of};
 use yo_core::plan::{Action, BranchSpec, Note, Plan, Report};
 use yo_core::registry::Mode;
 use yo_core::runner::{LaunchSpec, Launched};
+use yo_core::runner::{Tab, Tabs, tab_of};
 
 /// `yo help`: the guide, then what yo can see.
 pub fn help(ctx: &Ctx) -> String {
@@ -95,20 +96,46 @@ pub fn config_show(ctx: &Ctx) -> String {
 }
 
 /// `yo sessions`: one row per record, then what the states mean.
-pub fn sessions(ctx: &Ctx, entries: &[Entry], live: &[LiveSession]) -> String {
+pub fn sessions(
+    ctx: &Ctx,
+    entries: &[Entry],
+    live: &[LiveSession],
+    shown: Option<&Tabs>,
+) -> String {
     if entries.is_empty() {
         return format!(
             "no sessions in the ledger ({})\n",
             ctx.ledger().dir().display()
         );
     }
+    let status = |r: &Record| {
+        let state = state_of(r, live);
+        match state {
+            State::Running { pid } if tab_of(&*ctx.sys, r.tab(), pid, shown) == Tab::Gone => {
+                (state, "running (no tab)")
+            }
+            _ => (state, state.as_str()),
+        }
+    };
+    let rows: Vec<(&Entry, State, &str)> = entries
+        .iter()
+        .map(|e| {
+            let (st, word) = status(&e.record);
+            (e, st, word)
+        })
+        .collect();
+    let width = rows
+        .iter()
+        .map(|(_, _, w)| w.len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
     let mut s = format!(
-        "{:<8} {:<7} {:<12} {:<10} {:<36} NAME\n",
+        "{:<width$} {:<7} {:<12} {:<10} {:<36} NAME\n",
         "STATUS", "PID", "REPO", "AGENT", "SESSION"
     );
-    for e in entries {
+    for (e, state, word) in &rows {
         let r = &e.record;
-        let state = state_of(r, live);
         let pid = match state {
             State::Running { pid } => pid.to_string(),
             _ => "-".to_string(),
@@ -146,8 +173,8 @@ pub fn sessions(ctx: &Ctx, entries: &[Entry], live: &[LiveSession]) -> String {
         }
         let _ = writeln!(
             s,
-            "{:<8} {:<7} {:<12} {:<10} {:<36} {name}",
-            state.as_str(),
+            "{:<width$} {:<7} {:<12} {:<10} {:<36} {name}",
+            word,
             pid,
             repo,
             dash(&r.agent),
@@ -160,6 +187,12 @@ pub fn sessions(ctx: &Ctx, entries: &[Entry], live: &[LiveSession]) -> String {
     s.push_str(
         "(yo resume <name> still reopens it; resume-all skips it); gone = directory removed\n",
     );
+    if rows.iter().any(|(_, _, w)| *w == "running (no tab)") {
+        s.push_str(
+            "running (no tab) = still running, but its tab was closed (iTerm can leave a chat running when\n\
+             its tab is closed showing CLI); end it with kill -HUP <pid>, then yo resume <name>\n",
+        );
+    }
     s
 }
 
@@ -238,6 +271,20 @@ fn action(a: &Action) -> String {
                 .unwrap_or_default()
         ),
         Action::CloseOwnTab { .. } => "close this tab".to_string(),
+        Action::EndSession {
+            harness,
+            pid,
+            after_close,
+            ..
+        } => {
+            if *after_close {
+                format!(
+                    "end its {harness} session (pid {pid}) if it's still running once the tab closes"
+                )
+            } else {
+                format!("end its {harness} session (pid {pid}), still running")
+            }
+        }
         Action::RefreshHome { path, remote, base } => format!(
             "move {} to {remote}/{base}, if it has no uncommitted changes",
             path.display()
@@ -358,6 +405,7 @@ impl Report for Progress<'_> {
             | Action::PruneWorktrees { .. }
             | Action::SweepWorktree { .. }
             | Action::CloseOwnTab { .. }
+            | Action::EndSession { .. }
             | Action::RefreshHome { .. } => String::new(),
         };
         self.put(&s);
@@ -374,6 +422,7 @@ impl Report for Progress<'_> {
                 new_window,
                 split,
                 warnings,
+                ..
             } => {
                 let mut s = String::new();
                 for w in warnings {

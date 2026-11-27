@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::sys::{CommandRunner, CommandSpec, Output, ProcessTable, Sys};
+use crate::sys::{CommandRunner, CommandSpec, Output, ProcessTable, Signal, Sys};
 
 /// A fake system. Everything starts empty: no variables, no processes, and
 /// every command fails (exit 127) until it's given an answer.
@@ -94,7 +94,30 @@ impl FakeSys {
 
     /// A running process, with its command name and tty.
     pub fn add_process(&self, pid: u32, comm: &str, tty: Option<&str>) {
-        lock(&self.procs.table).insert(pid, (comm.to_string(), tty.map(str::to_string)));
+        self.add_child(pid, comm, tty, 1);
+    }
+
+    /// A running process whose parent is `ppid`.
+    pub fn add_child(&self, pid: u32, comm: &str, tty: Option<&str>, ppid: u32) {
+        lock(&self.procs.table).insert(
+            pid,
+            Proc {
+                comm: comm.to_string(),
+                tty: tty.map(str::to_string),
+                ppid,
+            },
+        );
+    }
+
+    /// `pid` shrugs off `sig` (by default a signal ends the process, and its
+    /// children with it, as a shell passes a hangup on).
+    pub fn ignore_signal(&self, pid: u32, sig: Signal) {
+        lock(&self.procs.ignored).push((pid, sig));
+    }
+
+    /// Every signal sent so far, in order, whether or not it ended anything.
+    pub fn signals(&self) -> Vec<(u32, Signal)> {
+        lock(&self.procs.sent).clone()
     }
 }
 
@@ -201,18 +224,47 @@ impl CommandRunner for FakeCommands {
     }
 }
 
+struct Proc {
+    comm: String,
+    tty: Option<String>,
+    ppid: u32,
+}
+
 #[derive(Default)]
 struct FakeProcs {
-    table: Mutex<BTreeMap<u32, (String, Option<String>)>>,
+    table: Mutex<BTreeMap<u32, Proc>>,
+    ignored: Mutex<Vec<(u32, Signal)>>,
+    sent: Mutex<Vec<(u32, Signal)>>,
 }
 
 impl ProcessTable for FakeProcs {
     fn comm(&self, pid: u32) -> Option<String> {
-        lock(&self.table).get(&pid).map(|(c, _)| c.clone())
+        lock(&self.table).get(&pid).map(|p| p.comm.clone())
     }
 
     fn tty(&self, pid: u32) -> Option<String> {
-        lock(&self.table).get(&pid).and_then(|(_, t)| t.clone())
+        lock(&self.table).get(&pid).and_then(|p| p.tty.clone())
+    }
+
+    fn ppid(&self, pid: u32) -> Option<u32> {
+        lock(&self.table).get(&pid).map(|p| p.ppid)
+    }
+
+    fn signal(&self, pid: u32, sig: Signal) -> bool {
+        lock(&self.sent).push((pid, sig));
+        let mut table = lock(&self.table);
+        if !table.contains_key(&pid) {
+            return false;
+        }
+        if lock(&self.ignored).contains(&(pid, sig)) {
+            return true;
+        }
+        let mut gone = vec![pid];
+        while let Some(p) = gone.pop() {
+            table.remove(&p);
+            gone.extend(table.iter().filter(|(_, c)| c.ppid == p).map(|(k, _)| *k));
+        }
+        true
     }
 }
 

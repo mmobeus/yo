@@ -265,6 +265,7 @@ yo-core/src/
   create.rs     plan a new session: INPUT (unnamed, PR, issue, existing or new branch), worktree, branch, title, codename, brief
   session.rs    for the ledger commands: where a directory sits (a yo worktree, a clone), a session by query, recording one
   down.rs       tear down the current session
+  end.rs        end a running session the way a closed terminal would (down, when closing its tab doesn't)
   sweep.rs      classify worktrees; remove
   naming.rs     codenames, titles, truncation
   plan.rs       Plan and Action: what a command will do, before it does it
@@ -451,7 +452,17 @@ pub enum HookEvent {                                          // from Harness::h
 pub enum State { Running { pid: u32 }, Ready, Ended, Gone, NoId }
 
 pub fn state_of(rec: &Record, live: &[LiveSession]) -> State;   // today's status_of
+
+// runner.rs: whether a running session still has a tab, by its terminal or
+// the tab recorded at launch (Record::tab), against what the runner shows
+pub enum Tab { Held, Gone, Unknown }
+pub fn tab_of(sys: &dyn Sys, tab: Option<&str>, pid: u32, shown: Option<&Tabs>) -> Tab;
 ```
+
+`running (no tab)` in `yo sessions` is `Running` with `Tab::Gone`: the
+harness still lists the session, but its tab is gone (#35). `Unknown` (the
+runner can't say, or no tab was recorded and its terminal isn't shown) reads
+as plain `running`.
 
 Writes go to a temporary file followed by a rename, as today, with sorted
 keys and two-space indents. One difference: Python escaped non-ASCII text
@@ -622,11 +633,13 @@ pub struct SessionSpec {
 A runner is how a session runs. A session is a record in yo; its runner and
 harness are fields on it.
 
-So far the trait has `kind`, for ledger records, and `launch`, with a dry
-runner (`YO_DRY_LAUNCH`) that says what it would run; the rest, and the iTerm
-runner, come with the commands that launch and reach sessions. A launch
-carries the harness's command already built (`Argv`), so a plan shows the exact
-command line.
+As built in phase 1, the trait has `kind`, for ledger records; `launch`,
+which also returns the tab it opened, for the record; `focus` (by terminal,
+else by recorded tab); `close_own_tab`; `tabs`, what the runner shows, for
+`tab_of`; and `ends_sessions`, false for the dry runner (`YO_DRY_LAUNCH`), which
+says what it would do and does none of it. `locate`, `deliver` and `retitle`
+below are the shape for later. A launch carries the harness's command already
+built (`Argv`), so a plan shows the exact command line.
 
 ```rust
 pub trait Runner {
@@ -653,7 +666,16 @@ pub struct LaunchSpec {
   (argv, turned into a single-quoted command line as today), with today's
   AppleScript kept as `.applescript` files embedded with `include_str!` and
   run through `CommandRunner`, so tests see them. A session is located by its
-  tty. Works for any harness with a TUI.
+  tty, or else by the tab recorded when it was opened: AppleScript lists
+  only the member of a Claude Code workgroup tab that's showing, so a chat
+  behind CLI has no listed tty. Works for any harness with a TUI.
+- **Closing a tab doesn't always end its session.** A workgroup tab closed
+  while it shows CLI leaves the chat running, with no tab (#35; the details
+  are in the iTerm runner's docs). So `down` ends its session itself
+  (`end.rs`): a hangup to the shell above it, then to the session, then
+  SIGTERM, each sent only while the harness still lists that session on
+  that pid. From inside the session, a detached `yo _end-session` does it
+  after iTerm's undo window.
 - **ACP** (phase 5): for sessions nobody is watching. The daemon runs the
   harness's ACP command (`claude-agent-acp`, `codex-acp`, ...) as a child
   process and talks JSON-RPC to it over stdin and stdout, through the

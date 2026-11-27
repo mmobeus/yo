@@ -20,10 +20,10 @@ as `--flag=value` or `--flag value`.
 | --- | --- |
 | `yo [flags] [INPUT] [message]` | start a session (see [flags](#flags-for-starting-a-session)) |
 | `yo NAME ['message']` | reach a session, agent home or home by name ([`yo NAME`](#yo-name)) |
-| `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, close its tab. Aliases `rm`, `teardown` |
-| `yo sessions` | list the ledger: running, ready, ended, gone. Alias `ls` |
+| `yo down [--dry-run] [--yes [--discard]]` | tear down the session you're in: remove its worktree (branch kept), forget it, end its claude if it's still running, close its tab. Aliases `rm`, `teardown` |
+| `yo sessions` | list the ledger: running, running (no tab), ready, ended, gone. Alias `ls` |
 | `yo resume [<name\|id\|dir>] [--model=M] [--new-window\|--tab]` | reopen one session; bare, list them |
-| `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live |
+| `yo resume-all [--dry-run] [--new-window\|--tab]` | reopen every session that was live; waits a few seconds for sessions whose tab was just closed, and lists those still running without a tab instead of resuming them |
 | `yo title ["T"]` | retitle the session this runs in; bare, reset every yo tab's name |
 | `yo adopt [--title=T] [--session-id=ID]` | record the session this runs in |
 | `yo forget <name\|id\|dir>` | drop a session from the ledger |
@@ -123,7 +123,9 @@ With no flags and at most a message, `yo NAME ['message']` tries, in order:
 6. **Otherwise:** a new session named NAME.
 
 Reaching a running session brings its iTerm tab forward and types the message
-in, then Enter. Reaching a stopped one resumes it with the message as its first
+in, then Enter. If its tab is showing the workgroup's CLI, the tab comes
+forward but nothing is typed. If it has no tab, yo says how else to reach it,
+or to end it and resume it. Reaching a stopped one resumes it with the message as its first
 prompt. Any flag skips steps 2–5, except `--dry-run`.
 
 ## Config file
@@ -217,7 +219,7 @@ setting's environment variable, if set, beats the file.
 | --- | --- |
 | config | `~/.config/yo/config.json` |
 | base settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
-| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent) |
+| ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent, and `tab`: the iTerm tab it was last opened in, `<window id>/<tab id>`, recorded at launch and by `yo adopt`) |
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
 | skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title` |

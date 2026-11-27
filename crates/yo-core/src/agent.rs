@@ -204,7 +204,7 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         remote_control: Some(rc.clone()),
     };
     let mut argv = harness.tui_command(&spec);
-    argv.env.insert(0, ("YO_SESSION_KEY".into(), key.0));
+    argv.env.insert(0, ("YO_SESSION_KEY".into(), key.0.clone()));
     plan.actions.push(Action::Launch(LaunchSpec {
         dir: wt,
         title,
@@ -213,6 +213,7 @@ pub fn plan_home(ctx: &Ctx, name: &str, o: &ResumeOpts) -> Result<Plan> {
         group: reg
             .window_group(Some(repo), None)
             .replace("{repo}", &repo.key),
+        record: Some(key),
     }));
     Ok(plan)
 }

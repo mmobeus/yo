@@ -443,6 +443,7 @@ pub fn plan_create(ctx: &Ctx, req: &CreateRequest) -> Result<Plan> {
         argv,
         window: req.window,
         group,
+        record: Some(key),
     }));
     Ok(plan)
 }

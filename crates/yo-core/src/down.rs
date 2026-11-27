@@ -2,13 +2,19 @@
 //! worktree is removed (its branch kept), its record dropped and its tab
 //! closed; anywhere else, nothing on disk is touched. bash's `cmd_down`.
 //!
+//! Its session is ended too, if it's still running: closing a tab doesn't
+//! always end it (see "Closing a tab" in [`crate::runner::iterm`]). Run
+//! from a shell (the tab's CLI, a split), `down` ends it before closing the
+//! tab; run from inside it, a detached helper does, once the tab has had
+//! time to close.
+//!
 //! What it refuses, it refuses while planning, before anything changes:
 //! an agent's home, a repo it can't identify, and with `--yes` but not
 //! `--discard`, uncommitted work.
 
 use std::path::{Path, PathBuf};
 
-use crate::ledger::{Entry, Key};
+use crate::ledger::{Entry, Key, Record};
 use crate::plan::{Action, Plan};
 use crate::registry::Mode;
 use crate::{Ctx, Error, Result, git};
@@ -62,12 +68,11 @@ pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     let Some(top) = top.filter(|_| is_worktree) else {
         let dir = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
         let key = here_key(ctx, &dir);
+        let rec = key.as_ref().and_then(|k| record(ctx, k));
         if let Some(k) = &key {
             plan.actions.push(Action::DropRecord(k.clone()));
         }
-        plan.actions.push(Action::CloseOwnTab {
-            session: own_tab(ctx),
-        });
+        end_and_close(ctx, rec.as_ref(), &mut plan);
         return Ok((Found::InPlace { dir, key }, plan));
     };
 
@@ -111,11 +116,10 @@ pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     plan.actions.push(Action::PruneWorktrees {
         repo: repo.path.clone(),
     });
-    plan.actions
-        .push(Action::DropRecord(Key::for_worktree(&sys.home(), &top)));
-    plan.actions.push(Action::CloseOwnTab {
-        session: own_tab(ctx),
-    });
+    let key = Key::for_worktree(&sys.home(), &top);
+    let rec = record(ctx, &key);
+    plan.actions.push(Action::DropRecord(key));
+    end_and_close(ctx, rec.as_ref(), &mut plan);
     Ok((
         Found::Worktree {
             repo: repo.key.clone(),
@@ -129,6 +133,47 @@ pub fn plan_down(ctx: &Ctx, cwd: &Path, o: DownOpts) -> Result<(Found, Plan)> {
     ))
 }
 
+fn record(ctx: &Ctx, key: &Key) -> Option<Record> {
+    ctx.ledger()
+        .all()
+        .into_iter()
+        .find(|e| &e.key == key)
+        .map(|e| e.record)
+}
+
+/// The last steps: ending the session if it's running (the record's, else
+/// the one yo runs inside), then closing the tab.
+fn end_and_close(ctx: &Ctx, rec: Option<&Record>, plan: &mut Plan) {
+    let inside = ctx.own_session();
+    let id = rec
+        .and_then(|r| r.id().map(str::to_string))
+        .or(inside.clone());
+    let live = id.and_then(|id| ctx.live().into_iter().find(|l| l.id == id));
+    // Inside it, yo may be in a tab that shows another member (a workgroup
+    // showing CLI, with the chat reached by Remote Control), so the tab is
+    // found by what was recorded too.
+    let in_it = live
+        .as_ref()
+        .is_some_and(|l| inside.as_deref() == Some(l.id.as_str()));
+    // Run inside it with no tab to close (another terminal), it stays: the
+    // user ends it, as they would have before.
+    let tab = own_tab(ctx);
+    if let Some(l) = live.filter(|_| !in_it || tab.is_some()) {
+        plan.actions.push(Action::EndSession {
+            harness: l.harness,
+            id: l.id,
+            pid: l.pid,
+            after_close: in_it,
+        });
+    }
+    plan.actions.push(Action::CloseOwnTab {
+        session: tab,
+        tab: rec
+            .filter(|_| in_it)
+            .and_then(|r| r.tab().map(str::to_string)),
+    });
+}
+
 /// The record for the session running in place in `dir`: the one
 /// `YO_SESSION_KEY` names, else the one holding this session's id, else
 /// the only in-place record holding `dir`. bash's `_yo_here_session_key`.
@@ -137,7 +182,7 @@ fn here_key(ctx: &Ctx, dir: &Path) -> Option<Key> {
         return Some(Key(k));
     }
     let all = ctx.ledger().all();
-    let id = ctx.sys.env_nonempty("CLAUDE_CODE_SESSION_ID");
+    let id = ctx.own_session();
     if let Some(e) = all
         .iter()
         .rev()
