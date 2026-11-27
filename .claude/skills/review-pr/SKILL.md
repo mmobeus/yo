@@ -182,8 +182,9 @@ verdict, in the comment and in the message to the author:
 - **Accepted** when no blocking finding is left open. A finding is dealt
   with when it's fixed, or when the author's reason on the PR (or the
   issue it filed for later) holds up: you judge that, not the reviewers,
-  since they never see the author's reasons. New non-blocking findings
-  don't hold up acceptance.
+  since they never see the author's reasons. Non-blocking findings don't
+  hold up acceptance; the author fixes them, files them as
+  `review-followup` issues, or declines them (`AGENTS.md`).
 - **Not accepted yet** when one is still open and this was round 1 or 2.
 - **Not accepted after 3 rounds** when one is still open in round 3. Say
   in your message that it's the maintainer's now, and tell the user too.

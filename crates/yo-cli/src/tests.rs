@@ -838,6 +838,36 @@ dry run: nothing changed.
     assert!(!sys.calls().iter().any(|c| c.program == "defaults"));
 }
 
+/// With yo's workgroup there: setup says so, and uninstalling takes it out.
+#[test]
+fn setup_with_the_yo_workgroup_and_uninstalling_it() {
+    let (t, sys) = setup_sandbox();
+    sys.answer_ok(
+        "osascript",
+        &["-l", "JavaScript", "-"],
+        r#"{"peer": true, "workgroups": "[{\"uniqueIdentifier\":\"yo\",\"sessions\":[]}]"}"#,
+    );
+    let out = yo(&sys, t.path(), &["setup", "--dry-run"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains("\n  ok      iTerm2 workgroup 'yo'\n"),
+        "{}",
+        out.out
+    );
+
+    let out = yo(&sys, t.path(), &["setup", "--dry-run", "--uninstall"]);
+    assert_eq!(out.code, 0, "{}", out.err);
+    assert!(
+        out.out.contains(
+            "\n  rm      iTerm2 workgroup 'yo'
+          (the workgroups as they were: ~/.config/yo/iterm-workgroups.bak-20261126-101500.json)\n"
+        ),
+        "{}",
+        out.out
+    );
+    assert!(!sys.calls().iter().any(|c| c.program == "defaults"));
+}
+
 /// yo's Codex hook: offered when Codex is installed, shown in dry runs,
 /// added with --hooks (still to be approved), kept, and taken out.
 #[test]

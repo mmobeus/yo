@@ -73,9 +73,21 @@ one comment with blocking and non-blocking findings, and sets the
 `yo-review` until it's reviewed again.
 
 The findings are a second opinion, not a ruling: the reviewers are guessing
-as much as you are. Fix the ones you agree with. For one you don't, say in a
-line on the PR why not, filing an issue if it's worth doing later. Leave
-most non-blocking findings for later. The
+as much as you are. Fix the blocking ones you agree with; for one you
+don't, say in a line on the PR why not. Every non-blocking finding gets one
+of three outcomes, said on the PR:
+
+- **Fixed now**, when it's right (you agree, having looked), it's about
+  what this PR added or changed (not an older problem nearby), and it's
+  small (a few lines, no new design decision, nothing that needs tests or
+  docs of its own). A finding that the PR left a doc, comment or test
+  untrue always counts as small.
+- **An issue**, labeled `review-followup`, when it's right and worth doing
+  but isn't about this PR's change, or isn't small. Link it on the PR.
+- **Declined**, in a line, when it isn't right or isn't worth doing.
+
+Make the fixes in the same push as the blocking ones, so one round checks
+them. The
 built-in `/code-review` covers general correctness, and is worth running too.
 
 ### Review rounds
@@ -86,14 +98,15 @@ round. At most three rounds, the first review included:
 1. **Ask the reviewer to confirm.** Once your fixes are pushed (and the
    rest answered on the PR), message the reviewer's session (the
    `from-name` its message to you came with) with `SendMessage`: the PR,
-   the commit to check, and one line per blocking finding saying fixed or
-   why not. If the first review had no blocking findings and you pushed
+   the commit to check, one line per blocking finding saying fixed or why
+   not, and each non-blocking one's outcome. If the first review had no blocking findings and you pushed
    nothing since, it's accepted already: skip to step 2.
 2. **Accepted:** the reviewer reviews what changed, posts its comment
    saying it's accepted, sets `yo-review` on that commit, and tells you.
    Merge the PR, the accepted commit and nothing after it
    (`gh pr merge <number> --merge --match-head-commit <sha>`): anything you
-   push later needs another round. If the
+   push later needs another round, so a non-blocking finding left after
+   acceptance becomes an issue rather than a push. If the
    merge is refused (CI hasn't passed, or a check is missing), say so to
    the maintainer; don't bypass it.
 3. **Not accepted:** its comment lists what's still blocking. Weigh each
