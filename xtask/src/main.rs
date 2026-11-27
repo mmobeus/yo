@@ -28,6 +28,7 @@ other gates (need the network):
 
 releasing (on macOS; see docs/dev/release.md):
   dist        build yo for both macOS targets into dist/, as tarballs
+              (saying YO_VERSION to --version, if set)
   release     dist, then publish a GitHub Release and update the Homebrew
               tap (needs YO_RELEASE_TAG, GH_TOKEN, HOMEBREW_TAP_TOKEN)
 ";
@@ -43,7 +44,13 @@ const DEFAULT_GATES: &[(&str, Gate)] = &[
 
 const OTHER_GATES: &[(&str, Gate)] = &[
     ("advisories", advisories),
-    ("dist", |root| dist(root).map(|_| ())),
+    ("dist", |root| {
+        let version = std::env::var("YO_VERSION")
+            .ok()
+            .or_else(|| dotenv("YO_VERSION"))
+            .filter(|v| !v.is_empty());
+        dist(root, version.as_deref()).map(|_| ())
+    }),
     ("release", release),
 ];
 
@@ -158,31 +165,45 @@ struct Built {
 }
 
 /// Builds `yo` for each target and packs it, with the license, as
-/// `dist/yo-<platform>.tar.gz`.
+/// `dist/yo-<platform>.tar.gz`. With a version, yo is built to say it to
+/// `--version` (`YO_VERSION`, which yo-cli reads at compile time); without
+/// one, it says Cargo.toml's placeholder.
 #[allow(clippy::print_stderr)]
-fn dist(root: &Path) -> Result<Vec<Built>, String> {
+fn dist(root: &Path, version: Option<&str>) -> Result<Vec<Built>, String> {
     if !cfg!(target_os = "macos") {
         return Err("dist builds macOS binaries, so it runs on macOS".into());
     }
+    let version = match version {
+        Some(v) => {
+            parse_version(v)?;
+            v.to_string()
+        }
+        None => cargo_version(root)?,
+    };
     let out = root.join("dist");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut built = Vec::new();
     for (target, platform) in TARGETS {
         run(root, "rustup", &["target", "add", target])?;
-        run(
-            root,
-            "cargo",
-            &[
-                "build",
-                "--release",
-                "--locked",
-                "-p",
-                "yo-cli",
-                "--target",
-                target,
-            ],
-        )?;
+        let args = [
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "yo-cli",
+            "--target",
+            target,
+        ];
+        eprintln!("$ YO_VERSION={version} cargo {}", args.join(" "));
+        let status = command(root, "cargo")
+            .args(args)
+            .env("YO_VERSION", &version)
+            .status()
+            .map_err(|e| format!("cargo: {e}"))?;
+        if !status.success() {
+            return Err(format!("cargo {}: {status}", args.join(" ")));
+        }
         let tarball = out.join(format!("yo-{platform}.tar.gz"));
         let bin_dir = root.join("target").join(target).join("release");
         run(
@@ -216,7 +237,7 @@ fn dist(root: &Path) -> Result<Vec<Built>, String> {
     };
     let bin = root.join("target").join(native).join("release/yo");
     let said = output(root, &bin.to_string_lossy(), &["--version"])?;
-    let want = format!("yo {}", version(root)?);
+    let want = format!("yo {version}");
     if said.trim() != want {
         return Err(format!(
             "{} --version says {said:?}, not {want:?}",
@@ -226,10 +247,14 @@ fn dist(root: &Path) -> Result<Vec<Built>, String> {
     Ok(built)
 }
 
-/// Releases the version in Cargo.toml as `YO_RELEASE_TAG`, which must be
-/// `v<version>`: the tarballs on a GitHub Release, then the tap told the
-/// new version and checksums. `GH_TOKEN` creates the release;
+/// Releases `YO_RELEASE_TAG`, `v<version>`: the version comes from the tag,
+/// not Cargo.toml, and the tag can be on any branch (a hotfix's is on
+/// `release/X.Y`). The tarballs go on a GitHub Release, then the tap is told
+/// the new version and checksums. A pre-release (`v0.2.0-rc.1`) is marked
+/// one and leaves the tap alone: brew should only see real releases, and
+/// the tap's workflow takes only `X.Y.Z`. `GH_TOKEN` creates the release;
 /// `HOMEBREW_TAP_TOKEN` can dispatch to `mmobeus/homebrew-tap`.
+#[allow(clippy::print_stderr)]
 fn release(root: &Path) -> Result<(), String> {
     let need = |k: &str| {
         std::env::var(k)
@@ -240,13 +265,8 @@ fn release(root: &Path) -> Result<(), String> {
     let tag = need("YO_RELEASE_TAG")?;
     need("GH_TOKEN")?;
     let tap_token = need("HOMEBREW_TAP_TOKEN")?;
-    let want = format!("v{}", version(root)?);
-    if tag != want {
-        return Err(format!(
-            "the tag is {tag}, but Cargo.toml's version makes it {want}"
-        ));
-    }
-    let built = dist(root)?;
+    let (version, pre) = tag_version(&tag)?;
+    let built = dist(root, Some(version))?;
     let mut args = vec![
         "release".to_string(),
         "create".into(),
@@ -256,9 +276,16 @@ fn release(root: &Path) -> Result<(), String> {
         tag.clone(),
         "--generate-notes".into(),
     ];
+    if pre {
+        args.push("--prerelease".into());
+    }
     args.extend(built.iter().map(|b| b.path.to_string_lossy().into_owned()));
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     run(root, "gh", &args)?;
+    if pre {
+        eprintln!("{tag} is a pre-release, so the tap is left as it is");
+        return Ok(());
+    }
 
     let sha = |p: &str| {
         built
@@ -290,8 +317,44 @@ fn release(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The workspace's version, as `cargo metadata` has it for yo-cli.
-fn version(root: &Path) -> Result<String, String> {
+/// A release tag's version, and whether it's a pre-release (marked one on
+/// GitHub, and kept from the tap).
+fn tag_version(tag: &str) -> Result<(&str, bool), String> {
+    let version = tag
+        .strip_prefix('v')
+        .ok_or_else(|| format!("the tag is {tag}; a release tag is v<version>"))?;
+    Ok((version, parse_version(version)?))
+}
+
+/// Checks a release version is `X.Y.Z`, or `X.Y.Z-<pre>` for a
+/// pre-release, and says whether it's a pre-release. It ends up in the
+/// binary, a release's title and the tap's formula, so nothing else gets in.
+fn parse_version(v: &str) -> Result<bool, String> {
+    let bad = || format!("{v:?} isn't a release version (X.Y.Z or X.Y.Z-pre)");
+    let (core, pre) = match v.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (v, None),
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    let number = |p: &&str| {
+        !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && (*p == "0" || !p.starts_with('0'))
+    };
+    if parts.len() != 3 || !parts.iter().all(number) {
+        return Err(bad());
+    }
+    if let Some(pre) = pre {
+        let ident =
+            |i: &str| !i.is_empty() && i.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        if !pre.split('.').all(ident) {
+            return Err(bad());
+        }
+    }
+    Ok(pre.is_some())
+}
+
+/// Cargo.toml's version (the placeholder a non-release build says), as
+/// `cargo metadata` has it for yo-cli.
+fn cargo_version(root: &Path) -> Result<String, String> {
     let meta = output(
         root,
         "cargo",
@@ -481,6 +544,15 @@ fn need_tool(root: &Path, sub: &str, install: &str) -> Result<(), String> {
     }
 }
 
+/// A variable from `.env`, when the environment doesn't set it.
+fn dotenv(key: &str) -> Option<String> {
+    DOTENV
+        .get()?
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
 /// A command run from the workspace root, with `.env`'s variables.
 fn command(root: &Path, program: &str) -> Command {
     let mut cmd = Command::new(program);
@@ -526,4 +598,41 @@ fn load_dotenv(path: &Path) -> Result<Vec<(String, String)>, String> {
         }
     }
     Ok(vars)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_version, tag_version};
+
+    #[test]
+    fn release_tags() {
+        assert_eq!(tag_version("v0.2.0"), Ok(("0.2.0", false)));
+        assert_eq!(tag_version("v0.2.0-rc.1"), Ok(("0.2.0-rc.1", true)));
+        assert!(tag_version("0.2.0").is_err());
+        assert!(tag_version("v0.2").is_err());
+        assert!(tag_version("release-0.2.0").is_err());
+    }
+
+    #[test]
+    fn release_versions() {
+        assert_eq!(parse_version("0.1.2"), Ok(false));
+        assert_eq!(parse_version("10.0.0"), Ok(false));
+        assert_eq!(parse_version("0.1.3-rc.1"), Ok(true));
+        assert_eq!(parse_version("1.0.0-alpha-2"), Ok(true));
+        for bad in [
+            "",
+            "0.1",
+            "0.1.2.3",
+            "v0.1.2",
+            "0.01.2",
+            "0.1.x",
+            "0.1.2-",
+            "0.1.2-rc..1",
+            "0.1.2-rc 1",
+            "0.1.2+build",
+            "0.1.2-rc;rm",
+        ] {
+            assert!(parse_version(bad).is_err(), "{bad:?}");
+        }
+    }
 }
