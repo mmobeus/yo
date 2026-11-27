@@ -60,7 +60,7 @@ impl T {
         symlink(to, p).unwrap();
     }
 
-    /// A yo checkout's `claude/` files, under `rel`.
+    /// A yo checkout's `claude/` and `codex/` files, under `rel`.
     fn checkout(&self, rel: &str) -> PathBuf {
         for f in [
             "claude/settings.json",
@@ -68,6 +68,9 @@ impl T {
             "claude/skills/yo-adopt/SKILL.md",
             "claude/skills/yo-down/SKILL.md",
             "claude/skills/yo-title/SKILL.md",
+            "codex/skills/yo-adopt/SKILL.md",
+            "codex/skills/yo-down/SKILL.md",
+            "codex/skills/yo-title/SKILL.md",
         ] {
             self.write(&format!("{rel}/{f}"), "x");
         }
@@ -545,6 +548,62 @@ fn stale_needs_a_manifest_and_ignores_links() {
     man.files.remove(&key(&t.p(DOWN)));
     fs::write(&m, serde_json::to_string(&man).unwrap()).unwrap();
     assert!(stale(&t.sys, &t.paths()));
+}
+
+/// Codex's skills go in its home, only once it has one (setup is stale
+/// when it appears), linked like Claude's, and come out on uninstall.
+#[test]
+fn codex_skills_go_in_codex_home_once_there_is_one() {
+    let t = T::new();
+    t.run(&copy());
+    assert!(!t.p(".codex").exists(), "no Codex, no ~/.codex");
+    assert!(!stale(&t.sys, &t.paths()));
+
+    fs::create_dir(t.p(".codex")).unwrap();
+    assert!(stale(&t.sys, &t.paths()), "a new Codex wants setup run");
+    let p = t.run(&copy());
+    let s = said(&t, &p);
+    for skill in ["yo-adopt", "yo-down", "yo-title"] {
+        assert!(s.contains(&format!("copy .codex/skills/{skill}")), "{s:?}");
+    }
+    let down = t.read(".codex/skills/yo-down/SKILL.md");
+    assert!(down.contains("name: yo-down") && down.contains("$yo-down"));
+    assert!(!down.contains("claude"), "written for Codex");
+    assert!(!stale(&t.sys, &t.paths()));
+
+    // CODEX_HOME moves them.
+    t.sys
+        .set_env("CODEX_HOME", &t.p("elsewhere").to_string_lossy());
+    fs::create_dir(t.p("elsewhere")).unwrap();
+    assert!(said(&t, &t.plan(&copy())).contains(&"copy elsewhere/skills/yo-title".to_string()));
+    t.sys.set_env("CODEX_HOME", "");
+
+    let c = t.checkout("src/yo");
+    let s = said(
+        &t,
+        &t.run(&SetupOpts {
+            link: Some(c.clone()),
+            ..copy()
+        }),
+    );
+    assert!(
+        s.contains(&"link .codex/skills/yo-down -> src/yo/codex/skills/yo-down".to_string()),
+        "{s:?}"
+    );
+
+    let s = said(
+        &t,
+        &t.run(&SetupOpts {
+            uninstall: true,
+            ..copy()
+        }),
+    );
+    assert!(
+        s.contains(&"remove .codex/skills/yo-adopt link".to_string()),
+        "{s:?}"
+    );
+    assert!(!t.p(".codex/skills/yo-adopt").exists());
+    assert!(t.p(".codex").is_dir(), "Codex's home stays");
 }
 
 const HOOKS: &str = ".codex/hooks.json";

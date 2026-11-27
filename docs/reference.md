@@ -40,7 +40,8 @@ as `--flag=value` or `--flag value`.
 ### `yo setup`
 
 Installs the skills, the settings layer and the statusline from copies built
-into yo, creates the config if there is none (with no repos, or listing the
+into yo (Codex's copies of the skills too, into `$CODEX_HOME/skills`, when
+Codex has its home, `~/.codex`), creates the config if there is none (with no repos, or listing the
 `--link` checkout as `yo`), and adds a terminal peer ("CLI") to iTerm2's
 Claude Code workgroup if it has none. It's safe to run again:
 
@@ -276,7 +277,7 @@ What each harness gets:
 | ledger | `~/.local/state/yo/sessions/*.json`: one record per session (id, directory, repo, profile, mode, title, codename, brief, agent, and `tab`: the iTerm tab it was last opened in, `<window id>/<tab id>`, recorded at launch and by `yo adopt`) |
 | composed settings, per session label | `~/.local/state/yo/settings/<label>.json` |
 | shared memory | `~/.claude/memories/yo`, or `<memories>/<memory>` |
-| skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title` |
+| skills | `~/.claude/skills/yo-down`, `yo-adopt`, `yo-title`; for Codex, the same names in `$CODEX_HOME/skills` (`~/.codex/skills`) |
 | what `yo setup` installed | `~/.local/state/yo/setup.json` |
 | worktrees | `<clone>-worktrees/<name>`, branch `<name>` (or `<prefix>/<name>`) |
 | an agent's home | `<clone>-worktrees/agent-<name>`, Remote Control and session name `<name>-home` |

@@ -409,14 +409,21 @@ repo to keep it in git. A profile or repo can have its own store
 
 ### Skills and the statusline
 
-Three skills let claude drive yo, which is how a session is managed through
-Remote Control:
+Three skills let a session drive yo, which is how a Claude session is
+managed through Remote Control. `yo setup` installs them for Claude in
+`~/.claude/skills`, and, when Codex is installed, for Codex in
+`~/.codex/skills` (`$CODEX_HOME/skills`), where they're run as `$yo-down` and
+so on (or from `/skills`):
 
 | skill | does |
 | --- | --- |
 | `/yo-down` | tears this session down |
 | `/yo-adopt` | records a session yo didn't start, so it survives restarts |
 | `/yo-title` | retitles this session's tab |
+
+Codex runs commands in a sandbox that keeps them away from iTerm2 and yo's
+state, so its copies ask to run `yo` outside it: approve that when Codex
+asks.
 
 The statusline shows the model, the session's Claude name (📡, what you'd
 give `--from` or `yo NAME`), the branch, context used, cost and time.

@@ -32,6 +32,11 @@
 //!   deliberate end. It fires only in a TUI that runs its own threads: a
 //!   `-c` override (yo always passes one) keeps the TUI off Codex's shared
 //!   daemon, where `/quit` only disconnects.
+//! - **Skills:** Codex finds a person's own in `$CODEX_HOME/skills/<name>`
+//!   (`SKILL.md`, the same frontmatter as Claude's), run as `$name`.
+//!   `yo setup` installs yo's there, rewritten for Codex: its commands run
+//!   in a sandbox that blocks iTerm2 and yo's state, so they ask to run
+//!   outside it.
 //! - **Not used, or not offered:** a settings layer, shared memory,
 //!   personas and Remote Control. It has no `--name`: names come from
 //!   `/rename` only.
@@ -43,11 +48,12 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::{
-    Argv, Capabilities, GlobalHook, Harness, IdPolicy, Launch, LiveSession, PrepareAsk, Prepared,
-    SessionSpec, valid_session_id,
+    Argv, Bundle, Bundled, BundledKind, Capabilities, GlobalHook, Harness, IdPolicy, Launch,
+    LiveSession, PrepareAsk, Prepared, SessionSpec, valid_session_id,
 };
 use crate::ledger::HookEvent;
 use crate::ojson::OValue;
+use crate::paths::Paths;
 use crate::plan::{Action, Note};
 use crate::registry::Mode;
 use crate::sys::{CommandSpec, Sys};
@@ -61,6 +67,23 @@ pub const NAME: &str = "codex";
 
 #[derive(Debug, Default)]
 pub struct Codex;
+
+// What `yo setup` installs: the repo's `codex/` directory, built in. These
+// are yo's Claude skills, written for Codex (`$skill`, its sandbox).
+const SKILLS: &[(&str, &str)] = &[
+    (
+        "codex/skills/yo-adopt",
+        include_str!("../../../../codex/skills/yo-adopt/SKILL.md"),
+    ),
+    (
+        "codex/skills/yo-down",
+        include_str!("../../../../codex/skills/yo-down/SKILL.md"),
+    ),
+    (
+        "codex/skills/yo-title",
+        include_str!("../../../../codex/skills/yo-title/SKILL.md"),
+    ),
+];
 
 impl Harness for Codex {
     fn name(&self) -> &str {
@@ -216,6 +239,30 @@ impl Harness for Codex {
             cwd,
             deliberate: true,
         })
+    }
+
+    /// yo's skills, in `$CODEX_HOME/skills`, where Codex finds a person's
+    /// own. Only when Codex has a home: setup doesn't make one for a Codex
+    /// that isn't there (and, once there is, says setup is stale).
+    fn bundle(&self, sys: &dyn Sys, _paths: &Paths) -> Bundle {
+        let home = codex_home(sys);
+        if !home.is_dir() {
+            return Bundle::default();
+        }
+        let items = SKILLS
+            .iter()
+            .map(|&(rel, text)| Bundled {
+                rel,
+                dest: home
+                    .join("skills")
+                    .join(rel.rsplit('/').next().unwrap_or(rel)),
+                kind: BundledKind::Dir(vec![("SKILL.md", text)]),
+            })
+            .collect();
+        Bundle {
+            items,
+            global: None,
+        }
     }
 
     /// `~/.codex/hooks.json`, and whether Codex has approved yo's hook in

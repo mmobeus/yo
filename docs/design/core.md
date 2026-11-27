@@ -15,7 +15,7 @@
 | before 1 | the gates: CI, lints, review skills, skill tuning | done (#11, PRs #13, #14, #15, #16) |
 | 1 | Rust core with CLI parity | done (#18, #19, #20, #21; PRs #22 to #32, and the switch, PR #33): the parity harness taken out of the plan; `Sys`, config, the registry and the ledger; `yo-cli` on clap; every command ported, area by area; one review round over the whole phase (#21); `install.sh` builds the binary, and `scripts/yo` is retired |
 | after 1 | distribution: Homebrew, and `yo setup` replacing `install.sh` | done (#34; PRs #36, #37, and mmobeus/homebrew-tap#1): `yo setup` installs the `claude/` files from copies built into yo (or links them, `--link`), and `install.sh` is retired; a `v*` tag releases both macOS binaries as the tag's version and dispatches to the tap (`cargo xtask release`; from #43 the tag is the version, with `release/X.Y` hotfix branches on demand); `brew install mmobeus/tap/yo` installs them, from v0.1.0 |
-| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48) |
+| 2 | a second harness: Codex | done (#39; PRs #45, #46): the `harness` setting and `--harness`, `harnesses.<name>` in the registry, and what phase 1 left outside `harness/claude.rs` behind `Harness` methods (#45); the Codex harness, with ids learned late from its rollouts (tied to the launch by its codename), live sessions from its thread locks, `--from` reports by `yo SESSION 'report'`, checked by hand in iTerm (#46); trust asked for at launch, `waiting?`, and an opt-in `SessionEnd` hook from `yo setup` (#48); yo's skills installed for Codex too (#49) |
 | 3 | status and events | not started |
 | 4 | `yo tui` | not started |
 | 5 | the daemon, ACP runner and relay | not started |
@@ -705,6 +705,12 @@ pub struct SessionSpec {
     `yo sessions` shows a Codex record with no id 30s after launch as
     `waiting?`: Codex writes its rollout with the first message, so
     something (trust, the hook review, a login) is holding it.
+  - **Skills:** Codex reads a person's own from `$CODEX_HOME/skills/<name>/SKILL.md`
+    (the same frontmatter as Claude's) and runs them as `$name`. `bundle`
+    installs yo's three there (`codex/skills/` in the repo), only when
+    Codex's home exists. They're Claude's rewritten: Codex's sandbox blocks
+    `osascript` and writes outside the workspace, so each asks to run its
+    `yo` command outside the sandbox (#49).
   - **Not available:** personas, a settings layer, shared memory, Remote
     Control.
   - **`--from`:** a Codex session has no `SendMessage`, so it's told to run

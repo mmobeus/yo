@@ -10,6 +10,7 @@ docs/                   the user guide and reference
 claude/settings.json    Claude Code settings layer, stacked onto each session
 claude/statusline.sh    Claude Code statusline
 claude/skills/          skills that drive yo from inside a session (yo-down, yo-adopt, yo-title)
+codex/skills/           the same skills, written for Codex
 ```
 
 ## Install
@@ -39,7 +40,7 @@ repos, so it's yours.
 | --- | --- |
 | yo config | `~/.config/yo/config.json` (a plain file, yours) |
 | settings layer, statusline | `~/.config/yo/claude-settings.json`, `~/.config/yo/statusline.sh` |
-| skills | `~/.claude/skills/` |
+| skills | `~/.claude/skills/`, and `~/.codex/skills/` if Codex is installed |
 | terminal peer | iTerm2's "Claude Code" workgroup (only if it has none) |
 
 The files are copies built into yo, so run `yo setup` again after upgrading
@@ -88,7 +89,7 @@ install yo from it:
 
 ```sh
 cargo install --locked --path crates/yo-cli   # yo, built from this checkout
-yo setup --link .                              # the claude/ files, as links here
+yo setup --link .                              # the claude/ and codex/ files, as links here
 ```
 
 Then an edit to a skill or the statusline here is live immediately, and `yo`
